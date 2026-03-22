@@ -1,0 +1,6 @@
+assets/
+/tmp/
+*.ext4
+*.sock
+guest-runner/guest-runner
+go.sum
