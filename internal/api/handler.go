@@ -11,6 +11,7 @@ import (
 
 	"aegis/internal/executor"
 	"aegis/internal/models"
+	"aegis/internal/policy"
 	"aegis/internal/store"
 
 	"github.com/google/uuid"
@@ -68,7 +69,7 @@ func HandleHealth(pool *executor.Pool) http.HandlerFunc {
 	}
 }
 
-func NewHandler(s *store.Store, pool *executor.Pool) http.HandlerFunc {
+func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		w.Header().Set("Content-Type", "application/json")
@@ -113,31 +114,13 @@ func NewHandler(s *store.Store, pool *executor.Pool) http.HandlerFunc {
 			return
 		}
 
-		if req.Lang != "python" && req.Lang != "bash" && req.Lang != "node" {
-			execID := uuid.New().String()
-			msg := "unsupported lang: must be python or bash"
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: msg},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg},
-			)
-			return
-		}
-		if len(req.Code) > 64*1024 {
-			execID := uuid.New().String()
-			msg := "code exceeds 64KB limit"
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: msg},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg},
-			)
-			return
-		}
 		timeoutMs := req.TimeoutMs
 		if timeoutMs == 0 {
-			timeoutMs = 500
+			timeoutMs = pol.DefaultTimeoutMs
 		}
-		if timeoutMs > 30000 {
+		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
 			execID := uuid.New().String()
-			msg := "timeout_ms exceeds maximum of 30000"
+			msg := err.Error()
 			respond(
 				ExecuteResponse{ExecutionID: execID, Error: msg},
 				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg},
@@ -165,13 +148,21 @@ func NewHandler(s *store.Store, pool *executor.Pool) http.HandlerFunc {
 		}
 		defer executor.Teardown(vm)
 
-		if err := executor.SetupCgroup(execID, vm.FirecrackerPID); err != nil {
+		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources); err != nil {
 			respond(
 				ExecuteResponse{ExecutionID: execID, Error: err.Error()},
 				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()},
 			)
 			return
 		}
+
+		proxyCtx, proxyCancel := context.WithCancel(ctx)
+		defer proxyCancel()
+		go func() {
+			if err := executor.StartProxyHandler(proxyCtx, vm.GuestCID, execID); err != nil && proxyCtx.Err() == nil {
+				log.Printf("[%s] proxy handler: %v", execID, err)
+			}
+		}()
 
 		conn, err := executor.DialWithRetry(vm.VsockPath, 1024, time.Until(deadline))
 		if err != nil {

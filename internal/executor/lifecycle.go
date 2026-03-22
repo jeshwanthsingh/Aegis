@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"aegis/internal/policy"
 )
 
 const (
@@ -15,7 +17,7 @@ const (
 	cgroupParent = "/sys/fs/cgroup/aegis"
 )
 
-func SetupCgroup(uuid string, pid int) error {
+func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy) error {
 	// Ensure controllers are delegated from root -> aegis -> child.
 	// In cgroup v2, controllers must be listed in the parent's
 	// cgroup.subtree_control before child cgroups can use them.
@@ -39,10 +41,10 @@ func SetupCgroup(uuid string, pid int) error {
 		file  string
 		value string
 	}{
-		{"memory.max", "128M"},
-		{"memory.high", "64M"},
-		{"pids.max", "100"},
-		{"cpu.max", "50000 100000"},
+		{"memory.max", fmt.Sprintf("%dM", resources.MemoryMaxMB)},
+		{"memory.high", fmt.Sprintf("%dM", resources.MemoryMaxMB/2)},
+		{"pids.max", strconv.Itoa(resources.PidsMax)},
+		{"cpu.max", fmt.Sprintf("%d 100000", resources.CPUPercent*1000)},
 		{"memory.swap.max", "0"},
 	}
 	for _, w := range limits {

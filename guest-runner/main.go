@@ -119,8 +119,6 @@ func main() {
 		return
 	}
 
-	// For node: run preflight diagnostics before attempting execution.
-	// This surfaces guest environment state in stderr regardless of outcome.
 	var diagPrefix string
 	if p.Lang == "node" {
 		diagPrefix = nodeEnvDiag()
@@ -201,7 +199,6 @@ func main() {
 	})
 }
 
-// resolveInterpreter maps a lang name to (binary, file-extension, ok).
 func resolveInterpreter(lang string) (string, string, bool) {
 	switch lang {
 	case "python":

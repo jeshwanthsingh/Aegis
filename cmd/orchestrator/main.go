@@ -12,11 +12,13 @@ import (
 
 	"aegis/internal/api"
 	"aegis/internal/executor"
+	"aegis/internal/policy"
 	"aegis/internal/store"
 )
 
 func main() {
 	dbConn := flag.String("db", "postgres://localhost/aegis?sslmode=disable", "postgres connection string")
+	policyPath := flag.String("policy", "configs/default-policy.yaml", "path to policy yaml")
 	flag.Parse()
 
 	if err := os.MkdirAll("/tmp/aegis", 0o755); err != nil {
@@ -30,6 +32,12 @@ func main() {
 
 	reconcile(s)
 
+	pol, err := policy.Load(*policyPath)
+	if err != nil {
+		log.Fatalf("load policy: %v", err)
+	}
+	log.Printf("policy loaded: %s", *policyPath)
+
 	apiKey := os.Getenv("AEGIS_API_KEY")
 	if apiKey == "" {
 		log.Println("WARNING: AEGIS_API_KEY not set, running in unauthenticated dev mode")
@@ -37,7 +45,7 @@ func main() {
 
 	pool := executor.NewPool(5)
 	http.HandleFunc("GET /health", api.HandleHealth(pool))
-	http.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool)))
+	http.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol)))
 
 	fmt.Println("Aegis orchestrator listening on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
