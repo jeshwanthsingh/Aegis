@@ -8,8 +8,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/mdlayher/vsock"
 )
@@ -74,6 +76,20 @@ func nodeEnvDiag() string {
 }
 
 func main() {
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGCHLD)
+		for range c {
+			for {
+				var status syscall.WaitStatus
+				pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
+				if pid <= 0 || err != nil {
+					break
+				}
+			}
+		}
+	}()
+
 	l, err := vsock.Listen(1024, nil)
 	if err != nil {
 		os.Exit(1)

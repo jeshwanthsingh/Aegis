@@ -135,9 +135,9 @@ func NewHandler(s *store.Store, pool *executor.Pool) http.HandlerFunc {
 		if timeoutMs == 0 {
 			timeoutMs = 500
 		}
-		if timeoutMs > 10000 {
+		if timeoutMs > 30000 {
 			execID := uuid.New().String()
-			msg := "timeout_ms exceeds maximum of 10000"
+			msg := "timeout_ms exceeds maximum of 30000"
 			respond(
 				ExecuteResponse{ExecutionID: execID, Error: msg},
 				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg},
@@ -223,3 +223,4 @@ func NewHandler(s *store.Store, pool *executor.Pool) http.HandlerFunc {
 		)
 	}
 }
+

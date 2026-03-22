@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -49,10 +49,10 @@ func NewVM(uuid string) (*VMInstance, error) {
 		return nil, fmt.Errorf("create scratch dir: %w", err)
 	}
 
-	scratchPath := fmt.Sprintf("%s/scratch-%s.ext4", scratchDir, uuid)
 	baseImage := fmt.Sprintf("%s/aegis/assets/alpine-base.ext4", homeDir)
-	if err := copyFile(baseImage, scratchPath); err != nil {
-		return nil, fmt.Errorf("clone base image: %w", err)
+	scratchPath, err := CreateScratchDisk(uuid)
+	if err != nil {
+		return nil, fmt.Errorf("create scratch disk: %w", err)
 	}
 
 	socketPath := fmt.Sprintf("%s/fc-%s.sock", scratchDir, uuid)
@@ -107,14 +107,24 @@ func NewVM(uuid string) (*VMInstance, error) {
 	// PUT /drives/rootfs
 	if err := fcPUT(client, "http://localhost/drives/rootfs", map[string]any{
 		"drive_id":       "rootfs",
-		"path_on_host":   scratchPath,
+		"path_on_host":   baseImage,
 		"is_root_device": true,
-		"is_read_only":   false,
+		"is_read_only":   true,
 	}); err != nil {
 		return nil, fmt.Errorf("drives/rootfs: %w", err)
 	}
 
-	// PUT /vsock — Firecracker has no GET /vsock endpoint; use the CID we configure.
+	// PUT /drives/scratch
+	if err := fcPUT(client, "http://localhost/drives/scratch", map[string]any{
+		"drive_id":       "scratch",
+		"path_on_host":   scratchPath,
+		"is_root_device": false,
+		"is_read_only":   false,
+	}); err != nil {
+		return nil, fmt.Errorf("drives/scratch: %w", err)
+	}
+
+	// PUT /vsock - Firecracker has no GET /vsock endpoint; use the CID we configure.
 	const guestCID uint32 = 3
 	if err := fcPUT(client, "http://localhost/vsock", map[string]any{
 		"guest_cid": guestCID,
@@ -123,13 +133,12 @@ func NewVM(uuid string) (*VMInstance, error) {
 		return nil, fmt.Errorf("vsock: %w", err)
 	}
 
-	// PUT /entropy — virtio-rng device feeds host entropy into guest pool.
-	// This is the correct fix for Node.js getrandom() blocking on low entropy.
+	// PUT /entropy - virtio-rng device feeds host entropy into guest pool.
 	if err := fcPUT(client, "http://localhost/entropy", map[string]any{}); err != nil {
-		return nil, fmt.Errorf("entropy: %w", err)
+		log.Printf("[%s] warning: failed to attach entropy device: %v", uuid, err)
 	}
 
-	// PUT /actions — InstanceStart
+	// PUT /actions - InstanceStart
 	if err := fcPUT(client, "http://localhost/actions", map[string]any{
 		"action_type": "InstanceStart",
 	}); err != nil {
@@ -178,22 +187,4 @@ func fcPUT(client *http.Client, url string, body any) error {
 		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 	return nil
-}
-
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
 }

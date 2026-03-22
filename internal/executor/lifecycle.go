@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -15,10 +16,10 @@ const (
 )
 
 func SetupCgroup(uuid string, pid int) error {
-	// Ensure controllers are delegated from root → aegis → child.
+	// Ensure controllers are delegated from root -> aegis -> child.
 	// In cgroup v2, controllers must be listed in the parent's
 	// cgroup.subtree_control before child cgroups can use them.
-	// Ignore errors here — the controller may already be enabled.
+	// Ignore errors here - the controller may already be enabled.
 	_ = os.WriteFile(cgroupRoot+"/cgroup.subtree_control", []byte("+cpu +memory +pids"), 0o644)
 
 	if err := os.MkdirAll(cgroupParent, 0o755); err != nil {
@@ -51,11 +52,27 @@ func SetupCgroup(uuid string, pid int) error {
 		}
 	}
 
-	// Assign PID last — process now runs under the limits.
+	// Assign PID last - process now runs under the limits.
 	if err := os.WriteFile(filepath.Join(cgPath, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o644); err != nil {
 		return fmt.Errorf("write cgroup.procs: %w", err)
 	}
 	return nil
+}
+
+func CreateScratchDisk(uuid string) (string, error) {
+	path := fmt.Sprintf("/tmp/aegis/scratch-%s.ext4", uuid)
+
+	cmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", path), "bs=1M", "count=50")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("dd: %w: %s", err, string(output))
+	}
+
+	cmd = exec.Command("/usr/sbin/mkfs.ext4", "-F", path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("mkfs.ext4: %w: %s", err, string(output))
+	}
+
+	return path, nil
 }
 
 func Teardown(vm *VMInstance) error {
@@ -93,7 +110,7 @@ func Teardown(vm *VMInstance) error {
 		log.Printf("teardown [%s]: removed vsock socket", vm.UUID)
 	}
 
-	// 5. Retry rmdir cgroup — kernel removes the PID from cgroup.procs when the
+	// 5. Retry rmdir cgroup - kernel removes the PID from cgroup.procs when the
 	// process exits, but SIGKILL delivery and process reaping take a few ms.
 	// Retry for up to 500ms before giving up.
 	cgPath := fmt.Sprintf("%s/%s", cgroupParent, vm.UUID)
@@ -117,3 +134,4 @@ func Teardown(vm *VMInstance) error {
 	}
 	return nil
 }
+
