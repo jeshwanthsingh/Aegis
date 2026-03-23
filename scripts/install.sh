@@ -73,15 +73,22 @@ echo "Building orchestrator..."
 cd "$REPO_DIR"
 "$GO_BIN" build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
 
-# 4. Build guest-runner and bake into rootfs
+# 4. Build aegis-cli
+echo "Building aegis-cli..."
+cd "$REPO_DIR"
+"$GO_BIN" build -buildvcs=false -o /usr/local/bin/aegis ./cmd/aegis-cli
+echo "aegis-cli installed to /usr/local/bin/aegis"
+
+# 5. Build guest-runner and bake into rootfs
 echo "Building guest-runner..."
 cd "$REPO_DIR/guest-runner"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build -buildvcs=false -a -o guest-runner .
+sudo mkdir -p /mnt/rootfs
 sudo mount "$REPO_DIR/assets/alpine-base.ext4" /mnt/rootfs
 sudo cp guest-runner /mnt/rootfs/usr/local/bin/guest-runner
 sudo umount /mnt/rootfs
 
-# 5. Set up database
+# 6. Set up database
 echo "Setting up database..."
 cd "$REPO_DIR"
 
@@ -103,6 +110,5 @@ echo "Run with:"
 echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db 'postgres://postgres:$PG_PASS@localhost/aegis?sslmode=disable'"
 echo ""
 echo "Test with:"
-echo "  curl -s -X POST http://localhost:8080/v1/execute \\" 
-echo "    -H 'Content-Type: application/json' \\" 
-echo "    -d '{\"lang\":\"python\",\"code\":\"print(1)\",\"timeout_ms\":10000}' | jq ."
+echo "  aegis health"
+echo "  aegis run --lang python --code \"print('hello')\""
