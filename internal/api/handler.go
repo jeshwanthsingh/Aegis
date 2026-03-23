@@ -184,6 +184,10 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 			return
 		}
 
+		outcome := "success"
+		if result.ExitCode != 0 {
+			outcome = "completed_nonzero"
+		}
 		respond(
 			ExecuteResponse{
 				Stdout:          result.Stdout,
@@ -196,7 +200,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 				ExecutionID: execID,
 				Lang:        req.Lang,
 				ExitCode:    result.ExitCode,
-				Outcome:     "success",
+				Outcome:     outcome,
 				Status:      "completed",
 				StdoutBytes: result.StdoutBytes,
 				StderrBytes: result.StderrBytes,
@@ -310,11 +314,15 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) h
 		}
 
 		writeSSE(w, flusher, models.GuestChunk{Type: "done", ExitCode: result.ExitCode, DurationMs: result.DurationMs})
+		outcome := "success"
+		if result.ExitCode != 0 {
+			outcome = "completed_nonzero"
+		}
 		if err := s.WriteExecution(store.ExecutionRecord{
 			ExecutionID: execID,
 			Lang:        req.Lang,
 			ExitCode:    result.ExitCode,
-			Outcome:     "success",
+			Outcome:     outcome,
 			Status:      "completed",
 			DurationMs:  time.Since(start).Milliseconds(),
 			StdoutBytes: result.StdoutBytes,

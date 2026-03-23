@@ -72,8 +72,6 @@ func SendPayload(conn net.Conn, payload models.Payload, deadline time.Time) (mod
 	return *result, nil
 }
 
-// ReadChunks reads streaming chunks from vsock until type=="done" or type=="error".
-// Calls onChunk for each stdout/stderr chunk and returns the aggregated result on done.
 func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk string)) (*models.Result, error) {
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("set deadline: %w", err)

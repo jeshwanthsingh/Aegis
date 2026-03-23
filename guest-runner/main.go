@@ -35,8 +35,6 @@ func sendError(conn net.Conn, msg string) {
 	_ = json.NewEncoder(conn).Encode(GuestChunk{Type: "error", Error: msg})
 }
 
-// nodeEnvDiag collects guest environment info relevant to Node.js startup.
-// Returns a multi-line string to prepend to stderr when node fails/hangs.
 func nodeEnvDiag() string {
 	var sb strings.Builder
 	run := func(name string, args ...string) string {
@@ -108,7 +106,6 @@ func main() {
 		sendError(conn, "decode payload: "+err.Error())
 		return
 	}
-
 	if len(p.Code) > 64*1024 {
 		sendError(conn, "payload too large")
 		return
@@ -150,28 +147,37 @@ func main() {
 		return
 	}
 
-	enc := json.NewEncoder(conn)
-	var mu sync.Mutex
-	sendChunk := func(ch GuestChunk) {
-		mu.Lock()
-		defer mu.Unlock()
-		_ = enc.Encode(ch)
-	}
+	chunks := make(chan GuestChunk, 32)
+	writeErr := make(chan error, 1)
+	go func() {
+		bw := bufio.NewWriter(conn)
+		enc := json.NewEncoder(bw)
+		for ch := range chunks {
+			if err := enc.Encode(ch); err != nil {
+				writeErr <- err
+				return
+			}
+			if err := bw.Flush(); err != nil {
+				writeErr <- err
+				return
+			}
+		}
+		writeErr <- nil
+	}()
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		sendError(conn, diagPrefix+"start "+interpreter+": "+err.Error())
 		return
 	}
-
 	if diagPrefix != "" {
-		sendChunk(GuestChunk{Type: "stderr", Chunk: diagPrefix})
+		chunks <- GuestChunk{Type: "stderr", Chunk: diagPrefix}
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go streamPipe(&wg, stdoutPipe, "stdout", sendChunk)
-	go streamPipe(&wg, stderrPipe, "stderr", sendChunk)
+	go streamPipe(&wg, stdoutPipe, "stdout", chunks)
+	go streamPipe(&wg, stderrPipe, "stderr", chunks)
 
 	exitCode := 0
 	if err := cmd.Wait(); err != nil {
@@ -180,28 +186,22 @@ func main() {
 			exitCode = exitErr.ExitCode()
 		} else {
 			exitCode = 1
-			sendChunk(GuestChunk{Type: "error", Error: err.Error()})
 		}
 	}
-	wg.Wait()
 
-	sendChunk(GuestChunk{
-		Type:       "done",
-		ExitCode:   exitCode,
-		DurationMs: time.Since(start).Milliseconds(),
-	})
+	wg.Wait()
+	chunks <- GuestChunk{Type: "done", ExitCode: exitCode, DurationMs: time.Since(start).Milliseconds()}
+	close(chunks)
+	_ = <-writeErr
 }
 
-func streamPipe(wg *sync.WaitGroup, pipe io.Reader, chunkType string, send func(GuestChunk)) {
+func streamPipe(wg *sync.WaitGroup, pipe io.Reader, chunkType string, chunks chan<- GuestChunk) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(pipe)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
-		send(GuestChunk{Type: chunkType, Chunk: scanner.Text() + "\n"})
-	}
-	if err := scanner.Err(); err != nil {
-		send(GuestChunk{Type: "error", Error: chunkType + " scanner: " + err.Error()})
+		chunks <- GuestChunk{Type: chunkType, Chunk: scanner.Text() + "\n"}
 	}
 }
 

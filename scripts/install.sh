@@ -76,7 +76,8 @@ cd "$REPO_DIR"
 # 4. Build aegis-cli
 echo "Building aegis-cli..."
 cd "$REPO_DIR"
-"$GO_BIN" build -buildvcs=false -o /usr/local/bin/aegis ./cmd/aegis-cli
+"$GO_BIN" build -buildvcs=false -o /tmp/aegis-cli ./cmd/aegis-cli
+sudo mv /tmp/aegis-cli /usr/local/bin/aegis
 echo "aegis-cli installed to /usr/local/bin/aegis"
 
 # 5. Build guest-runner and bake into rootfs
@@ -107,7 +108,7 @@ echo ""
 echo "=== Aegis installed successfully ==="
 echo ""
 echo "Run with:"
-echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db 'postgres://postgres:$PG_PASS@localhost/aegis?sslmode=disable'"
+echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db 'postgres://postgres:<your-password>@localhost/aegis?sslmode=disable'"
 echo ""
 echo "Test with:"
 echo "  aegis health"
