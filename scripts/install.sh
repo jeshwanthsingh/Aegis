@@ -8,17 +8,29 @@ echo "=== Aegis Installer ==="
 
 # 1. Check prerequisites
 missing=()
+GO_BIN=""
 
 if [ ! -e /dev/kvm ]; then
     missing+=("/dev/kvm")
 fi
 
-if ! command -v go &>/dev/null; then
-    missing+=("go")
+# Check for go in common locations, not just PATH
+if command -v go &>/dev/null; then
+    GO_BIN=$(command -v go)
+elif [ -x "$HOME/local/go/bin/go" ]; then
+    GO_BIN="$HOME/local/go/bin/go"
+elif [ -x "/usr/local/go/bin/go" ]; then
+    GO_BIN="/usr/local/go/bin/go"
+elif [ -x "/home/$(logname)/local/go/bin/go" ]; then
+    GO_BIN="/home/$(logname)/local/go/bin/go"
+fi
+
+if [ -z "$GO_BIN" ]; then
+    missing+=("go (install from https://go.dev/dl/)")
 fi
 
 if ! command -v psql &>/dev/null; then
-    missing+=("psql")
+    missing+=("psql (install: sudo apt install postgresql)")
 fi
 
 if ! command -v curl &>/dev/null; then
@@ -59,12 +71,12 @@ fi
 # 3. Build orchestrator
 echo "Building orchestrator..."
 cd "$REPO_DIR"
-go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
+"$GO_BIN" build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
 
 # 4. Build guest-runner and bake into rootfs
 echo "Building guest-runner..."
 cd "$REPO_DIR/guest-runner"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o guest-runner .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build -buildvcs=false -a -o guest-runner .
 sudo mount "$REPO_DIR/assets/alpine-base.ext4" /mnt/rootfs
 sudo cp guest-runner /mnt/rootfs/usr/local/bin/guest-runner
 sudo umount /mnt/rootfs
