@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,26 +13,26 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/mdlayher/vsock"
 )
-
-const maxOutputBytes = 65536 // 64KB per stream
 
 type Payload struct {
 	Lang string `json:"lang"`
 	Code string `json:"code"`
 }
 
-type Result struct {
-	Stdout          string `json:"stdout"`
-	Stderr          string `json:"stderr"`
-	ExitCode        int    `json:"exit_code"`
-	OutputTruncated bool   `json:"output_truncated,omitempty"`
+type GuestChunk struct {
+	Type       string `json:"type"`
+	Chunk      string `json:"chunk,omitempty"`
+	ExitCode   int    `json:"exit_code,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func sendError(conn net.Conn, msg string) {
-	json.NewEncoder(conn).Encode(Result{Stderr: msg, ExitCode: 1})
+	_ = json.NewEncoder(conn).Encode(GuestChunk{Type: "error", Error: msg})
 }
 
 // nodeEnvDiag collects guest environment info relevant to Node.js startup.
@@ -135,10 +136,9 @@ func main() {
 		sendError(conn, diagPrefix+"write temp file: "+err.Error())
 		return
 	}
-	f.Close()
+	_ = f.Close()
 
 	cmd := exec.Command(interpreter, f.Name())
-
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		sendError(conn, diagPrefix+"stdout pipe: "+err.Error())
@@ -150,36 +150,28 @@ func main() {
 		return
 	}
 
+	enc := json.NewEncoder(conn)
+	var mu sync.Mutex
+	sendChunk := func(ch GuestChunk) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = enc.Encode(ch)
+	}
+
+	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		sendError(conn, diagPrefix+"start "+interpreter+": "+err.Error())
 		return
 	}
 
-	var (
-		stdoutData, stderrData   []byte
-		stdoutTrunc, stderrTrunc bool
-		wg                       sync.WaitGroup
-	)
+	if diagPrefix != "" {
+		sendChunk(GuestChunk{Type: "stderr", Chunk: diagPrefix})
+	}
+
+	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		data, _ := io.ReadAll(io.LimitReader(stdoutPipe, maxOutputBytes+1))
-		if len(data) > maxOutputBytes {
-			stdoutTrunc = true
-			data = data[:maxOutputBytes]
-		}
-		stdoutData = data
-	}()
-	go func() {
-		defer wg.Done()
-		data, _ := io.ReadAll(io.LimitReader(stderrPipe, maxOutputBytes+1))
-		if len(data) > maxOutputBytes {
-			stderrTrunc = true
-			data = data[:maxOutputBytes]
-		}
-		stderrData = data
-	}()
-	wg.Wait()
+	go streamPipe(&wg, stdoutPipe, "stdout", sendChunk)
+	go streamPipe(&wg, stderrPipe, "stderr", sendChunk)
 
 	exitCode := 0
 	if err := cmd.Wait(); err != nil {
@@ -188,15 +180,29 @@ func main() {
 			exitCode = exitErr.ExitCode()
 		} else {
 			exitCode = 1
+			sendChunk(GuestChunk{Type: "error", Error: err.Error()})
 		}
 	}
+	wg.Wait()
 
-	json.NewEncoder(conn).Encode(Result{
-		Stdout:          string(stdoutData),
-		Stderr:          diagPrefix + string(stderrData),
-		ExitCode:        exitCode,
-		OutputTruncated: stdoutTrunc || stderrTrunc,
+	sendChunk(GuestChunk{
+		Type:       "done",
+		ExitCode:   exitCode,
+		DurationMs: time.Since(start).Milliseconds(),
 	})
+}
+
+func streamPipe(wg *sync.WaitGroup, pipe io.Reader, chunkType string, send func(GuestChunk)) {
+	defer wg.Done()
+	scanner := bufio.NewScanner(pipe)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		send(GuestChunk{Type: chunkType, Chunk: scanner.Text() + "\n"})
+	}
+	if err := scanner.Err(); err != nil {
+		send(GuestChunk{Type: "error", Error: chunkType + " scanner: " + err.Error()})
+	}
 }
 
 func resolveInterpreter(lang string) (string, string, bool) {

@@ -52,7 +52,7 @@ func WithAuth(apiKey string, next http.HandlerFunc) http.HandlerFunc {
 }
 
 // HandleHealth returns server liveness and worker pool capacity.
-// No auth required — safe to call from load balancers and monitoring.
+// No auth required - safe to call from load balancers and monitoring.
 func HandleHealth(pool *executor.Pool) http.HandlerFunc {
 	type healthResponse struct {
 		Status               string `json:"status"`
@@ -73,8 +73,6 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		w.Header().Set("Content-Type", "application/json")
-
-		// Enforce 128KB request body limit before any reading.
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 
 		respond := func(resp ExecuteResponse, rec store.ExecutionRecord) {
@@ -86,7 +84,6 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 			json.NewEncoder(w).Encode(resp)
 		}
 
-		// Capacity check — reject before doing any work
 		if err := pool.Acquire(); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "5")
@@ -127,14 +124,10 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 		}
 
 		execID := uuid.New().String()
-		// Context is created AFTER acquiring the pool slot so the timeout clock
-		// does not tick while waiting for capacity.
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
 		defer cancel()
-
 		deadline, _ := ctx.Deadline()
-		log.Printf("[%s] lang=%s timeout_ms=%d deadline=%s",
-			execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
+		log.Printf("[%s] lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
 
 		vm, err := executor.NewVM(execID)
 		if err != nil {
@@ -176,8 +169,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 		}
 		defer conn.Close()
 
-		log.Printf("[%s] vsock connected, %.0fms remaining",
-			execID, float64(time.Until(deadline).Milliseconds()))
+		log.Printf("[%s] vsock connected, %.0fms remaining", execID, float64(time.Until(deadline).Milliseconds()))
 
 		result, err := executor.SendPayload(conn, models.Payload{Lang: req.Lang, Code: req.Code}, deadline)
 		if err != nil {
@@ -213,3 +205,133 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 	}
 }
 
+func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+
+		if err := pool.Acquire(); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":"too many concurrent executions"}`))
+			return
+		}
+		defer pool.Release()
+
+		var req ExecuteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "request_too_large"})
+			} else {
+				json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "invalid request: " + err.Error()})
+			}
+			return
+		}
+
+		timeoutMs := req.TimeoutMs
+		if timeoutMs == 0 {
+			timeoutMs = pol.DefaultTimeoutMs
+		}
+		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: err.Error()})
+			return
+		}
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		execID := uuid.New().String()
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
+		defer cancel()
+		deadline, _ := ctx.Deadline()
+		log.Printf("[%s] stream lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
+
+		vm, err := executor.NewVM(execID)
+		if err != nil {
+			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
+			return
+		}
+		defer executor.Teardown(vm)
+
+		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources); err != nil {
+			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
+			return
+		}
+
+		proxyCtx, proxyCancel := context.WithCancel(ctx)
+		defer proxyCancel()
+		go func() {
+			if err := executor.StartProxyHandler(proxyCtx, vm.GuestCID, execID); err != nil && proxyCtx.Err() == nil {
+				log.Printf("[%s] proxy handler: %v", execID, err)
+			}
+		}()
+
+		conn, err := executor.DialWithRetry(vm.VsockPath, 1024, time.Until(deadline))
+		if err != nil {
+			outcome := "error"
+			if ctx.Err() == context.DeadlineExceeded {
+				outcome = "timeout"
+			}
+			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: outcome})
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.SetDeadline(deadline); err != nil {
+			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
+			return
+		}
+		if err := json.NewEncoder(conn).Encode(models.Payload{Lang: req.Lang, Code: req.Code}); err != nil {
+			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
+			return
+		}
+
+		result, err := executor.ReadChunks(conn, deadline, func(chunkType, chunk string) {
+			writeSSE(w, flusher, models.GuestChunk{Type: chunkType, Chunk: chunk})
+		})
+		if err != nil {
+			outcome := err.Error()
+			if ctx.Err() == context.DeadlineExceeded {
+				outcome = "timeout"
+			}
+			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: outcome})
+			return
+		}
+
+		writeSSE(w, flusher, models.GuestChunk{Type: "done", ExitCode: result.ExitCode, DurationMs: result.DurationMs})
+		if err := s.WriteExecution(store.ExecutionRecord{
+			ExecutionID: execID,
+			Lang:        req.Lang,
+			ExitCode:    result.ExitCode,
+			Outcome:     "success",
+			Status:      "completed",
+			DurationMs:  time.Since(start).Milliseconds(),
+			StdoutBytes: result.StdoutBytes,
+			StderrBytes: result.StderrBytes,
+		}); err != nil {
+			log.Printf("audit log [%s]: %v", execID, err)
+		}
+	}
+}
+
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk models.GuestChunk) {
+	b, err := json.Marshal(chunk)
+	if err != nil {
+		return
+	}
+	_, _ = w.Write([]byte("data: "))
+	_, _ = w.Write(b)
+	_, _ = w.Write([]byte("\n\n"))
+	flusher.Flush()
+}

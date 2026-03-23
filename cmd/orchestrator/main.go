@@ -46,6 +46,7 @@ func main() {
 	pool := executor.NewPool(5)
 	http.HandleFunc("GET /health", api.HandleHealth(pool))
 	http.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol)))
+	http.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol)))
 
 	fmt.Println("Aegis orchestrator listening on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
@@ -62,7 +63,7 @@ func reconcile(s *store.Store) {
 	log.Printf("reconcile: found %d orphaned scratch image(s)", len(matches))
 
 	for _, scratchPath := range matches {
-		base := filepath.Base(scratchPath) // scratch-{uuid}.ext4
+		base := filepath.Base(scratchPath)
 		uuid := strings.TrimSuffix(strings.TrimPrefix(base, "scratch-"), ".ext4")
 
 		socketPath := fmt.Sprintf("/tmp/aegis/fc-%s.sock", uuid)

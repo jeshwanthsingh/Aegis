@@ -58,10 +58,6 @@ func dialVsockProxy(vsockPath string, port uint32) (net.Conn, error) {
 	return conn, nil
 }
 
-// SendPayload sends the execution payload and waits for a result.
-// deadline is the absolute time after which the call must return; it is set
-// directly on the conn so that a fork-bomb or infinite-loop in the guest
-// cannot block longer than the request timeout allows.
 func SendPayload(conn net.Conn, payload models.Payload, deadline time.Time) (models.Result, error) {
 	if err := conn.SetDeadline(deadline); err != nil {
 		return models.Result{}, fmt.Errorf("set deadline: %w", err)
@@ -69,24 +65,63 @@ func SendPayload(conn net.Conn, payload models.Payload, deadline time.Time) (mod
 	if err := json.NewEncoder(conn).Encode(payload); err != nil {
 		return models.Result{}, fmt.Errorf("encode payload: %w", err)
 	}
+	result, err := ReadChunks(conn, deadline, nil)
+	if err != nil {
+		return models.Result{}, err
+	}
+	return *result, nil
+}
+
+// ReadChunks reads streaming chunks from vsock until type=="done" or type=="error".
+// Calls onChunk for each stdout/stderr chunk and returns the aggregated result on done.
+func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk string)) (*models.Result, error) {
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set deadline: %w", err)
+	}
+
+	dec := json.NewDecoder(conn)
 	var result models.Result
-	if err := json.NewDecoder(conn).Decode(&result); err != nil {
-		return models.Result{}, fmt.Errorf("decode result: %w", err)
-	}
+	for {
+		var chunk models.GuestChunk
+		if err := dec.Decode(&chunk); err != nil {
+			return nil, fmt.Errorf("decode chunk: %w", err)
+		}
 
-	// Record raw byte counts before truncation
-	result.StdoutBytes = len(result.Stdout)
-	result.StderrBytes = len(result.Stderr)
-
-	// Enforce output caps
-	if len(result.Stdout) > maxOutputBytes {
-		result.Stdout = result.Stdout[:maxOutputBytes]
-		result.OutputTruncated = true
+		switch chunk.Type {
+		case "stdout":
+			result.StdoutBytes += len(chunk.Chunk)
+			if onChunk != nil {
+				onChunk("stdout", chunk.Chunk)
+			}
+			appendChunk(&result.Stdout, chunk.Chunk, &result.OutputTruncated)
+		case "stderr":
+			result.StderrBytes += len(chunk.Chunk)
+			if onChunk != nil {
+				onChunk("stderr", chunk.Chunk)
+			}
+			appendChunk(&result.Stderr, chunk.Chunk, &result.OutputTruncated)
+		case "done":
+			result.ExitCode = chunk.ExitCode
+			result.DurationMs = chunk.DurationMs
+			return &result, nil
+		case "error":
+			return nil, fmt.Errorf(chunk.Error)
+		default:
+			return nil, fmt.Errorf("unknown chunk type: %s", chunk.Type)
+		}
 	}
-	if len(result.Stderr) > maxOutputBytes {
-		result.Stderr = result.Stderr[:maxOutputBytes]
-		result.OutputTruncated = true
-	}
+}
 
-	return result, nil
+func appendChunk(dst *string, chunk string, truncated *bool) {
+	remaining := maxOutputBytes - len(*dst)
+	if remaining <= 0 {
+		*truncated = true
+		return
+	}
+	if len(chunk) > remaining {
+		*dst += chunk[:remaining]
+		*truncated = true
+		return
+	}
+	*dst += chunk
 }

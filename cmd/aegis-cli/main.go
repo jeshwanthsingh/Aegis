@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -9,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"aegis/internal/models"
 )
 
 type executeRequest struct {
@@ -77,6 +80,7 @@ func run(args []string) int {
 	code := fs.String("code", "", "inline code")
 	filePath := fs.String("file", "", "path to code file")
 	timeoutMs := fs.Int("timeout", 0, "timeout in milliseconds")
+	stream := fs.Bool("stream", false, "stream output as it arrives")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -106,7 +110,11 @@ func run(args []string) int {
 		return 1
 	}
 
-	req, err := newRequest(http.MethodPost, baseURL()+"/v1/execute", bytes.NewReader(payload))
+	path := "/v1/execute"
+	if *stream {
+		path = "/v1/execute/stream"
+	}
+	req, err := newRequest(http.MethodPost, baseURL()+path, bytes.NewReader(payload))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -120,6 +128,13 @@ func run(args []string) int {
 	}
 	defer resp.Body.Close()
 
+	if *stream {
+		return consumeStream(resp)
+	}
+	return consumeSingle(resp)
+}
+
+func consumeSingle(resp *http.Response) int {
 	var out executeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -156,6 +171,60 @@ func run(args []string) int {
 
 	fmt.Printf("[done in %dms]\n", out.DurationMs)
 	return 0
+}
+
+func consumeStream(resp *http.Response) int {
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		return consumeSingle(resp)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		var chunk models.GuestChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		switch chunk.Type {
+		case "stdout":
+			fmt.Print(chunk.Chunk)
+		case "stderr":
+			for _, line := range strings.Split(strings.TrimRight(chunk.Chunk, "\n"), "\n") {
+				if line == "" {
+					continue
+				}
+				fmt.Printf("[stderr] %s\n", line)
+			}
+		case "error":
+			if chunk.Error == "timeout" {
+				fmt.Fprintln(os.Stderr, "execution timed out")
+			} else {
+				fmt.Fprintln(os.Stderr, chunk.Error)
+			}
+			return 1
+		case "done":
+			if chunk.ExitCode != 0 {
+				fmt.Printf("[exit code %d]\n", chunk.ExitCode)
+				fmt.Printf("[done in %dms]\n", chunk.DurationMs)
+				return 1
+			}
+			fmt.Printf("[done in %dms]\n", chunk.DurationMs)
+			return 0
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Fprintln(os.Stderr, "stream ended unexpectedly")
+	return 1
 }
 
 func health() int {
