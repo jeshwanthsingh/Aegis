@@ -1,130 +1,60 @@
-# Aegis — Task Roadmap
+# Aegis � Task Tracker
 
-## Project Positioning (do not deviate from this)
+## Done
+- [x] v1: Firecracker microVM execution (Python, bash)
+- [x] v1: Worker pool (5 concurrent slots), 429 on overflow
+- [x] v1: API key auth, GET /health endpoint
+- [x] v1: Audit log (PostgreSQL), execution state machine
+- [x] v1: cgroup v2 limits (memory, CPU, pids), no-network default
+- [x] v1: Deterministic teardown, startup reconciliation
+- [x] v1.5: Two-drive overlayfs (read-only base + 50MB scratch per execution)
+- [x] v1.5: PID 1 zombie reaping (SIGCHLD + Wait4 in guest-runner)
+- [x] v2: YAML policy engine (allowed languages, resource limits, max timeout)
+- [x] GitHub repo pushed and clean (4.4MB, no binaries or assets)
+- [x] All 4 demo tests passing on WSL2
+- [x] README written with architecture, security model, API docs
 
-**One-liner:**
-A self-hostable Firecracker-backed execution plane for OpenClaw that isolates untrusted AI-generated code with cgroup v2 limits, no-network defaults, strict teardown, measurable benchmarks, and a drop-in skill.
+## In Progress
+Nothing currently in progress.
 
-**What Aegis is:**
-- The code-execution isolation layer for OpenClaw agents
-- Self-hostable, local-first, open source
-- Complements OpenClaw (agent runtime) and NeMo Guardrails (policy/prompt rails)
+## Up Next (in priority order)
 
-**What Aegis is NOT:**
-- A replacement for NeMo Guardrails
-- A solution for prompt injection at the LLM level
-- A tool permission or credentials manager
-- An end-to-end agent security platform
+### 1. Retry-After header (10 min)
+- [ ] Add `Retry-After: 5` header to all 429 responses in handler.go
+- [ ] Verify with curl that the header appears on pool overflow
 
----
+### 2. GitHub Releases + install.sh (2 hours)
+- [ ] Create GitHub Release v1.0 on jeshwanthsingh/Aegis
+- [ ] Upload assets as release artifacts: vmlinux, alpine-base.ext4
+- [ ] Update scripts/install.sh to download assets from release URL
+- [ ] Test clean install on a fresh directory
 
-## Phase 1 — Aegis v1.5 (production-ish) 
-Status: in progress
+### 3. aegis-cli (3 hours)
+- [ ] Create cmd/aegis-cli/main.go
+- [ ] Commands: `aegis run --lang python --file script.py`, `aegis run --lang bash --code "echo hello"`, `aegis health`
+- [ ] Reads AEGIS_URL env var (default http://localhost:8080)
+- [ ] Streams output to terminal as it arrives
+- [ ] Build: `go build -o aegis ./cmd/aegis-cli`
 
-- [ ] Worker pool — 5 concurrent VM slots, bounded queue, reject above capacity
-- [ ] API key auth — Bearer token middleware, configured via AEGIS_API_KEY env var
-- [ ] Rate limiting — token bucket, 10 requests/minute per key default
-- [ ] Fix rootfs naming — replace "Alpine Linux" with "Ubuntu 22.04 (Firecracker quickstart base)" everywhere
-- [ ] Systemd service file — auto-start on boot, restart on crash
-- [ ] install.sh — zero to running in under 10 minutes on bare Linux
-- [ ] Stage benchmarks — measure image_prep / boot / guest_ready / execute / teardown separately
-- [ ] README rewrite — threat model, non-goals, API contract, state machine, benchmark methodology
+### 4. Streaming I/O � /v1/execute/stream (1 day)
+- [ ] Update guest-runner to flush stdout/stderr in real-time chunks over vsock
+- [ ] Add SSE endpoint /v1/execute/stream to orchestrator
+- [ ] Update aegis-cli to consume the stream
 
-Already done in v1:
-- [x] Firecracker microVM boot via API
-- [x] virtio-vsock transport layer
-- [x] Guest runner (static Go binary in rootfs)
-- [x] cgroup v2: memory.max, memory.high, pids.max, cpu.max, memory.swap.max
-- [x] No network interfaces (deny-all default)
-- [x] Hard timeout + SIGKILL
-- [x] Deterministic teardown (scratch + sockets + cgroup)
-- [x] Postgres audit log
-- [x] Output caps (stdout/stderr truncation)
-- [x] Execution state machine (booting/running/completed/timed_out/oom_killed/sandbox_error)
-- [x] Startup reconciliation (orphan VM cleanup on boot)
-- [x] Demo tests: fork bomb / exfiltration / host escape — all passing
+### 5. OpenClaw end-to-end test
+- [ ] Verify aegis-exec skill works against live Aegis instance
+- [ ] Test: agent generates code, skill calls /v1/execute, result returned to agent
+- [ ] Document the integration in README
 
----
+## Deferred
+- vsock HTTP proxy (pip install) � complex, needs design, attempted once
+- Node.js on WSL2 � needs kernel with proper entropy, deferred
+- Filesystem jail � guest-side Landlock enforcement, v2.5
+- GitHub IAM proxy � v3, separate tool
+- Firecracker snapshots � v3, significant operational complexity
 
-## Phase 2 — OpenClaw Skill
-Status: not started
-
-- [ ] Write aegis-exec skill (JavaScript, ~80 lines)
-      Routes OpenClaw code execution requests to Aegis POST /v1/execute
-      Handles auth header, timeout, result formatting back to OpenClaw
-- [ ] Test skill end-to-end with local OpenClaw install
-- [ ] Write skill README: install in one command, what it does, what it doesn't do
-- [ ] Publish to ClawHub
-- [ ] Write integration guide: "Using OpenClaw + NeMo Guardrails + Aegis"
-      Diagram showing three layers and what each covers
-
----
-
-## Phase 3 — GitHub IAM Proxy MVP
-Status: not started
-
-- [ ] Proxy server (Go) that intercepts GitHub API calls
-- [ ] Action classifier: read / write / destructive
-      Read: GET /repos/*, GET /issues/*, GET /pulls/*
-      Write: POST /issues, POST /pulls, PATCH non-destructive
-      Destructive: DELETE /repos/*, archive, transfer, permission changes
-- [ ] Policy: reads pass through, writes log, destructive require approval
-- [ ] Approval mechanism: webhook POST to configured URL (simple, no mobile app)
-- [ ] Short-lived token: generate scoped GitHub token per approved action, expire after 30s
-- [ ] Agent uses proxy URL instead of api.github.com directly
-- [ ] No long-lived GitHub key inside the agent ever
-- [ ] README: threat model, what routes are classified how, how to configure
-
----
-
-## Positioning per project
-
-| Project | What it secures | What it does NOT secure |
-|---------|----------------|------------------------|
-| Aegis | Code execution lane | Agent reasoning, integrations, secrets |
-| NeMo Guardrails | Prompt/output policy | Code execution, credentials |
-| GitHub IAM Proxy | GitHub tool credentials | Other integrations, code execution |
-
----
-
-## The full stack (when all three exist)
-
-```
-User message
-    ↓
-OpenClaw (agent runtime + 100+ tools)
-    ↓
-NeMo Guardrails (semantic boundary)
-  - input rails: detect prompt injection
-  - output rails: scan for secrets
-  - Colang policies: block unauthorized tool use
-    ↓
-LLM (Claude / OpenAI)
-    ↓
-OpenClaw triggers code execution
-    ↓
-Aegis POST /v1/execute (compute boundary)
-  - Firecracker microVM
-  - no network
-  - cgroup v2 limits
-  - hard timeout + teardown
-    ↓
-OpenClaw triggers GitHub tool
-    ↓
-GitHub IAM Proxy (credential boundary)
-  - classify action
-  - block destructive by default
-  - require approval for high-risk
-  - JIT scoped token
-```
-
----
-
-## Hard rules (never violate)
-
-- Never claim Aegis stops prompt injection
-- Never claim Aegis secures agent integrations
-- Never call it a "grid" until multi-node scheduling exists
-- Never quote sub-100ms boot without snapshot restore implemented
-- Always label benchmarks with hardware + clone method
-- Scope claims to what is actually built
+## Notes
+- WSL2 timeouts: demo script uses 8000-20000ms; bare metal expected 2-3x faster
+- Base image: Ubuntu 22.04 rootfs (~800MB), not Alpine despite naming
+- Node.js works on bare metal, not WSL2 (entropy limitation)
+- Default policy: python/bash/node allowed, 128MB RAM, 50% CPU, pids.max=100
