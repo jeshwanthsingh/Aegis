@@ -1,6 +1,20 @@
-assets/
-/tmp/
-*.ext4
-*.sock
+# Compiled guest binaries
 guest-runner/guest-runner
-go.sum
+guest-proxy/guest-proxy
+
+# VM assets and local images
+assets/vmlinux
+assets/vmlinux.old
+assets/alpine-base.ext4
+assets/*.ext4
+assets/*.tgz
+assets/release-v*/
+assets/firecracker
+
+# Build artifacts and local logs
+*.log
+/tmp/
+
+# Local kernel/source dumps accidentally copied into repo
+linux-6.1.80/
+linux-6.1.80.tar.xz
