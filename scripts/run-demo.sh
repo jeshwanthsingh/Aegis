@@ -71,7 +71,7 @@ TMPDIR_TEST=$(mktemp -d)
 for i in 1 2 3 4 5; do
   curl -s -X POST $BASE \
     -H "Content-Type: application/json" \
-    -d "{\"lang\":\"python\",\"code\":\"print('worker $i')\",\"timeout_ms\":20000}" \
+    -d "{\"lang\":\"python\",\"code\":\"print('worker $i')\",\"timeout_ms\":10000}" \
     > "$TMPDIR_TEST/result_$i.json" &
   PIDS+=($!)
 done
