@@ -84,15 +84,23 @@ sudo umount /mnt/rootfs
 # 5. Set up database
 echo "Setting up database..."
 cd "$REPO_DIR"
+
+# Get postgres password
+read -rsp "Enter PostgreSQL password for user 'postgres': " PG_PASS
+echo ""
+
+export PGPASSWORD="$PG_PASS"
+
 psql -h localhost -U postgres -c "CREATE DATABASE aegis;" 2>/dev/null || echo "Database already exists."
 psql -h localhost -U postgres -d aegis -f db/schema.sql
 
-# 6. Done
+unset PGPASSWORD
+
 echo ""
 echo "=== Aegis installed successfully ==="
 echo ""
 echo "Run with:"
-echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable'"
+echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db 'postgres://postgres:$PG_PASS@localhost/aegis?sslmode=disable'"
 echo ""
 echo "Test with:"
 echo "  curl -s -X POST http://localhost:8080/v1/execute \\" 
