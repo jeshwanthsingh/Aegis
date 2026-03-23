@@ -1,0 +1,5 @@
+{
+  "id": "aegis-exec",
+  "entry": "index.js",
+  "configSchema": {}
+}
