@@ -5,7 +5,7 @@ A self-hostable Firecracker-backed execution plane for OpenClaw that isolates un
 ## Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/YOUR_REPO/aegis/main/scripts/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/jeshwanthsingh/Aegis/main/scripts/install.sh | sudo bash
 ```
 
 ## Why It Exists
@@ -86,10 +86,8 @@ Proves: the worker pool, teardown path, and scratch cleanup all hold under concu
 
 ## Benchmarks
 
-WSL2 measurements on the restored kernel are in the low single-digit seconds with cold boots and full-copy image clone.
-
-- Python p50: about 3.5s to 6.2s depending on timeout budget and host load.
-- Bash p50: about 3.0s.
+- Python p50: ~2-3s bare metal, ~3-6s WSL2
+- Bash p50: ~2s bare metal, ~2-3s WSL2
 
 WSL2, cold boot, full-copy clone. Bare metal expected 2-3x faster.
 
@@ -144,6 +142,15 @@ Response body:
 }
 ```
 
+### CLI
+
+```bash
+aegis health
+aegis run --lang python --code "print('hello')"
+aegis run --lang bash --file script.sh
+aegis run --lang python --code "..." --stream
+```
+
 ## Install Details
 
 Primary install path:
@@ -177,7 +184,7 @@ psql -d aegis -f db/schema.sql
 Run:
 
 ```bash
-sudo env "PATH=$PATH" /tmp/aegis-bin --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable'
+sudo env "PATH=$PATH" /tmp/aegis-bin --db 'postgres://postgres:<your-password>@localhost/aegis?sslmode=disable'
 ```
 
 Example request:
@@ -188,9 +195,28 @@ curl -s -X POST http://localhost:8080/v1/execute \
   -d '{"lang":"python","code":"print(1)","timeout_ms":8000}' | jq .
 ```
 
+## OpenClaw Integration
+
+Aegis ships a skill that lets your OpenClaw agent run code in isolated Firecracker microVMs instead of locally.
+
+### Quick setup
+
+1. Start Aegis orchestrator
+2. Install the skill:
+```bash
+mkdir -p ~/.openclaw/workspace/skills/aegis-exec
+curl -L https://raw.githubusercontent.com/jeshwanthsingh/Aegis/main/openclaw-plugin/SKILL.md \
+  -o ~/.openclaw/workspace/skills/aegis-exec/SKILL.md
+```
+3. Restart your OpenClaw gateway
+4. Ask your agent: `Use the Aegis sandbox to run this Python code: print('hello')`
+
+See `docs/openclaw-integration.md` for full setup and troubleshooting.
+
 ## Roadmap
 
-- v1 - shipped: Python + bash execution, worker pool, auth, audit log.
-- v1.5 - in progress: overlayfs fast boot, PID 1 zombie reaping.
-- v2 - planned: vsock HTTP proxy for package install support, YAML policy engine.
-- v3 - planned: GitHub IAM proxy for credential isolation.
+- v1 — shipped: Python + bash execution, worker pool, API key auth, audit log, cgroup v2 limits
+- v1.5 — shipped: two-drive overlayfs fast boot, PID 1 zombie reaping
+- v2 — shipped: YAML policy engine, streaming I/O (SSE), aegis-cli
+- v2.1 — planned: vsock HTTP proxy (pip install support)
+- v3 — planned: GitHub IAM proxy for credential isolation
