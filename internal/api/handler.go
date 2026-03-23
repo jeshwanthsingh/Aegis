@@ -88,12 +88,10 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 
 		// Capacity check — reject before doing any work
 		if err := pool.Acquire(); err != nil {
-			execID := uuid.New().String()
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(ExecuteResponse{
-				ExecutionID: execID,
-				Error:       "worker pool at capacity, try again later",
-			})
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":"too many concurrent executions"}`))
 			return
 		}
 		defer pool.Release()
