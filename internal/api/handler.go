@@ -172,10 +172,6 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 		log.Printf("[%s] vsock connected, %.0fms remaining", execID, float64(time.Until(deadline).Milliseconds()))
 
 		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs}
-		if vm.Network != nil {
-			payload.GuestIP = vm.Network.GuestIP
-			payload.GatewayIP = vm.Network.GatewayIP
-		}
 
 		result, err := executor.SendPayload(conn, payload, deadline)
 		if err != nil {
@@ -303,10 +299,6 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			return
 		}
 		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs}
-		if vm.Network != nil {
-			payload.GuestIP = vm.Network.GuestIP
-			payload.GatewayIP = vm.Network.GatewayIP
-		}
 		if err := json.NewEncoder(conn).Encode(payload); err != nil {
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
