@@ -69,7 +69,7 @@ func HandleHealth(pool *executor.Pool) http.HandlerFunc {
 	}
 }
 
-func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.HandlerFunc {
+func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		w.Header().Set("Content-Type", "application/json")
@@ -129,7 +129,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 		deadline, _ := ctx.Deadline()
 		log.Printf("[%s] lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
 
-		vm, err := executor.NewVM(execID, pol)
+		vm, err := executor.NewVM(execID, pol, assetsDir)
 		if err != nil {
 			respond(
 				ExecuteResponse{ExecutionID: execID, Error: err.Error()},
@@ -215,7 +215,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 	}
 }
 
-func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.HandlerFunc {
+func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
@@ -267,7 +267,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) h
 		deadline, _ := ctx.Deadline()
 		log.Printf("[%s] stream lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
 
-		vm, err := executor.NewVM(execID, pol)
+		vm, err := executor.NewVM(execID, pol, assetsDir)
 		if err != nil {
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return

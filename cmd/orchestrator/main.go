@@ -19,6 +19,7 @@ import (
 func main() {
 	dbConn := flag.String("db", "postgres://localhost/aegis?sslmode=disable", "postgres connection string")
 	policyPath := flag.String("policy", "configs/default-policy.yaml", "path to policy yaml")
+	assetsDir := flag.String("assets-dir", "", "path to assets directory (vmlinux, alpine-base.ext4)")
 	flag.Parse()
 
 	if err := os.MkdirAll("/tmp/aegis", 0o755); err != nil {
@@ -49,8 +50,8 @@ func main() {
 
 	pool := executor.NewPool(5)
 	http.HandleFunc("GET /health", api.HandleHealth(pool))
-	http.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol)))
-	http.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol)))
+	http.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol, *assetsDir)))
+	http.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol, *assetsDir)))
 
 	fmt.Println("Aegis orchestrator listening on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {

@@ -66,7 +66,8 @@ jobs:
         run: |
           sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
             --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable' \
-            --policy configs/default-policy.yaml &
+            --policy configs/default-policy.yaml \
+            --assets-dir "$GITHUB_WORKSPACE/assets" &
           sleep 3
           curl -s http://localhost:8080/health | jq .
 
@@ -88,7 +89,8 @@ jobs:
           sed -i 's/mode: none/mode: isolated/' configs/default-policy.yaml
           sudo env "PATH=$PATH:/sbin:/usr/sbin" /tmp/aegis-bin \
             --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable' \
-            --policy configs/default-policy.yaml &
+            --policy configs/default-policy.yaml \
+            --assets-dir "$GITHUB_WORKSPACE/assets" &
           sleep 3
 
           HEALTH=$(curl -s http://localhost:8080/health | jq -r '.status // "down"')

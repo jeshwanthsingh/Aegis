@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -39,17 +40,23 @@ func resolveHomeDir() (string, error) {
 	return os.UserHomeDir()
 }
 
-func NewVM(uuid string, pol *policy.Policy) (*VMInstance, error) {
-	homeDir, err := resolveHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("get home dir: %w", err)
+func NewVM(uuid string, pol *policy.Policy, assetsDir string) (*VMInstance, error) {
+	var baseDir string
+	if assetsDir != "" {
+		baseDir = assetsDir
+	} else {
+		homeDir, err := resolveHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("get home dir: %w", err)
+		}
+		baseDir = filepath.Join(homeDir, "aegis", "assets")
 	}
 
 	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create scratch dir: %w", err)
 	}
 
-	baseImage := fmt.Sprintf("%s/aegis/assets/alpine-base.ext4", homeDir)
+	baseImage := filepath.Join(baseDir, "alpine-base.ext4")
 	scratchPath, err := CreateScratchDisk(uuid)
 	if err != nil {
 		return nil, fmt.Errorf("create scratch disk: %w", err)
@@ -65,7 +72,7 @@ func NewVM(uuid string, pol *policy.Policy) (*VMInstance, error) {
 
 	socketPath := fmt.Sprintf("%s/fc-%s.sock", scratchDir, uuid)
 	vsockPath := fmt.Sprintf("%s/vsock-%s.sock", scratchDir, uuid)
-	kernelPath := fmt.Sprintf("%s/aegis/assets/vmlinux", homeDir)
+	kernelPath := filepath.Join(baseDir, "vmlinux")
 
 	cmd := exec.Command("firecracker", "--api-sock", socketPath)
 	cmd.Stdout = nil
