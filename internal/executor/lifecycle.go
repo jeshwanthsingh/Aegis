@@ -114,11 +114,14 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 	if err := runCmd("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", cfg.SubnetCIDR, "!", "-d", cfg.SubnetCIDR, "-j", "MASQUERADE"); err != nil {
 		return nil, err
 	}
-
-	for _, rule := range forwardRules(cfg, false) {
-		if err := runCmd("iptables", rule...); err != nil {
-			return nil, err
-		}
+	if err := runCmd("iptables", "-t", "nat", "-A", "PREROUTING", "-i", cfg.TapName, "-p", "udp", "--dport", "53", "-j", "DROP"); err != nil {
+		return nil, err
+	}
+	if err := runCmd("iptables", "-t", "nat", "-A", "PREROUTING", "-i", cfg.TapName, "-p", "tcp", "--dport", "53", "-j", "DROP"); err != nil {
+		return nil, err
+	}
+	if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-j", "DROP"); err != nil {
+		return nil, err
 	}
 
 	if mode == "allowlist" {
@@ -134,7 +137,7 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 			for _, ip := range ips {
 				if ip4 := ip.To4(); ip4 != nil {
 					for _, port := range []string{"80", "443"} {
-						if err := runCmd("iptables", "-A", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip4.String(), "--dport", port, "-j", "ACCEPT"); err != nil {
+						if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "-d", ip4.String(), "--dport", port, "-j", "ACCEPT"); err != nil {
 							return nil, err
 						}
 					}
@@ -143,14 +146,16 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 		}
 	} else {
 		for _, port := range []string{"80", "443"} {
-			if err := runCmd("iptables", "-A", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "--dport", port, "-j", "ACCEPT"); err != nil {
+			if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "--dport", port, "-j", "ACCEPT"); err != nil {
 				return nil, err
 			}
 		}
 	}
 
-	if err := runCmd("iptables", "-A", "FORWARD", "-i", cfg.TapName, "-j", "DROP"); err != nil {
-		return nil, err
+	for _, rule := range forwardRules(cfg, false) {
+		if err := runCmd("iptables", rule...); err != nil {
+			return nil, err
+		}
 	}
 
 	cleanup = false
@@ -252,6 +257,12 @@ func CleanupLeakedNetworks() error {
 func teardownNetwork(cfg *NetworkConfig) error {
 	var errs []error
 
+	if err := runCmd("iptables", "-t", "nat", "-D", "PREROUTING", "-i", cfg.TapName, "-p", "udp", "--dport", "53", "-j", "DROP"); err != nil && !isMissingRule(err) {
+		errs = append(errs, err)
+	}
+	if err := runCmd("iptables", "-t", "nat", "-D", "PREROUTING", "-i", cfg.TapName, "-p", "tcp", "--dport", "53", "-j", "DROP"); err != nil && !isMissingRule(err) {
+		errs = append(errs, err)
+	}
 	if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-j", "DROP"); err != nil && !isMissingRule(err) {
 		errs = append(errs, err)
 	}
@@ -353,17 +364,19 @@ func resolvePresetHosts(presets []string) ([]string, error) {
 }
 
 func forwardRules(cfg *NetworkConfig, delete bool) [][]string {
-	verb := "-A"
+	verb := "-I"
+	args := []string{"FORWARD", "1"}
 	if delete {
 		verb = "-D"
+		args = []string{"FORWARD"}
 	}
 	return [][]string{
-		{verb, "FORWARD", "-i", cfg.TapName, "-d", "10.0.0.0/8", "-j", "DROP"},
-		{verb, "FORWARD", "-i", cfg.TapName, "-d", "172.16.0.0/12", "-j", "DROP"},
-		{verb, "FORWARD", "-i", cfg.TapName, "-d", "192.168.0.0/16", "-j", "DROP"},
-		{verb, "FORWARD", "-i", cfg.TapName, "-d", "169.254.169.254", "-j", "DROP"},
-		{verb, "FORWARD", "-i", cfg.TapName, "-p", "udp", "--dport", "53", "-j", "DROP"},
-		{verb, "FORWARD", "-i", cfg.TapName, "-p", "tcp", "--dport", "53", "-j", "DROP"},
+		append(append([]string{verb}, args...), "-i", cfg.TapName, "-d", "10.0.0.0/8", "-j", "DROP"),
+		append(append([]string{verb}, args...), "-i", cfg.TapName, "-d", "172.16.0.0/12", "-j", "DROP"),
+		append(append([]string{verb}, args...), "-i", cfg.TapName, "-d", "192.168.0.0/16", "-j", "DROP"),
+		append(append([]string{verb}, args...), "-i", cfg.TapName, "-d", "169.254.169.254", "-j", "DROP"),
+		append(append([]string{verb}, args...), "-i", cfg.TapName, "-p", "udp", "--dport", "53", "-j", "DROP"),
+		append(append([]string{verb}, args...), "-i", cfg.TapName, "-p", "tcp", "--dport", "53", "-j", "DROP"),
 	}
 }
 
