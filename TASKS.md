@@ -1,4 +1,4 @@
-# Aegis — Task Tracker
+# Aegis â€” Task Tracker
 
 ## Done
 - [x] v1: Firecracker microVM execution (Python, bash)
@@ -10,51 +10,49 @@
 - [x] v1.5: Two-drive overlayfs (read-only base + 50MB scratch per execution)
 - [x] v1.5: PID 1 zombie reaping (SIGCHLD + Wait4 in guest-runner)
 - [x] v2: YAML policy engine (allowed languages, resource limits, max timeout)
-- [x] GitHub repo pushed and clean (4.4MB, no binaries or assets)
-- [x] All 4 demo tests passing on WSL2
-- [x] README written with architecture, security model, API docs
+- [x] v2: aegis-cli
+- [x] v2: Streaming I/O / SSE path
+- [x] README, install flow, OpenClaw docs, and CI workflow scaffolded
+- [x] Core demo tests 1-4 passing on WSL2
 
 ## In Progress
-Nothing currently in progress.
+- [ ] GitHub Actions CI stabilization
+  - Core demo tests are split from isolation tests
+  - Current blocker: isolated-mode firewall rules and CI assertions need one valid Linux-wide implementation path
 
-## Up Next (in priority order)
+## Up Next (priority order)
 
-### 1. Retry-After header (10 min)
-- [ ] Add `Retry-After: 5` header to all 429 responses in handler.go
-- [ ] Verify with curl that the header appears on pool overflow
+### 1. GitHub Actions CI â€” 1 day
+- [ ] Make CI green on real Linux runners
+- [ ] Keep the badge honest: prove build, boot, DB, and core demo flow work end-to-end
+- [ ] Simplify isolated-mode verification so it checks valid firewall behavior without depending on flaky guest-side assumptions
 
-### 2. GitHub Releases + install.sh (2 hours)
-- [ ] Create GitHub Release v1.0 on jeshwanthsingh/Aegis
-- [ ] Upload assets as release artifacts: vmlinux, alpine-base.ext4
-- [ ] Update scripts/install.sh to download assets from release URL
-- [ ] Test clean install on a fresh directory
+### 2. Compute profiles â€” 2 days
+- [ ] Add small/medium/large execution profiles
+- [ ] Slot profiles into the existing YAML policy engine
+- [ ] Map profiles cleanly onto cgroup memory/CPU/pids limits and timeouts
+- [ ] Expose profile selection in API and aegis-cli without breaking default behavior
 
-### 3. aegis-cli (3 hours)
-- [ ] Create cmd/aegis-cli/main.go
-- [ ] Commands: `aegis run --lang python --file script.py`, `aegis run --lang bash --code "echo hello"`, `aegis health`
-- [ ] Reads AEGIS_URL env var (default http://localhost:8080)
-- [ ] Streams output to terminal as it arrives
-- [ ] Build: `go build -o aegis ./cmd/aegis-cli`
+### 3. Persistent workspaces â€” 2 days
+- [ ] Add optional reusable execution workspace state between runs
+- [ ] Preserve files for agents that need iteration instead of one-shot execution
+- [ ] Keep teardown and quota controls explicit so persistence does not weaken isolation guarantees
+- [ ] Define lifecycle: create, reuse, expire, destroy
 
-### 4. Streaming I/O — /v1/execute/stream (1 day)
-- [ ] Update guest-runner to flush stdout/stderr in real-time chunks over vsock
-- [ ] Add SSE endpoint /v1/execute/stream to orchestrator
-- [ ] Update aegis-cli to consume the stream
-
-### 5. OpenClaw end-to-end test
-- [ ] Verify aegis-exec skill works against live Aegis instance
-- [ ] Test: agent generates code, skill calls /v1/execute, result returned to agent
-- [ ] Document the integration in README
+### 4. DNS interception â€” 3 days
+- [ ] Replace brittle domain allowlist logic with DNS-layer interception
+- [ ] Resolve preset policy at the DNS boundary instead of hardcoding destination IPs
+- [ ] Keep host-side enforcement as the source of truth
+- [ ] Use this as the cleaner replacement for the current allowlist approach
 
 ## Deferred
-- vsock HTTP proxy (pip install) — complex, needs design, attempted once
-- Node.js on WSL2 — needs kernel with proper entropy, deferred
-- Filesystem jail — guest-side Landlock enforcement, v2.5
-- GitHub IAM proxy — v3, separate tool
-- Firecracker snapshots — v3, significant operational complexity
+- Node.js on WSL2 â€” still sensitive to guest entropy/runtime behavior
+- Full vsock HTTP proxy (pip install support) â€” useful, but more moving parts than CI stabilization
+- Filesystem jail inside guest â€” better as a dedicated follow-up after workspaces land
+- GitHub IAM proxy â€” strong v3 feature, separate trust boundary
+- Firecracker snapshots â€” operationally valuable, but not the best immediate leverage
 
 ## Notes
-- WSL2 timeouts: demo script uses 8000-20000ms; bare metal expected 2-3x faster
-- Base image: Ubuntu 22.04 rootfs (~800MB), not Alpine despite naming
-- Node.js works on bare metal, not WSL2 (entropy limitation)
-- Default policy: python/bash/node allowed, 128MB RAM, 50% CPU, pids.max=100
+- The project is already beyond toy stage: it boots real microVMs, executes untrusted code, enforces cgroup limits, tears down cleanly, and has a policy surface
+- The weakest area right now is not the core execution model; it is validation/operability on real Linux CI and the next layer of product polish
+- Default direction should remain: host-enforced isolation first, guest behavior second

@@ -114,12 +114,6 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 	if err := runCmd("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", cfg.SubnetCIDR, "!", "-d", cfg.SubnetCIDR, "-j", "MASQUERADE"); err != nil {
 		return nil, err
 	}
-	if err := runCmd("iptables", "-t", "nat", "-A", "PREROUTING", "-i", cfg.TapName, "-p", "udp", "--dport", "53", "-j", "DROP"); err != nil {
-		return nil, err
-	}
-	if err := runCmd("iptables", "-t", "nat", "-A", "PREROUTING", "-i", cfg.TapName, "-p", "tcp", "--dport", "53", "-j", "DROP"); err != nil {
-		return nil, err
-	}
 	if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-j", "DROP"); err != nil {
 		return nil, err
 	}
@@ -257,12 +251,6 @@ func CleanupLeakedNetworks() error {
 func teardownNetwork(cfg *NetworkConfig) error {
 	var errs []error
 
-	if err := runCmd("iptables", "-t", "nat", "-D", "PREROUTING", "-i", cfg.TapName, "-p", "udp", "--dport", "53", "-j", "DROP"); err != nil && !isMissingRule(err) {
-		errs = append(errs, err)
-	}
-	if err := runCmd("iptables", "-t", "nat", "-D", "PREROUTING", "-i", cfg.TapName, "-p", "tcp", "--dport", "53", "-j", "DROP"); err != nil && !isMissingRule(err) {
-		errs = append(errs, err)
-	}
 	if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-j", "DROP"); err != nil && !isMissingRule(err) {
 		errs = append(errs, err)
 	}
