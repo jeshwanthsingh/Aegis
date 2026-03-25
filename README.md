@@ -1,3 +1,4 @@
+[![CI](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml)
 # Aegis
 
 A self-hostable Firecracker-backed execution plane for OpenClaw that isolates untrusted AI-generated code in hardware-isolated microVMs.

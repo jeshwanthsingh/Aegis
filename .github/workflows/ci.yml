@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq postgresql iptables iproute2 gzip
+          sudo systemctl start postgresql
+          sudo -u postgres psql -c "CREATE USER postgres WITH PASSWORD 'postgres' SUPERUSER;" || true
+          sudo -u postgres psql -c "CREATE DATABASE aegis OWNER postgres;" || true
+          sudo -u postgres psql -d aegis -f db/schema.sql
+
+      - name: Install Firecracker
+        run: |
+          ARCH="$(uname -m)"
+          release_url="https://github.com/firecracker-microvm/firecracker/releases/download/v1.7.0/firecracker-v1.7.0-${ARCH}.tgz"
+          curl -L "$release_url" | tar -xz
+          sudo mv "release-v1.7.0-${ARCH}/firecracker-v1.7.0-${ARCH}" /usr/local/bin/firecracker
+          sudo chmod +x /usr/local/bin/firecracker
+
+      - name: Download assets
+        run: |
+          mkdir -p assets
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4.gz | gunzip > assets/alpine-base.ext4
+
+      - name: Build
+        run: |
+          go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
+          pushd guest-runner
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -a -o guest-runner .
+          popd
+          sudo mkdir -p /mnt/rootfs
+          sudo mount "$GITHUB_WORKSPACE/assets/alpine-base.ext4" /mnt/rootfs
+          sudo cp "$GITHUB_WORKSPACE/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
+          sudo umount /mnt/rootfs
+
+      - name: Start Aegis
+        run: |
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
+            --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable' \
+            --policy configs/default-policy.yaml &
+          sleep 3
+          curl -s http://localhost:8080/health | jq .
+
+      - name: Run demo tests
+        run: |
+          bash scripts/run-demo.sh 2>/dev/null | tee /tmp/demo-output.txt
+          if grep -q "FAIL" /tmp/demo-output.txt; then
+            echo "Demo tests failed:"
+            cat /tmp/demo-output.txt
+            exit 1
+          fi
+          echo "All demo tests passed"
+
+      - name: Test network isolation
+        run: |
+          sudo pkill -f aegis-bin || true
+          sleep 1
+          sed -i 's/mode: none/mode: isolated/' configs/default-policy.yaml
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" /tmp/aegis-bin \
+            --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable' \
+            --policy configs/default-policy.yaml &
+          sleep 3
+
+          DNS_RESULT=$(curl -s -X POST http://localhost:8080/v1/execute \
+            -H "Content-Type: application/json" \
+            -d '{"lang":"python","code":"import socket\ntry:\n    socket.getaddrinfo(\"attacker.exfil.com\",53)\n    print(\"FAIL\")\nexcept:\n    print(\"PASS\")","timeout_ms":10000}' | jq -r '.stdout // "FAIL"' | tr -d '\r\n')
+          echo "DNS test: $DNS_RESULT"
+          [ "$DNS_RESULT" = "PASS" ] || (echo "DNS exfiltration test failed" && exit 1)
+
+          RFC_RESULT=$(curl -s -X POST http://localhost:8080/v1/execute \
+            -H "Content-Type: application/json" \
+            -d '{"lang":"python","code":"import socket\ns=socket.socket()\ns.settimeout(2)\ntry:\n    s.connect((\"192.168.1.1\",80))\n    print(\"FAIL\")\nexcept:\n    print(\"PASS\")","timeout_ms":10000}' | jq -r '.stdout // "FAIL"' | tr -d '\r\n')
+          echo "RFC1918 test: $RFC_RESULT"
+          [ "$RFC_RESULT" = "PASS" ] || (echo "RFC1918 test failed" && exit 1)
+
+          META_RESULT=$(curl -s -X POST http://localhost:8080/v1/execute \
+            -H "Content-Type: application/json" \
+            -d '{"lang":"python","code":"import urllib.request\ntry:\n    urllib.request.urlopen(\"http://169.254.169.254\",timeout=2)\n    print(\"FAIL\")\nexcept:\n    print(\"PASS\")","timeout_ms":10000}' | jq -r '.stdout // "FAIL"' | tr -d '\r\n')
+          echo "Metadata test: $META_RESULT"
+          [ "$META_RESULT" = "PASS" ] || (echo "Metadata endpoint test failed" && exit 1)
+
+          echo "All network isolation tests passed"

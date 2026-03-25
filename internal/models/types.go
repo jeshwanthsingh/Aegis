@@ -1,8 +1,11 @@
 package models
 
 type Payload struct {
-	Lang string `json:"lang"`
-	Code string `json:"code"`
+	Lang      string `json:"lang"`
+	Code      string `json:"code"`
+	TimeoutMs int    `json:"timeout_ms"`
+	GuestIP   string `json:"guest_ip,omitempty"`
+	GatewayIP string `json:"gateway_ip,omitempty"`
 }
 
 type GuestChunk struct {

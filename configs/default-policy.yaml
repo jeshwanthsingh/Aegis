@@ -4,8 +4,8 @@ max_output_bytes: 65536
 default_timeout_ms: 10000
 max_timeout_ms: 10000
 network:
-  mode: deny-all
-  allowed_hosts: []
+  mode: none
+  presets: []
 resources:
   memory_max_mb: 128
   cpu_percent: 50

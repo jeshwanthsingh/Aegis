@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,8 +20,11 @@ import (
 )
 
 type Payload struct {
-	Lang string `json:"lang"`
-	Code string `json:"code"`
+	Lang      string `json:"lang"`
+	Code      string `json:"code"`
+	TimeoutMs int    `json:"timeout_ms"`
+	GuestIP   string `json:"guest_ip,omitempty"`
+	GatewayIP string `json:"gateway_ip,omitempty"`
 }
 
 type GuestChunk struct {
@@ -33,6 +37,20 @@ type GuestChunk struct {
 
 func sendError(conn net.Conn, msg string) {
 	_ = json.NewEncoder(conn).Encode(GuestChunk{Type: "error", Error: msg})
+}
+
+func runGuestCmdDiag(name string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	result := fmt.Sprintf("guest-net: %s %v", name, args)
+	if err != nil {
+		result += fmt.Sprintf(" ERR=%v OUT=%s", err, strings.TrimSpace(string(out)))
+	} else {
+		result += fmt.Sprintf(" OK OUT=%s", strings.TrimSpace(string(out)))
+	}
+	return result
 }
 
 func nodeEnvDiag() string {
@@ -164,6 +182,20 @@ func main() {
 		}
 		writeErr <- nil
 	}()
+
+	if p.GuestIP != "" && p.GatewayIP != "" {
+		chunks <- GuestChunk{Type: "stderr", Chunk: "network setup starting\n"}
+		var diag []string
+		ipBin := "/sbin/ip"
+		if _, err := os.Stat(ipBin); err != nil {
+			ipBin = "ip"
+		}
+		diag = append(diag, fmt.Sprintf("ipBin=%s guestIP=%s gatewayIP=%s", ipBin, p.GuestIP, p.GatewayIP))
+		diag = append(diag, runGuestCmdDiag(ipBin, "addr", "add", p.GuestIP+"/30", "dev", "eth0"))
+		diag = append(diag, runGuestCmdDiag(ipBin, "link", "set", "eth0", "up"))
+		diag = append(diag, runGuestCmdDiag(ipBin, "route", "add", "default", "via", p.GatewayIP))
+		chunks <- GuestChunk{Type: "stderr", Chunk: strings.Join(diag, "\n") + "\n"}
+	}
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {

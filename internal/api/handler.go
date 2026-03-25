@@ -129,7 +129,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 		deadline, _ := ctx.Deadline()
 		log.Printf("[%s] lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
 
-		vm, err := executor.NewVM(execID)
+		vm, err := executor.NewVM(execID, pol)
 		if err != nil {
 			respond(
 				ExecuteResponse{ExecutionID: execID, Error: err.Error()},
@@ -171,7 +171,13 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) http.Ha
 
 		log.Printf("[%s] vsock connected, %.0fms remaining", execID, float64(time.Until(deadline).Milliseconds()))
 
-		result, err := executor.SendPayload(conn, models.Payload{Lang: req.Lang, Code: req.Code}, deadline)
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs}
+		if vm.Network != nil {
+			payload.GuestIP = vm.Network.GuestIP
+			payload.GatewayIP = vm.Network.GatewayIP
+		}
+
+		result, err := executor.SendPayload(conn, payload, deadline)
 		if err != nil {
 			outcome, status := "error", "sandbox_error"
 			if ctx.Err() == context.DeadlineExceeded {
@@ -261,7 +267,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) h
 		deadline, _ := ctx.Deadline()
 		log.Printf("[%s] stream lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
 
-		vm, err := executor.NewVM(execID)
+		vm, err := executor.NewVM(execID, pol)
 		if err != nil {
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
@@ -296,7 +302,12 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy) h
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
-		if err := json.NewEncoder(conn).Encode(models.Payload{Lang: req.Lang, Code: req.Code}); err != nil {
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs}
+		if vm.Network != nil {
+			payload.GuestIP = vm.Network.GuestIP
+			payload.GatewayIP = vm.Network.GatewayIP
+		}
+		if err := json.NewEncoder(conn).Encode(payload); err != nil {
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}

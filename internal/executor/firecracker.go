@@ -13,6 +13,8 @@ import (
 	"os/user"
 	"syscall"
 	"time"
+
+	"aegis/internal/policy"
 )
 
 type VMInstance struct {
@@ -22,13 +24,11 @@ type VMInstance struct {
 	VsockPath      string
 	ScratchPath    string
 	GuestCID       uint32
+	Network        *NetworkConfig
 }
 
 const scratchDir = "/tmp/aegis"
 
-// resolveHomeDir returns the home directory of the invoking user.
-// When running under sudo, os.UserHomeDir() returns /root. This checks
-// SUDO_USER first so asset paths resolve to the original user's home.
 func resolveHomeDir() (string, error) {
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
 		u, err := user.Lookup(sudoUser)
@@ -39,7 +39,7 @@ func resolveHomeDir() (string, error) {
 	return os.UserHomeDir()
 }
 
-func NewVM(uuid string) (*VMInstance, error) {
+func NewVM(uuid string, pol *policy.Policy) (*VMInstance, error) {
 	homeDir, err := resolveHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("get home dir: %w", err)
@@ -55,6 +55,14 @@ func NewVM(uuid string) (*VMInstance, error) {
 		return nil, fmt.Errorf("create scratch disk: %w", err)
 	}
 
+	var networkCfg *NetworkConfig
+	if pol != nil {
+		networkCfg, err = SetupNetwork(uuid, pol.Network)
+		if err != nil {
+			return nil, fmt.Errorf("setup network: %w", err)
+		}
+	}
+
 	socketPath := fmt.Sprintf("%s/fc-%s.sock", scratchDir, uuid)
 	vsockPath := fmt.Sprintf("%s/vsock-%s.sock", scratchDir, uuid)
 	kernelPath := fmt.Sprintf("%s/aegis/assets/vmlinux", homeDir)
@@ -63,6 +71,9 @@ func NewVM(uuid string) (*VMInstance, error) {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
+		if networkCfg != nil {
+			_ = teardownNetwork(networkCfg)
+		}
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
 	pid := cmd.Process.Pid
@@ -73,11 +84,10 @@ func NewVM(uuid string) (*VMInstance, error) {
 		SocketPath:     socketPath,
 		VsockPath:      vsockPath,
 		ScratchPath:    scratchPath,
+		Network:        networkCfg,
 	}
 
 	client := unixClient(socketPath)
-
-	// Wait for socket to appear
 	for i := 0; i < 20; i++ {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -88,23 +98,25 @@ func NewVM(uuid string) (*VMInstance, error) {
 		}
 	}
 
-	// PUT /machine-config
+	memSize := 128
+	if pol != nil && pol.Resources.MemoryMaxMB > 0 {
+		memSize = pol.Resources.MemoryMaxMB
+	}
 	if err := fcPUT(client, "http://localhost/machine-config", map[string]any{
 		"vcpu_count":   1,
-		"mem_size_mib": 128,
+		"mem_size_mib": memSize,
 	}); err != nil {
 		return nil, fmt.Errorf("machine-config: %w", err)
 	}
 
-	// PUT /boot-source
+	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off"
 	if err := fcPUT(client, "http://localhost/boot-source", map[string]any{
 		"kernel_image_path": kernelPath,
-		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off",
+		"boot_args":         bootArgs,
 	}); err != nil {
 		return nil, fmt.Errorf("boot-source: %w", err)
 	}
 
-	// PUT /drives/rootfs
 	if err := fcPUT(client, "http://localhost/drives/rootfs", map[string]any{
 		"drive_id":       "rootfs",
 		"path_on_host":   baseImage,
@@ -114,7 +126,6 @@ func NewVM(uuid string) (*VMInstance, error) {
 		return nil, fmt.Errorf("drives/rootfs: %w", err)
 	}
 
-	// PUT /drives/scratch
 	if err := fcPUT(client, "http://localhost/drives/scratch", map[string]any{
 		"drive_id":       "scratch",
 		"path_on_host":   scratchPath,
@@ -124,7 +135,16 @@ func NewVM(uuid string) (*VMInstance, error) {
 		return nil, fmt.Errorf("drives/scratch: %w", err)
 	}
 
-	// PUT /vsock - Firecracker has no GET /vsock endpoint; use the CID we configure.
+	if networkCfg != nil {
+		if err := fcPUT(client, "http://localhost/network-interfaces/eth0", map[string]any{
+			"iface_id":      "eth0",
+			"guest_mac":     networkCfg.GuestMAC,
+			"host_dev_name": networkCfg.TapName,
+		}); err != nil {
+			return nil, fmt.Errorf("network-interfaces/eth0: %w", err)
+		}
+	}
+
 	const guestCID uint32 = 3
 	if err := fcPUT(client, "http://localhost/vsock", map[string]any{
 		"guest_cid": guestCID,
@@ -133,12 +153,10 @@ func NewVM(uuid string) (*VMInstance, error) {
 		return nil, fmt.Errorf("vsock: %w", err)
 	}
 
-	// PUT /entropy - virtio-rng device feeds host entropy into guest pool.
 	if err := fcPUT(client, "http://localhost/entropy", map[string]any{}); err != nil {
 		log.Printf("[%s] warning: failed to attach entropy device: %v", uuid, err)
 	}
 
-	// PUT /actions - InstanceStart
 	if err := fcPUT(client, "http://localhost/actions", map[string]any{
 		"action_type": "InstanceStart",
 	}); err != nil {
@@ -146,7 +164,6 @@ func NewVM(uuid string) (*VMInstance, error) {
 	}
 
 	vm.GuestCID = guestCID
-
 	return vm, nil
 }
 

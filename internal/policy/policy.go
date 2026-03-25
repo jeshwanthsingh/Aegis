@@ -8,6 +8,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var NetworkPresets = map[string][]string{
+	"pypi": {
+		"pypi.org",
+		"files.pythonhosted.org",
+		"pypi.python.org",
+	},
+	"npm": {
+		"registry.npmjs.org",
+		"npmjs.com",
+	},
+	"huggingface": {
+		"huggingface.co",
+		"cdn-lfs.huggingface.co",
+	},
+	"docker": {
+		"registry-1.docker.io",
+		"auth.docker.io",
+		"production.cloudflare.docker.com",
+	},
+}
+
 type Policy struct {
 	AllowedLanguages []string       `yaml:"allowed_languages"`
 	MaxCodeBytes     int            `yaml:"max_code_bytes"`
@@ -19,8 +40,8 @@ type Policy struct {
 }
 
 type NetworkPolicy struct {
-	Mode         string   `yaml:"mode"`
-	AllowedHosts []string `yaml:"allowed_hosts"`
+	Mode    string   `yaml:"mode"`
+	Presets []string `yaml:"presets"`
 }
 
 type ResourcePolicy struct {
@@ -38,8 +59,8 @@ func Default() *Policy {
 		DefaultTimeoutMs: 5000,
 		MaxTimeoutMs:     10000,
 		Network: NetworkPolicy{
-			Mode:         "deny-all",
-			AllowedHosts: []string{},
+			Mode:    "none",
+			Presets: []string{},
 		},
 		Resources: ResourcePolicy{
 			MemoryMaxMB: 128,
@@ -74,6 +95,16 @@ func (p *Policy) Validate(lang string, codeLen int, timeoutMs int) error {
 	}
 	if timeoutMs > p.MaxTimeoutMs {
 		return fmt.Errorf("timeout_ms exceeds maximum of %d", p.MaxTimeoutMs)
+	}
+	switch p.Network.Mode {
+	case "", "none", "isolated", "allowlist":
+	default:
+		return fmt.Errorf("network.mode not allowed: %s", p.Network.Mode)
+	}
+	for _, preset := range p.Network.Presets {
+		if _, ok := NetworkPresets[preset]; !ok {
+			return fmt.Errorf("network preset not allowed: %s", preset)
+		}
 	}
 	return nil
 }

@@ -31,6 +31,10 @@ func main() {
 	}
 
 	reconcile(s)
+	if err := executor.CleanupLeakedNetworks(); err != nil {
+		log.Printf("reconcile leaked networks: %v", err)
+	}
+
 
 	pol, err := policy.Load(*policyPath)
 	if err != nil {
