@@ -30,17 +30,15 @@ jobs:
 
       - name: Install Firecracker
         run: |
-          ARCH="$(uname -m)"
-          release_url="https://github.com/firecracker-microvm/firecracker/releases/download/v1.7.0/firecracker-v1.7.0-${ARCH}.tgz"
-          curl -L "$release_url" | tar -xz
-          sudo mv "release-v1.7.0-${ARCH}/firecracker-v1.7.0-${ARCH}" /usr/local/bin/firecracker
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/firecracker -o /tmp/firecracker
+          sudo mv /tmp/firecracker /usr/local/bin/firecracker
           sudo chmod +x /usr/local/bin/firecracker
 
       - name: Download assets
         run: |
           mkdir -p assets
           curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4.gz | gunzip > assets/alpine-base.ext4
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4 -o assets/alpine-base.ext4
 
       - name: Build
         run: |
