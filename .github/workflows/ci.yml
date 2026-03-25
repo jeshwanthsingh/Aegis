@@ -9,6 +9,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aegis
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
 
     steps:
       - name: Checkout
@@ -22,11 +36,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl jq postgresql iptables iproute2 gzip
-          sudo systemctl start postgresql
-          sudo -u postgres psql -c "CREATE USER postgres WITH PASSWORD 'postgres' SUPERUSER;" || true
-          sudo -u postgres psql -c "CREATE DATABASE aegis OWNER postgres;" || true
-          sudo -u postgres psql -d aegis -f db/schema.sql
+          sudo apt-get install -y curl jq iptables iproute2 postgresql-client
+          psql postgres://postgres:postgres@localhost/aegis?sslmode=disable -f db/schema.sql
 
       - name: Install Firecracker
         run: |
@@ -62,12 +73,13 @@ jobs:
       - name: Run demo tests
         run: |
           bash scripts/run-demo.sh 2>/dev/null | tee /tmp/demo-output.txt
-          if grep -q "FAIL" /tmp/demo-output.txt; then
-            echo "Demo tests failed:"
-            cat /tmp/demo-output.txt
+          cat /tmp/demo-output.txt
+          PASS_COUNT=$(grep -c "PASS" /tmp/demo-output.txt || true)
+          if [ "$PASS_COUNT" -lt 4 ]; then
+            echo "Expected 4 PASS lines, got $PASS_COUNT"
             exit 1
           fi
-          echo "All demo tests passed"
+          echo "All demo tests passed ($PASS_COUNT/4)"
 
       - name: Test network isolation
         run: |
@@ -78,6 +90,10 @@ jobs:
             --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable' \
             --policy configs/default-policy.yaml &
           sleep 3
+
+          HEALTH=$(curl -s http://localhost:8080/health | jq -r '.status // "down"')
+          echo "Aegis health: $HEALTH"
+          [ "$HEALTH" = "ok" ] || (echo "Aegis failed to start" && exit 1)
 
           DNS_RESULT=$(curl -s -X POST http://localhost:8080/v1/execute \
             -H "Content-Type: application/json" \
