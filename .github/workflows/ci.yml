@@ -106,7 +106,7 @@ jobs:
           echo "TAP device: $TAP"
 
           if [ -z "$TAP" ]; then
-            echo "TAP device already torn down Ã¢â‚¬â€ checking iptables history"
+            echo "TAP device already torn down - checking iptables history"
             sudo iptables -L FORWARD -n --line-numbers | grep -i "drop\|accept" || true
           fi
 
