@@ -106,7 +106,7 @@ jobs:
           echo "TAP device: $TAP"
 
           if [ -z "$TAP" ]; then
-            echo "TAP device already torn down — checking iptables history"
+            echo "TAP device already torn down â€” checking iptables history"
             sudo iptables -L FORWARD -n --line-numbers | grep -i "drop\|accept" || true
           fi
 
@@ -120,8 +120,8 @@ jobs:
           sudo iptables -I FORWARD 1 -i tap-test -j DROP
           sudo iptables -I FORWARD 1 -i tap-test -p udp --dport 53 -j DROP
 
-          DNS_RULE=$(sudo iptables -L FORWARD -n | grep "tap-test" | grep "dpt:53" | grep "DROP")
-          FORWARD_RULE=$(sudo iptables -L FORWARD -n | grep "tap-test" | grep -v "dpt:53" | grep "DROP")
+          DNS_RULE=$(sudo iptables -L FORWARD -n | grep "tap-test" | grep "dpt:53" | grep "DROP" || true)
+          FORWARD_RULE=$(sudo iptables -L FORWARD -n | grep "tap-test" | grep -v "dpt:53" | grep "DROP" || true)
 
           echo "DNS FORWARD rule: $DNS_RULE"
           echo "FORWARD DROP catch-all: $FORWARD_RULE"
