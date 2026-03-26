@@ -113,27 +113,24 @@ jobs:
           echo "=== iptables FORWARD rules ==="
           sudo iptables -L FORWARD -n -v
 
-          echo "=== iptables NAT PREROUTING rules ==="
-          sudo iptables -t nat -L PREROUTING -n -v
-
           sudo ip tuntap add dev tap-test mode tap 2>/dev/null || true
           sudo ip addr add 172.99.99.1/30 dev tap-test 2>/dev/null || true
           sudo ip link set tap-test up 2>/dev/null || true
 
           sudo iptables -I FORWARD 1 -i tap-test -j DROP
-          sudo iptables -t nat -A PREROUTING -i tap-test -p udp --dport 53 -j DROP
+          sudo iptables -I FORWARD 1 -i tap-test -p udp --dport 53 -j DROP
 
-          DNS_RULE=$(sudo iptables -t nat -L PREROUTING -n | grep "tap-test" | grep "dpt:53" | grep "DROP")
-          FORWARD_RULE=$(sudo iptables -L FORWARD -n | grep "tap-test" | grep "DROP")
+          DNS_RULE=$(sudo iptables -L FORWARD -n | grep "tap-test" | grep "dpt:53" | grep "DROP")
+          FORWARD_RULE=$(sudo iptables -L FORWARD -n | grep "tap-test" | grep -v "dpt:53" | grep "DROP")
 
-          echo "DNS PREROUTING rule: $DNS_RULE"
-          echo "FORWARD DROP rule: $FORWARD_RULE"
+          echo "DNS FORWARD rule: $DNS_RULE"
+          echo "FORWARD DROP catch-all: $FORWARD_RULE"
 
-          [ -n "$DNS_RULE" ] || (echo "DNS PREROUTING rule not found" && exit 1)
-          [ -n "$FORWARD_RULE" ] || (echo "FORWARD DROP rule not found" && exit 1)
+          [ -n "$DNS_RULE" ] || (echo "DNS FORWARD rule not found" && exit 1)
+          [ -n "$FORWARD_RULE" ] || (echo "FORWARD DROP catch-all rule not found" && exit 1)
 
+          sudo iptables -D FORWARD -i tap-test -p udp --dport 53 -j DROP 2>/dev/null || true
           sudo iptables -D FORWARD -i tap-test -j DROP 2>/dev/null || true
-          sudo iptables -t nat -D PREROUTING -i tap-test -p udp --dport 53 -j DROP 2>/dev/null || true
           sudo ip link del tap-test 2>/dev/null || true
 
           echo "Network isolation rules verified"
