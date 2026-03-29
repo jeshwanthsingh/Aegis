@@ -18,7 +18,7 @@ OpenClaw can write and run code on demand, which means a bad prompt, bad tool ca
 ```text
 OpenClaw
    |
-   | POST /v1/execute { lang, code, timeout_ms }
+   | POST /v1/execute { lang, code, timeout_ms, profile?, workspace_id? }
    v
 Aegis control plane (Go HTTP API)
    |
@@ -117,6 +117,10 @@ Supported `lang` values:
 - `bash`
 - `node`
 
+Optional request fields:
+- `profile`: select a compute profile such as `nano`, `standard`, or `crunch`
+- `workspace_id`: attach a persistent ext4-backed workspace mounted at `/workspace`
+
 Response body:
 
 ```json
@@ -130,6 +134,19 @@ Response body:
 ```
 
 Timeout and sandbox failures return an `error` field instead of normal process output.
+
+### `DELETE /v1/workspaces/{id}`
+
+Deletes a persistent workspace image from the host.
+
+Response body:
+
+```json
+{
+  "status": "deleted",
+  "workspace_id": "agent-alpha-123"
+}
+```
 
 ### `GET /health`
 
@@ -219,5 +236,7 @@ See `docs/openclaw-integration.md` for full setup and troubleshooting.
 - v1 — shipped: Python + bash execution, worker pool, API key auth, audit log, cgroup v2 limits
 - v1.5 — shipped: two-drive overlayfs fast boot, PID 1 zombie reaping
 - v2 — shipped: YAML policy engine, streaming I/O (SSE), aegis-cli
-- v2.1 — planned: vsock HTTP proxy (pip install support)
-- v3 — planned: GitHub IAM proxy for credential isolation
+- v2.1 — shipped: compute profiles
+- v2.2 — shipped: persistent workspaces (`workspace_id`, `/workspace`, delete API)
+- v3 — planned: vsock HTTP proxy (pip install support)
+- v4 — planned: GitHub IAM proxy for credential isolation

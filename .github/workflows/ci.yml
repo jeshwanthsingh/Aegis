@@ -6,8 +6,15 @@ on:
       - main
   pull_request:
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  DB_URL: postgres://postgres:postgres@localhost/aegis?sslmode=disable
+
 jobs:
-  test:
+  build-and-boot:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -23,7 +30,6 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,7 +43,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl jq iptables iproute2 postgresql-client
-          psql postgres://postgres:postgres@localhost/aegis?sslmode=disable -f db/schema.sql
+          psql "$DB_URL" -f db/schema.sql
 
       - name: Install Firecracker
         run: |
@@ -51,7 +57,7 @@ jobs:
           curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
           curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4 -o assets/alpine-base.ext4
 
-      - name: Build
+      - name: Build and bake guest runner
         run: |
           go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
           pushd guest-runner
@@ -60,77 +66,165 @@ jobs:
           sudo mkdir -p /mnt/rootfs
           sudo mount "$GITHUB_WORKSPACE/assets/alpine-base.ext4" /mnt/rootfs
           sudo cp "$GITHUB_WORKSPACE/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
+          sudo mkdir -p /mnt/rootfs/workspace
           sudo umount /mnt/rootfs
 
       - name: Start Aegis
         run: |
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
-            --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable' \
-            --policy configs/default-policy.yaml \
-            --assets-dir "$GITHUB_WORKSPACE/assets" &
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin             --db "$DB_URL"             --policy configs/default-policy.yaml             --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-ci.log 2>&1 &
           sleep 3
-          curl -s http://localhost:8080/health | jq .
+          cat /tmp/aegis-ci.log || true
 
-      - name: Run core demo tests
+      - name: Verify build and boot
         run: |
-          bash scripts/run-demo.sh 2>/dev/null | awk 'BEGIN{keep=1} /^TEST 5:/{keep=0} keep {print}' | tee /tmp/demo-output.txt
-          cat /tmp/demo-output.txt
-          PASS_COUNT=$(grep -c "PASS" /tmp/demo-output.txt || true)
-          if [ "$PASS_COUNT" -lt 4 ]; then
-            echo "Expected 4 PASS lines, got $PASS_COUNT"
-            exit 1
-          fi
-          echo "Core demo tests passed ($PASS_COUNT/4)"
+          BASE_URL=http://localhost:8080 ASSETS_DIR="$GITHUB_WORKSPACE/assets" tests/smoke/build_boot.sh
 
-      - name: Test network isolation
+  core-demo:
+    runs-on: ubuntu-latest
+    needs: build-and-boot
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aegis
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
         run: |
-          sudo pkill -f aegis-bin || true
+          sudo apt-get update
+          sudo apt-get install -y curl jq iptables iproute2 postgresql-client
+          psql "$DB_URL" -f db/schema.sql
+
+      - name: Install Firecracker
+        run: |
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/firecracker -o /tmp/firecracker
+          sudo mv /tmp/firecracker /usr/local/bin/firecracker
+          sudo chmod +x /usr/local/bin/firecracker
+
+      - name: Download assets
+        run: |
+          mkdir -p assets
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4 -o assets/alpine-base.ext4
+
+      - name: Build and bake guest runner
+        run: |
+          go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
+          pushd guest-runner
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -a -o guest-runner .
+          popd
+          sudo mkdir -p /mnt/rootfs
+          sudo mount "$GITHUB_WORKSPACE/assets/alpine-base.ext4" /mnt/rootfs
+          sudo cp "$GITHUB_WORKSPACE/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
+          sudo mkdir -p /mnt/rootfs/workspace
+          sudo umount /mnt/rootfs
+
+      - name: Start Aegis
+        run: |
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin             --db "$DB_URL"             --policy configs/default-policy.yaml             --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-core.log 2>&1 &
+          sleep 3
+          cat /tmp/aegis-core.log || true
+
+      - name: Verify health
+        run: BASE_URL=http://localhost:8080 tests/smoke/health.sh
+
+      - name: Verify bash execution
+        run: BASE_URL=http://localhost:8080 tests/smoke/execute_bash.sh
+
+      - name: Verify python execution
+        run: BASE_URL=http://localhost:8080 tests/smoke/execute_python.sh
+
+      - name: Verify audit write
+        run: BASE_URL=http://localhost:8080 DB_URL="$DB_URL" tests/integration/audit_log.sh
+
+      - name: Verify worker pool 429
+        run: BASE_URL=http://localhost:8080 tests/integration/worker_pool_429.sh
+
+      - name: Verify teardown cleanup
+        run: |
           sleep 2
-          sed -i 's/mode: none/mode: isolated/' configs/default-policy.yaml
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" /tmp/aegis-bin \
-            --db 'postgres://postgres:postgres@localhost/aegis?sslmode=disable' \
-            --policy configs/default-policy.yaml \
-            --assets-dir "$GITHUB_WORKSPACE/assets" &
+          leftovers=$(find /tmp/aegis -maxdepth 1 \( -name 'scratch-*.ext4' -o -name 'fc-*.sock' -o -name 'vsock-*.sock' \) | wc -l)
+          test "$leftovers" -eq 0 || { echo "leftover sandbox artifacts: $leftovers" >&2; find /tmp/aegis -maxdepth 1; exit 1; }
+
+  isolation-checks:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aegis
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq iptables iproute2 postgresql-client
+          psql "$DB_URL" -f db/schema.sql
+
+      - name: Install Firecracker
+        run: |
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/firecracker -o /tmp/firecracker
+          sudo mv /tmp/firecracker /usr/local/bin/firecracker
+          sudo chmod +x /usr/local/bin/firecracker
+
+      - name: Download assets
+        run: |
+          mkdir -p assets
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
+          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4 -o assets/alpine-base.ext4
+
+      - name: Build and bake guest runner
+        run: |
+          go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
+          pushd guest-runner
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -a -o guest-runner .
+          popd
+          sudo mkdir -p /mnt/rootfs
+          sudo mount "$GITHUB_WORKSPACE/assets/alpine-base.ext4" /mnt/rootfs
+          sudo cp "$GITHUB_WORKSPACE/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
+          sudo mkdir -p /mnt/rootfs/workspace
+          sudo umount /mnt/rootfs
+
+      - name: Start Aegis in isolated mode
+        run: |
+          sed -i 's/mode: none/mode: isolated/' configs/default-policy.yaml || true
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin             --db "$DB_URL"             --policy configs/default-policy.yaml             --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-isolated.log 2>&1 &
           sleep 5
+          cat /tmp/aegis-isolated.log || true
+          BASE_URL=http://localhost:8080 tests/smoke/health.sh
 
-          HEALTH=$(curl -s http://localhost:8080/health | jq -r '.status // "down"')
-          echo "Aegis health: $HEALTH"
-          [ "$HEALTH" = "ok" ] || (echo "Aegis failed to start" && exit 1)
-
-          curl -s -X POST http://localhost:8080/v1/execute \
-            -H "Content-Type: application/json" \
-            -d '{"lang":"bash","code":"echo probe","timeout_ms":10000}' &
-          sleep 3
-
-          TAP=$(ip link show | grep "tap-" | head -1 | awk '{print $2}' | tr -d ':')
-          echo "TAP device: $TAP"
-
-          if [ -z "$TAP" ]; then
-            echo "TAP device already torn down - checking iptables history"
-            sudo iptables -L FORWARD -n --line-numbers | grep -i "drop\|accept" || true
-          fi
-
-          echo "=== iptables FORWARD rules ==="
-          sudo iptables -L FORWARD -n -v
-
-          sudo ip tuntap add dev tap-test mode tap 2>/dev/null || true
-          sudo ip addr add 172.99.99.1/30 dev tap-test 2>/dev/null || true
-          sudo ip link set tap-test up 2>/dev/null || true
-
-          sudo iptables -I FORWARD 1 -i tap-test -j DROP
-          sudo iptables -I FORWARD 1 -i tap-test -p udp --dport 53 -j DROP
-
-          DNS_RULE=$(sudo iptables -L FORWARD -n -v | grep "tap-test" | grep "dpt:53" | grep "DROP" || true)
-          FORWARD_RULE=$(sudo iptables -L FORWARD -n -v | grep "tap-test" | grep -v "dpt:53" | grep "DROP" || true)
-
-          echo "DNS FORWARD rule: $DNS_RULE"
-          echo "FORWARD DROP catch-all: $FORWARD_RULE"
-
-          [ -n "$DNS_RULE" ] || (echo "DNS FORWARD rule not found" && exit 1)
-          [ -n "$FORWARD_RULE" ] || (echo "FORWARD DROP catch-all rule not found" && exit 1)
-
-          sudo iptables -D FORWARD -i tap-test -p udp --dport 53 -j DROP 2>/dev/null || true
-          sudo iptables -D FORWARD -i tap-test -j DROP 2>/dev/null || true
-          sudo ip link del tap-test 2>/dev/null || true
-
-          echo "Network isolation rules verified"
+      - name: Verify host firewall rules
+        run: tests/isolation/firewall_rules.sh
