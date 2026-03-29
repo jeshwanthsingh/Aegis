@@ -30,13 +30,20 @@ var NetworkPresets = map[string][]string{
 }
 
 type Policy struct {
-	AllowedLanguages []string       `yaml:"allowed_languages"`
-	MaxCodeBytes     int            `yaml:"max_code_bytes"`
-	MaxOutputBytes   int            `yaml:"max_output_bytes"`
-	DefaultTimeoutMs int            `yaml:"default_timeout_ms"`
-	MaxTimeoutMs     int            `yaml:"max_timeout_ms"`
-	Network          NetworkPolicy  `yaml:"network"`
-	Resources        ResourcePolicy `yaml:"resources"`
+	AllowedLanguages []string                  `yaml:"allowed_languages"`
+	MaxCodeBytes     int                       `yaml:"max_code_bytes"`
+	MaxOutputBytes   int                       `yaml:"max_output_bytes"`
+	DefaultTimeoutMs int                       `yaml:"default_timeout_ms"`
+	MaxTimeoutMs     int                       `yaml:"max_timeout_ms"`
+	Profiles         map[string]ComputeProfile `yaml:"profiles"`
+	DefaultProfile   string                    `yaml:"default_profile"`
+	Network          NetworkPolicy             `yaml:"network"`
+	Resources        ResourcePolicy            `yaml:"resources"`
+}
+
+type ComputeProfile struct {
+	VCPUCount int `yaml:"vcpu_count"`
+	MemoryMB  int `yaml:"memory_mb"`
 }
 
 type NetworkPolicy struct {
@@ -58,6 +65,21 @@ func Default() *Policy {
 		MaxOutputBytes:   65536,
 		DefaultTimeoutMs: 5000,
 		MaxTimeoutMs:     10000,
+		Profiles: map[string]ComputeProfile{
+			"nano": {
+				VCPUCount: 1,
+				MemoryMB:  128,
+			},
+			"standard": {
+				VCPUCount: 2,
+				MemoryMB:  512,
+			},
+			"crunch": {
+				VCPUCount: 4,
+				MemoryMB:  2048,
+			},
+		},
+		DefaultProfile: "nano",
 		Network: NetworkPolicy{
 			Mode:    "none",
 			Presets: []string{},

@@ -25,6 +25,9 @@ func main() {
 	if err := os.MkdirAll("/tmp/aegis", 0o755); err != nil {
 		log.Fatalf("create /tmp/aegis: %v", err)
 	}
+	if err := executor.InitWorkspacesDir(); err != nil {
+		log.Fatalf("create workspaces dir: %v", err)
+	}
 
 	s, err := store.Connect(*dbConn)
 	if err != nil {
@@ -35,7 +38,6 @@ func main() {
 	if err := executor.CleanupLeakedNetworks(); err != nil {
 		log.Printf("reconcile leaked networks: %v", err)
 	}
-
 
 	pol, err := policy.Load(*policyPath)
 	if err != nil {
@@ -50,6 +52,7 @@ func main() {
 
 	pool := executor.NewPool(5)
 	http.HandleFunc("GET /health", api.HandleHealth(pool))
+	http.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
 	http.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol, *assetsDir)))
 	http.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol, *assetsDir)))
 

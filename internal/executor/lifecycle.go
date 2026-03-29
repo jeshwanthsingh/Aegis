@@ -71,17 +71,9 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy) error {
 
 func CreateScratchDisk(uuid string) (string, error) {
 	path := fmt.Sprintf("/tmp/aegis/scratch-%s.ext4", uuid)
-
-	cmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", path), "bs=1M", "count=50")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("dd: %w: %s", err, string(output))
+	if err := createExt4Disk(path, 50); err != nil {
+		return "", err
 	}
-
-	cmd = exec.Command("/usr/sbin/mkfs.ext4", "-F", path)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("mkfs.ext4: %w: %s", err, string(output))
-	}
-
 	return path, nil
 }
 
@@ -175,7 +167,9 @@ func Teardown(vm *VMInstance) error {
 		}
 	}
 
-	if err := os.Remove(vm.ScratchPath); err != nil && !os.IsNotExist(err) {
+	if vm.IsPersistent {
+		log.Printf("teardown [%s]: preserved workspace image %s", vm.UUID, vm.ScratchPath)
+	} else if err := os.Remove(vm.ScratchPath); err != nil && !os.IsNotExist(err) {
 		log.Printf("teardown [%s]: remove scratch: %v", vm.UUID, err)
 		errs = append(errs, err)
 	} else {

@@ -25,6 +25,7 @@ type VMInstance struct {
 	VsockPath      string
 	ScratchPath    string
 	GuestCID       uint32
+	IsPersistent   bool
 	Network        *NetworkConfig
 }
 
@@ -40,7 +41,7 @@ func resolveHomeDir() (string, error) {
 	return os.UserHomeDir()
 }
 
-func NewVM(uuid string, pol *policy.Policy, assetsDir string) (*VMInstance, error) {
+func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.ComputeProfile, assetsDir string) (*VMInstance, error) {
 	var baseDir string
 	if assetsDir != "" {
 		baseDir = assetsDir
@@ -57,9 +58,20 @@ func NewVM(uuid string, pol *policy.Policy, assetsDir string) (*VMInstance, erro
 	}
 
 	baseImage := filepath.Join(baseDir, "alpine-base.ext4")
-	scratchPath, err := CreateScratchDisk(uuid)
-	if err != nil {
-		return nil, fmt.Errorf("create scratch disk: %w", err)
+	isPersistent := false
+	var scratchPath string
+	var err error
+	if workspaceID != "" {
+		scratchPath, err = GetOrCreateWorkspace(workspaceID, 256)
+		if err != nil {
+			return nil, fmt.Errorf("get workspace disk: %w", err)
+		}
+		isPersistent = true
+	} else {
+		scratchPath, err = CreateScratchDisk(uuid)
+		if err != nil {
+			return nil, fmt.Errorf("create scratch disk: %w", err)
+		}
 	}
 
 	var networkCfg *NetworkConfig
@@ -91,6 +103,7 @@ func NewVM(uuid string, pol *policy.Policy, assetsDir string) (*VMInstance, erro
 		SocketPath:     socketPath,
 		VsockPath:      vsockPath,
 		ScratchPath:    scratchPath,
+		IsPersistent:   isPersistent,
 		Network:        networkCfg,
 	}
 
@@ -105,13 +118,9 @@ func NewVM(uuid string, pol *policy.Policy, assetsDir string) (*VMInstance, erro
 		}
 	}
 
-	memSize := 128
-	if pol != nil && pol.Resources.MemoryMaxMB > 0 {
-		memSize = pol.Resources.MemoryMaxMB
-	}
 	if err := fcPUT(client, "http://localhost/machine-config", map[string]any{
-		"vcpu_count":   1,
-		"mem_size_mib": memSize,
+		"vcpu_count":   profile.VCPUCount,
+		"mem_size_mib": profile.MemoryMB,
 	}); err != nil {
 		return nil, fmt.Errorf("machine-config: %w", err)
 	}
