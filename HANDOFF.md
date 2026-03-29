@@ -1,7 +1,7 @@
 # HANDOFF.md
 
 ## Status
-Baseline Aegis works. Compute profiles and persistent workspaces are implemented, the full GitHub Actions workflow is green, and allowlist DNS interception now passes repeated end-to-end smoke tests.
+Baseline Aegis works. Compute profiles and persistent workspaces are implemented, allowlist DNS interception is stable, Phase 2 validation passes locally, and Phase 3 observability endpoints/logging are now live.
 
 ## What works
 - Python execution: yes, full VM boot -> vsock -> result
@@ -16,12 +16,17 @@ Baseline Aegis works. Compute profiles and persistent workspaces are implemented
 - Persistent workspaces: implemented end-to-end
 - GitHub Actions build/boot, core-demo, and isolation validation: green
 - Allowlist DNS smoke test: stable and passing repeatedly
+- Integration smoke validation: implemented and passing locally
+- Abuse validation: implemented and passing locally
+- `/ready`: implemented and returning readiness from DB ping + worker-slot availability
+- `/metrics`: implemented and exporting Prometheus-style counters, histograms, and worker-slot gauge
+- Structured JSON logs: implemented for orchestrator and executor hot paths
 
 ## Current blocker
-No core CI blocker remains. The main follow-ups are:
+No core execution blocker remains. The main follow-ups are:
 - re-test the `crunch` profile with a larger timeout on WSL2 and Linux CI
 - investigate the nonzero exit on a successful persistent workspace read
-- add a single `tests/integration/smoke.sh` script for the whole system
+- verify the new Phase 2 validation scripts on GitHub Actions and trim temporary DNS packet logging now that `/metrics` and structured logs are available
 
 ## Allowlist DNS summary
 The DNS path is now stable for the smoke-test flow.
@@ -49,23 +54,31 @@ What was verified:
 2. Workspace durability cleanup
    Goal: explain and remove the nonzero exit on a successful persistent read
 
-3. Integration smoke coverage
-   Goal: add `tests/integration/smoke.sh` so the core system can be proven in one script
+3. Observability cleanup
+   Goal: keep `/ready`, `/metrics`, and structured JSON logs stable while removing temporary DNS packet logging once no longer needed
+
+4. Validation hardening
+   Goal: confirm `tests/integration/smoke.sh` and `tests/integration/abuse.sh` stay green in GitHub Actions
 
 ## Key files
 - `cmd/orchestrator/main.go`
 - `internal/api/handler.go`
+- `internal/api/observability.go`
 - `internal/policy/policy.go`
 - `internal/executor/firecracker.go`
 - `internal/executor/workspace.go`
 - `internal/executor/lifecycle.go`
+- `internal/observability/logging.go`
+- `internal/observability/metrics.go`
 - `internal/executor/vsock.go`
 - `guest-runner/main.go`
 - `configs/default-policy.yaml`
 - `tests/integration/allowlist_dns.sh`
+- `tests/integration/smoke.sh`
+- `tests/integration/abuse.sh`
 - `.github/workflows/ci.yml`
 
 ## Recommended stance for next session
 - Treat the allowlist DNS blocker as resolved for the current smoke-test path
 - Keep host-side enforcement as the authority for isolation
-- Focus next on `crunch` validation, workspace cleanup, and a top-level integration smoke script
+- Focus next on `crunch` validation, workspace cleanup, and CI confirmation for the new smoke/abuse scripts

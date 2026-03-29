@@ -2,8 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +10,7 @@ import (
 
 	"aegis/internal/api"
 	"aegis/internal/executor"
+	"aegis/internal/observability"
 	"aegis/internal/policy"
 	"aegis/internal/store"
 )
@@ -23,42 +22,47 @@ func main() {
 	flag.Parse()
 
 	if err := os.MkdirAll("/tmp/aegis", 0o755); err != nil {
-		log.Fatalf("create /tmp/aegis: %v", err)
+		observability.Fatal("startup_failed", observability.Fields{"step": "create_tmp_dir", "error": err.Error()})
 	}
 	if err := executor.InitWorkspacesDir(); err != nil {
-		log.Fatalf("create workspaces dir: %v", err)
+		observability.Fatal("startup_failed", observability.Fields{"step": "init_workspaces_dir", "error": err.Error()})
 	}
 
 	s, err := store.Connect(*dbConn)
 	if err != nil {
-		log.Fatalf("connect to postgres: %v", err)
+		observability.Fatal("startup_failed", observability.Fields{"step": "connect_postgres", "error": err.Error()})
 	}
 
 	reconcile(s)
 	if err := executor.CleanupLeakedNetworks(); err != nil {
-		log.Printf("reconcile leaked networks: %v", err)
+		observability.Warn("reconcile_leaked_networks_failed", observability.Fields{"error": err.Error()})
 	}
 
 	pol, err := policy.Load(*policyPath)
 	if err != nil {
-		log.Fatalf("load policy: %v", err)
+		observability.Fatal("startup_failed", observability.Fields{"step": "load_policy", "error": err.Error(), "policy_path": *policyPath})
 	}
-	log.Printf("policy loaded: %s", *policyPath)
+	observability.Info("policy_loaded", observability.Fields{"policy_path": *policyPath})
 
 	apiKey := os.Getenv("AEGIS_API_KEY")
 	if apiKey == "" {
-		log.Println("WARNING: AEGIS_API_KEY not set, running in unauthenticated dev mode")
+		observability.Warn("auth_disabled", observability.Fields{"message": "AEGIS_API_KEY not set, running in unauthenticated dev mode"})
 	}
 
 	pool := executor.NewPool(5)
-	http.HandleFunc("GET /health", api.HandleHealth(pool))
-	http.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
-	http.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol, *assetsDir)))
-	http.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol, *assetsDir)))
+	observability.SetWorkerSlotsFunc(pool.Available)
 
-	fmt.Println("Aegis orchestrator listening on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatalf("listen: %v", err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", api.HandleHealth(pool))
+	mux.HandleFunc("GET /ready", api.HandleReady(s, pool))
+	mux.HandleFunc("GET /metrics", observability.HandleMetrics())
+	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
+	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol, *assetsDir)))
+	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol, *assetsDir)))
+
+	observability.Info("server_listen", observability.Fields{"addr": ":8080"})
+	if err := http.ListenAndServe(":8080", mux); err != nil {
+		observability.Fatal("server_stopped", observability.Fields{"error": err.Error()})
 	}
 }
 
@@ -68,23 +72,23 @@ func reconcile(s *store.Store) {
 	if err != nil || len(matches) == 0 {
 		return
 	}
-	log.Printf("reconcile: found %d orphaned scratch image(s)", len(matches))
+	observability.Info("reconcile_orphaned_scratch_found", observability.Fields{"count": len(matches)})
 
 	for _, scratchPath := range matches {
 		base := filepath.Base(scratchPath)
 		uuid := strings.TrimSuffix(strings.TrimPrefix(base, "scratch-"), ".ext4")
 
-		socketPath := fmt.Sprintf("/tmp/aegis/fc-%s.sock", uuid)
-		vsockPath := fmt.Sprintf("/tmp/aegis/vsock-%s.sock", uuid)
-		cgPath := fmt.Sprintf("/sys/fs/cgroup/aegis/%s", uuid)
+		socketPath := "/tmp/aegis/fc-" + uuid + ".sock"
+		vsockPath := "/tmp/aegis/vsock-" + uuid + ".sock"
+		cgPath := "/sys/fs/cgroup/aegis/" + uuid
 
 		procsPath := cgPath + "/cgroup.procs"
 		if data, err := os.ReadFile(procsPath); err == nil {
 			for _, pidStr := range strings.Fields(string(data)) {
 				if pid, err := strconv.Atoi(pidStr); err == nil {
 					if proc, err := os.FindProcess(pid); err == nil {
-						proc.Kill()
-						log.Printf("reconcile [%s]: killed orphaned pid %d", uuid, pid)
+						_ = proc.Kill()
+						observability.Warn("reconcile_orphaned_pid_killed", observability.Fields{"execution_id": uuid, "pid": pid})
 					}
 				}
 			}
@@ -92,13 +96,13 @@ func reconcile(s *store.Store) {
 
 		for _, f := range []string{scratchPath, socketPath, vsockPath} {
 			if err := os.Remove(f); err == nil {
-				log.Printf("reconcile [%s]: removed %s", uuid, filepath.Base(f))
+				observability.Info("reconcile_orphaned_file_removed", observability.Fields{"execution_id": uuid, "file": filepath.Base(f)})
 			}
 		}
-		os.Remove(cgPath)
+		_ = os.Remove(cgPath)
 
 		if err := s.MarkSandboxError(uuid); err != nil {
-			log.Printf("reconcile [%s]: mark sandbox_error: %v", uuid, err)
+			observability.Warn("reconcile_mark_sandbox_error_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
 		}
 	}
 }

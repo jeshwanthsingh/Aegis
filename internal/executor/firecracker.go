@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"aegis/internal/observability"
 	"aegis/internal/policy"
 )
 
@@ -170,7 +170,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	}
 
 	if err := fcPUT(client, "http://localhost/entropy", map[string]any{}); err != nil {
-		log.Printf("[%s] warning: failed to attach entropy device: %v", uuid, err)
+		observability.Warn("entropy_device_attach_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
 	}
 
 	if err := fcPUT(client, "http://localhost/actions", map[string]any{

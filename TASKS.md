@@ -24,10 +24,19 @@
   - [x] Host-side per-VM DNS interceptor resolves allowlisted hosts and denies non-allowlisted hosts
   - [x] DNS interceptor now handles packets synchronously for the single-VM path
   - [x] `tests/integration/allowlist_dns.sh` passes repeatedly with `timeout_ms: 25000`
+- [x] Phase 2 validation coverage
+  - [x] `tests/integration/smoke.sh` covers health, execute, timeout, concurrency/429, teardown, allowlist resolve, and allowlist deny
+  - [x] `tests/integration/abuse.sh` covers fork bomb, infinite loop, memory bomb, huge stdout truncation, process explosion, and post-abuse health
+  - [x] `.github/workflows/ci.yml` runs both validation scripts on the GitHub Actions Linux runner
+- [x] Phase 3 observability
+  - [x] `/ready` returns readiness based on DB connectivity and worker-slot availability
+  - [x] `/metrics` exports Prometheus-style execution, boot, teardown, and worker-slot metrics
+  - [x] orchestrator and executor hot paths now emit structured JSON logs
 
 ## In Progress
 - [ ] Crunch profile validation follow-up
 - [ ] Workspace durability cleanup
+- [ ] Observability cleanup
 
 ## Up Next
 
@@ -40,8 +49,12 @@
 - [ ] Investigate why the second successful workspace read still reports `exit_code: 1`
 - [ ] Decide whether this is guest-runner cleanup noise or a shell-level nonzero exit worth surfacing differently
 
-### 3. Integration smoke coverage
-- [ ] Add `tests/integration/smoke.sh` to prove the core end-to-end system works in one pass
+### 3. Observability cleanup
+- [ ] Remove temporary DNS packet hex logging from the interceptor now that Phase 3 metrics/logging are in place
+- [ ] Consider adding execution-status metrics for stream handler early-error paths if parity with `/v1/execute` becomes important
+
+### 4. Validation maintenance
+- [ ] Keep `tests/integration/smoke.sh` and `tests/integration/abuse.sh` aligned with runtime behavior as executor limits evolve
 
 ## Deferred
 - Node.js on WSL2 remains sensitive to guest entropy/runtime behavior

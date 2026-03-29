@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/crc32"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"aegis/internal/observability"
 	"aegis/internal/policy"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -151,42 +151,42 @@ func Teardown(vm *VMInstance) error {
 	var errs []error
 
 	if err := vm.Kill(); err != nil {
-		log.Printf("teardown [%s]: kill: %v", vm.UUID, err)
+		observability.Error("teardown_kill_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
 		errs = append(errs, err)
 	} else {
-		log.Printf("teardown [%s]: killed firecracker pid %d", vm.UUID, vm.FirecrackerPID)
+		observability.Info("teardown_firecracker_killed", observability.Fields{"execution_id": vm.UUID, "pid": vm.FirecrackerPID})
 	}
 
 	if vm.Network != nil {
 		if err := teardownNetwork(vm.Network); err != nil {
-			log.Printf("teardown [%s]: network: %v", vm.UUID, err)
+			observability.Error("teardown_network_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
 			errs = append(errs, err)
 		} else {
-			log.Printf("teardown [%s]: removed TAP device %s", vm.UUID, vm.Network.TapName)
+			observability.Info("teardown_tap_removed", observability.Fields{"execution_id": vm.UUID, "tap_name": vm.Network.TapName})
 		}
 	}
 
 	if vm.IsPersistent {
-		log.Printf("teardown [%s]: preserved workspace image %s", vm.UUID, vm.ScratchPath)
+		observability.Info("teardown_workspace_preserved", observability.Fields{"execution_id": vm.UUID, "scratch_path": vm.ScratchPath})
 	} else if err := os.Remove(vm.ScratchPath); err != nil && !os.IsNotExist(err) {
-		log.Printf("teardown [%s]: remove scratch: %v", vm.UUID, err)
+		observability.Error("teardown_scratch_remove_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
 		errs = append(errs, err)
 	} else {
-		log.Printf("teardown [%s]: removed scratch image", vm.UUID)
+		observability.Info("teardown_scratch_removed", observability.Fields{"execution_id": vm.UUID})
 	}
 
 	if err := os.Remove(vm.SocketPath); err != nil && !os.IsNotExist(err) {
-		log.Printf("teardown [%s]: remove fc socket: %v", vm.UUID, err)
+		observability.Error("teardown_fc_socket_remove_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
 		errs = append(errs, err)
 	} else {
-		log.Printf("teardown [%s]: removed fc socket", vm.UUID)
+		observability.Info("teardown_fc_socket_removed", observability.Fields{"execution_id": vm.UUID})
 	}
 
 	if err := os.Remove(vm.VsockPath); err != nil && !os.IsNotExist(err) {
-		log.Printf("teardown [%s]: remove vsock socket: %v", vm.UUID, err)
+		observability.Error("teardown_vsock_socket_remove_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
 		errs = append(errs, err)
 	} else {
-		log.Printf("teardown [%s]: removed vsock socket", vm.UUID)
+		observability.Info("teardown_vsock_socket_removed", observability.Fields{"execution_id": vm.UUID})
 	}
 
 	cgPath := fmt.Sprintf("%s/%s", cgroupParent, vm.UUID)
@@ -194,14 +194,14 @@ func Teardown(vm *VMInstance) error {
 	for i := 0; i < 10; i++ {
 		time.Sleep(50 * time.Millisecond)
 		if err := os.Remove(cgPath); err == nil || os.IsNotExist(err) {
-			log.Printf("teardown [%s]: removed cgroup", vm.UUID)
+			observability.Info("teardown_cgroup_removed", observability.Fields{"execution_id": vm.UUID})
 			cgRemoved = true
 			break
 		}
 	}
 	if !cgRemoved {
 		err := fmt.Errorf("cgroup dir still busy after retries: %s", cgPath)
-		log.Printf("teardown [%s]: %v", vm.UUID, err)
+		observability.Error("teardown_cgroup_remove_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
 		errs = append(errs, err)
 	}
 
@@ -233,9 +233,9 @@ func CleanupLeakedNetworks() error {
 		cfg := newNetworkConfig(id, policy.NetworkPolicy{})
 		cfg.TapName = name
 		if err := teardownNetwork(cfg); err != nil {
-			log.Printf("reconcile network [%s]: %v", name, err)
+			observability.Warn("reconcile_network_cleanup_failed", observability.Fields{"tap_name": name, "error": err.Error()})
 		} else {
-			log.Printf("reconcile network [%s]: removed leaked TAP device", name)
+			observability.Info("reconcile_network_removed", observability.Fields{"tap_name": name})
 		}
 	}
 	return nil
@@ -381,7 +381,7 @@ func allowResolvedIP(cfg *NetworkConfig, ip string) error {
 
 func startDNSInterceptor(cfg *NetworkConfig) error {
 	addr := net.JoinHostPort(cfg.HostIP, "53")
-	log.Printf("dns [%s]: starting interceptor on %s for presets=%v", cfg.TapName, addr, cfg.Presets)
+	observability.Info("dns_interceptor_start", observability.Fields{"tap_name": cfg.TapName, "addr": addr, "presets": cfg.Presets})
 	conn, err := net.ListenPacket("udp4", addr)
 	if err != nil {
 		return fmt.Errorf("start dns interceptor: %w", err)
@@ -402,20 +402,20 @@ func serveDNS(cfg *NetworkConfig, conn net.PacketConn) {
 			return
 		}
 		msg := append([]byte(nil), buf[:n]...)
-		log.Printf("dns [%s]: received query from %v", cfg.TapName, addr)
+		observability.Info("dns_query_received", observability.Fields{"tap_name": cfg.TapName, "client_addr": addr.String()})
 
 		resp, err := buildDNSResponse(cfg, msg)
 		if err != nil {
-			log.Printf("dns [%s]: build response error: %v", cfg.TapName, err)
+			observability.Error("dns_build_response_failed", observability.Fields{"tap_name": cfg.TapName, "error": err.Error()})
 			continue
 		}
 		if len(resp) == 0 {
-			log.Printf("dns [%s]: empty response for %v", cfg.TapName, addr)
+			observability.Warn("dns_empty_response", observability.Fields{"tap_name": cfg.TapName, "client_addr": addr.String()})
 			continue
 		}
 
 		if _, err := conn.WriteTo(resp, addr); err != nil {
-			log.Printf("dns [%s]: write response to %v failed: %v", cfg.TapName, addr, err)
+			observability.Error("dns_write_response_failed", observability.Fields{"tap_name": cfg.TapName, "client_addr": addr.String(), "error": err.Error()})
 		}
 	}
 }
@@ -452,7 +452,7 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
 	if _, ok := cfg.allowedHosts[name]; ok {
 		allowed = true
 	}
-	log.Printf("dns [%s]: question name=%q type=%v allowed=%t", cfg.TapName, name, question.Type, allowed)
+	observability.Info("dns_question", observability.Fields{"tap_name": cfg.TapName, "name": name, "query_type": question.Type.String(), "allowed": allowed})
 
 	builder := dnsmessage.NewBuilder(nil, respHeader)
 	builder.EnableCompression()
@@ -485,7 +485,7 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
 		if err := builder.StartAnswers(); err != nil {
 			return nil, err
 		}
-		log.Printf("dns [%s]: returning NXDOMAIN for %q", cfg.TapName, name)
+		observability.Info("dns_nxdomain", observability.Fields{"tap_name": cfg.TapName, "name": name})
 		return builder.Finish()
 	}
 
@@ -493,7 +493,7 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", name)
-		log.Printf("dns [%s]: resolve %q -> ips=%v err=%v", cfg.TapName, name, ips, err)
+		observability.Info("dns_upstream_resolve", observability.Fields{"tap_name": cfg.TapName, "name": name, "ips": ips, "resolve_error": err})
 		if err != nil {
 			return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
 		}
@@ -518,9 +518,9 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
 			}
 			answerCount++
 		}
-		log.Printf("dns [%s]: answered %d A record(s) for %q", cfg.TapName, answerCount, name)
+		observability.Info("dns_answered_a", observability.Fields{"tap_name": cfg.TapName, "name": name, "answer_count": answerCount})
 	} else {
-		log.Printf("dns [%s]: no records for query type=%v for %q, returning empty NOERROR", cfg.TapName, question.Type, name)
+		observability.Info("dns_empty_noerror", observability.Fields{"tap_name": cfg.TapName, "name": name, "query_type": question.Type.String()})
 	}
 
 	return builder.Finish()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"aegis/internal/executor"
 	"aegis/internal/models"
+	"aegis/internal/observability"
 	"aegis/internal/policy"
 	"aegis/internal/store"
 
@@ -36,6 +36,8 @@ type ExecuteResponse struct {
 	OutputTruncated bool   `json:"output_truncated,omitempty"`
 }
 
+const startupSlack = 15 * time.Second
+
 // WithAuth wraps a handler with Bearer token authentication.
 // If apiKey is empty the handler runs unauthenticated (dev mode).
 func WithAuth(apiKey string, next http.HandlerFunc) http.HandlerFunc {
@@ -47,28 +49,10 @@ func WithAuth(apiKey string, next http.HandlerFunc) http.HandlerFunc {
 		if token != apiKey {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 			return
 		}
 		next(w, r)
-	}
-}
-
-// HandleHealth returns server liveness and worker pool capacity.
-// No auth required - safe to call from load balancers and monitoring.
-func HandleHealth(pool *executor.Pool) http.HandlerFunc {
-	type healthResponse struct {
-		Status               string `json:"status"`
-		WorkerSlotsAvailable int    `json:"worker_slots_available"`
-		WorkerSlotsTotal     int    `json:"worker_slots_total"`
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(healthResponse{
-			Status:               "ok",
-			WorkerSlotsAvailable: pool.Available(),
-			WorkerSlotsTotal:     5,
-		})
 	}
 }
 
@@ -78,7 +62,7 @@ func HandleDeleteWorkspace() http.HandlerFunc {
 		id := r.PathValue("id")
 		if id == "" {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "workspace ID is required"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "workspace ID is required"})
 			return
 		}
 		if err := executor.DeleteWorkspace(id); err != nil {
@@ -87,16 +71,19 @@ func HandleDeleteWorkspace() http.HandlerFunc {
 				status = http.StatusNotFound
 			}
 			w.WriteHeader(status)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "workspace_id": id})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "workspace_id": id})
 	}
 }
 
 func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		execStatus := "error"
+		defer func() { observability.RecordExecution(execStatus, time.Since(start)) }()
+
 		w.Header().Set("Content-Type", "application/json")
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 
@@ -104,16 +91,17 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			resp.DurationMs = time.Since(start).Milliseconds()
 			rec.DurationMs = resp.DurationMs
 			if err := s.WriteExecution(rec); err != nil {
-				log.Printf("audit log [%s]: %v", resp.ExecutionID, err)
+				observability.Warn("audit_log_write_failed", observability.Fields{"execution_id": resp.ExecutionID, "error": err.Error()})
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 
 		if err := pool.Acquire(); err != nil {
+			execStatus = "too_many_requests"
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "5")
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":"too many concurrent executions"}`))
+			_, _ = w.Write([]byte(`{"error":"too many concurrent executions"}`))
 			return
 		}
 		defer pool.Release()
@@ -123,13 +111,12 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			execID := uuid.New().String()
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
+				execStatus = "request_too_large"
 				w.WriteHeader(http.StatusRequestEntityTooLarge)
-				json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: "request_too_large"})
+				_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: "request_too_large"})
 			} else {
-				respond(
-					ExecuteResponse{ExecutionID: execID, Error: "invalid request: " + err.Error()},
-					store.ExecutionRecord{ExecutionID: execID, Lang: "unknown", Outcome: "error", ErrorMsg: err.Error()},
-				)
+				execStatus = "invalid_request"
+				respond(ExecuteResponse{ExecutionID: execID, Error: "invalid request: " + err.Error()}, store.ExecutionRecord{ExecutionID: execID, Lang: "unknown", Outcome: "error", ErrorMsg: err.Error()})
 			}
 			return
 		}
@@ -143,44 +130,56 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 		}
 		computeProfile, ok := pol.Profiles[req.Profile]
 		if !ok {
+			execStatus = "invalid_profile"
 			execID := uuid.New().String()
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: "invalid compute profile"},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: "invalid compute profile"},
-			)
+			respond(ExecuteResponse{ExecutionID: execID, Error: "invalid compute profile"}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: "invalid compute profile"})
 			return
 		}
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
+			execStatus = "validation_error"
 			execID := uuid.New().String()
 			msg := err.Error()
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: msg},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg},
-			)
+			respond(ExecuteResponse{ExecutionID: execID, Error: msg}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg})
 			return
 		}
 
 		execID := uuid.New().String()
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond+startupSlack)
 		defer cancel()
 		deadline, _ := ctx.Deadline()
-		log.Printf("[%s] lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
+		observability.Info("execution_start", observability.Fields{"execution_id": execID, "lang": req.Lang, "timeout_ms": timeoutMs, "deadline": deadline.Format(time.RFC3339Nano)})
+
+		bootStart := time.Now()
+		bootObserved := false
+		recordBoot := func() {
+			if bootObserved {
+				return
+			}
+			bootObserved = true
+			observability.ObserveBootDuration(time.Since(bootStart))
+		}
 
 		vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir)
 		if err != nil {
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: err.Error()},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()},
-			)
+			recordBoot()
+			execStatus = "sandbox_error"
+			respond(ExecuteResponse{ExecutionID: execID, Error: err.Error()}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()})
 			return
 		}
-		defer executor.Teardown(vm)
+		defer func() {
+			teardownStart := time.Now()
+			if err := executor.Teardown(vm); err != nil {
+				observability.Error("teardown_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
+			} else {
+				observability.Info("teardown_completed", observability.Fields{"execution_id": execID})
+			}
+			observability.ObserveTeardownDuration(time.Since(teardownStart))
+		}()
 
 		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources); err != nil {
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: err.Error()},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()},
-			)
+			recordBoot()
+			execStatus = "sandbox_error"
+			respond(ExecuteResponse{ExecutionID: execID, Error: err.Error()}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()})
 			return
 		}
 
@@ -188,81 +187,71 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 		defer proxyCancel()
 		go func() {
 			if err := executor.StartProxyHandler(proxyCtx, vm.GuestCID, execID); err != nil && proxyCtx.Err() == nil {
-				log.Printf("[%s] proxy handler: %v", execID, err)
+				observability.Warn("proxy_handler_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
 			}
 		}()
 
 		conn, err := executor.DialWithRetry(vm.VsockPath, 1024, time.Until(deadline))
 		if err != nil {
+			recordBoot()
 			outcome, status := "error", "sandbox_error"
+			execStatus = "sandbox_error"
 			if ctx.Err() == context.DeadlineExceeded {
 				outcome, status = "timeout", "timed_out"
+				execStatus = "timeout"
 			}
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: outcome},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()},
-			)
+			respond(ExecuteResponse{ExecutionID: execID, Error: outcome}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			return
 		}
 		defer conn.Close()
+		recordBoot()
 
-		log.Printf("[%s] vsock connected, %.0fms remaining", execID, float64(time.Until(deadline).Milliseconds()))
+		observability.Info("vsock_connected", observability.Fields{"execution_id": execID, "remaining_ms": time.Until(deadline).Milliseconds()})
 
-		payload := models.Payload{
-			Lang:               req.Lang,
-			Code:               req.Code,
-			TimeoutMs:          timeoutMs,
-			WorkspaceRequested: req.WorkspaceID != "",
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, WorkspaceRequested: req.WorkspaceID != ""}
+		if vm.Network != nil {
+			payload.NetworkRequested = true
+			payload.GuestIP = vm.Network.GuestIP
+			payload.GatewayIP = vm.Network.GatewayIP
+			payload.DNSServer = vm.Network.GatewayIP
 		}
 
 		result, err := executor.SendPayload(conn, payload, deadline)
 		if err != nil {
 			outcome, status := "error", "sandbox_error"
+			execStatus = "sandbox_error"
 			if ctx.Err() == context.DeadlineExceeded {
 				outcome, status = "timeout", "timed_out"
+				execStatus = "timeout"
 			}
-			respond(
-				ExecuteResponse{ExecutionID: execID, Error: outcome},
-				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()},
-			)
+			respond(ExecuteResponse{ExecutionID: execID, Error: outcome}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			return
 		}
 
 		outcome := "success"
+		execStatus = "success"
 		if result.ExitCode != 0 {
 			outcome = "completed_nonzero"
+			execStatus = "completed_nonzero"
 		}
-		respond(
-			ExecuteResponse{
-				Stdout:          result.Stdout,
-				Stderr:          result.Stderr,
-				ExitCode:        result.ExitCode,
-				ExecutionID:     execID,
-				OutputTruncated: result.OutputTruncated,
-			},
-			store.ExecutionRecord{
-				ExecutionID: execID,
-				Lang:        req.Lang,
-				ExitCode:    result.ExitCode,
-				Outcome:     outcome,
-				Status:      "completed",
-				StdoutBytes: result.StdoutBytes,
-				StderrBytes: result.StderrBytes,
-			},
-		)
+		respond(ExecuteResponse{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode, ExecutionID: execID, OutputTruncated: result.OutputTruncated}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: "completed", StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes})
 	}
 }
 
 func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		execStatus := "error"
+		defer func() { observability.RecordExecution(execStatus, time.Since(start)) }()
+
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 
 		if err := pool.Acquire(); err != nil {
+			execStatus = "too_many_requests"
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "5")
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":"too many concurrent executions"}`))
+			_, _ = w.Write([]byte(`{"error":"too many concurrent executions"}`))
 			return
 		}
 		defer pool.Release()
@@ -272,10 +261,12 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			w.Header().Set("Content-Type", "application/json")
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
+				execStatus = "request_too_large"
 				w.WriteHeader(http.StatusRequestEntityTooLarge)
-				json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "request_too_large"})
+				_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "request_too_large"})
 			} else {
-				json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "invalid request: " + err.Error()})
+				execStatus = "invalid_request"
+				_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "invalid request: " + err.Error()})
 			}
 			return
 		}
@@ -289,19 +280,22 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 		}
 		computeProfile, ok := pol.Profiles[req.Profile]
 		if !ok {
+			execStatus = "invalid_profile"
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "invalid compute profile"})
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "invalid compute profile"})
 			return
 		}
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
+			execStatus = "validation_error"
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: err.Error()})
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: err.Error()})
 			return
 		}
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
+			execStatus = "streaming_unsupported"
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
@@ -310,19 +304,41 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 		w.Header().Set("Connection", "keep-alive")
 
 		execID := uuid.New().String()
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond+startupSlack)
 		defer cancel()
 		deadline, _ := ctx.Deadline()
-		log.Printf("[%s] stream lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
+		observability.Info("stream_execution_start", observability.Fields{"execution_id": execID, "lang": req.Lang, "timeout_ms": timeoutMs, "deadline": deadline.Format(time.RFC3339Nano)})
+
+		bootStart := time.Now()
+		bootObserved := false
+		recordBoot := func() {
+			if bootObserved {
+				return
+			}
+			bootObserved = true
+			observability.ObserveBootDuration(time.Since(bootStart))
+		}
 
 		vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir)
 		if err != nil {
+			recordBoot()
+			execStatus = "sandbox_error"
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
-		defer executor.Teardown(vm)
+		defer func() {
+			teardownStart := time.Now()
+			if err := executor.Teardown(vm); err != nil {
+				observability.Error("teardown_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
+			} else {
+				observability.Info("teardown_completed", observability.Fields{"execution_id": execID})
+			}
+			observability.ObserveTeardownDuration(time.Since(teardownStart))
+		}()
 
 		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources); err != nil {
+			recordBoot()
+			execStatus = "sandbox_error"
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
@@ -331,42 +347,49 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 		defer proxyCancel()
 		go func() {
 			if err := executor.StartProxyHandler(proxyCtx, vm.GuestCID, execID); err != nil && proxyCtx.Err() == nil {
-				log.Printf("[%s] proxy handler: %v", execID, err)
+				observability.Warn("proxy_handler_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
 			}
 		}()
 
 		conn, err := executor.DialWithRetry(vm.VsockPath, 1024, time.Until(deadline))
 		if err != nil {
+			recordBoot()
+			execStatus = "sandbox_error"
 			outcome := "error"
 			if ctx.Err() == context.DeadlineExceeded {
+				execStatus = "timeout"
 				outcome = "timeout"
 			}
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: outcome})
 			return
 		}
 		defer conn.Close()
+		recordBoot()
 
 		if err := conn.SetDeadline(deadline); err != nil {
+			execStatus = "sandbox_error"
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
-		payload := models.Payload{
-			Lang:               req.Lang,
-			Code:               req.Code,
-			TimeoutMs:          timeoutMs,
-			WorkspaceRequested: req.WorkspaceID != "",
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, WorkspaceRequested: req.WorkspaceID != ""}
+		if vm.Network != nil {
+			payload.NetworkRequested = true
+			payload.GuestIP = vm.Network.GuestIP
+			payload.GatewayIP = vm.Network.GatewayIP
+			payload.DNSServer = vm.Network.GatewayIP
 		}
 		if err := json.NewEncoder(conn).Encode(payload); err != nil {
+			execStatus = "sandbox_error"
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
 
-		result, err := executor.ReadChunks(conn, deadline, func(chunkType, chunk string) {
-			writeSSE(w, flusher, models.GuestChunk{Type: chunkType, Chunk: chunk})
-		})
+		result, err := executor.ReadChunks(conn, deadline, func(chunkType, chunk string) { writeSSE(w, flusher, models.GuestChunk{Type: chunkType, Chunk: chunk}) })
 		if err != nil {
+			execStatus = "sandbox_error"
 			outcome := err.Error()
 			if ctx.Err() == context.DeadlineExceeded {
+				execStatus = "timeout"
 				outcome = "timeout"
 			}
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: outcome})
@@ -375,20 +398,13 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 
 		writeSSE(w, flusher, models.GuestChunk{Type: "done", ExitCode: result.ExitCode, DurationMs: result.DurationMs})
 		outcome := "success"
+		execStatus = "success"
 		if result.ExitCode != 0 {
 			outcome = "completed_nonzero"
+			execStatus = "completed_nonzero"
 		}
-		if err := s.WriteExecution(store.ExecutionRecord{
-			ExecutionID: execID,
-			Lang:        req.Lang,
-			ExitCode:    result.ExitCode,
-			Outcome:     outcome,
-			Status:      "completed",
-			DurationMs:  time.Since(start).Milliseconds(),
-			StdoutBytes: result.StdoutBytes,
-			StderrBytes: result.StderrBytes,
-		}); err != nil {
-			log.Printf("audit log [%s]: %v", execID, err)
+		if err := s.WriteExecution(store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: "completed", DurationMs: time.Since(start).Milliseconds(), StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes}); err != nil {
+			observability.Warn("audit_log_write_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
 		}
 	}
 }

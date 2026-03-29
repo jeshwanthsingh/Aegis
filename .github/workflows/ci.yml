@@ -71,7 +71,10 @@ jobs:
 
       - name: Start Aegis
         run: |
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin             --db "$DB_URL"             --policy configs/default-policy.yaml             --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-ci.log 2>&1 &
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
+            --db "$DB_URL" \
+            --policy configs/default-policy.yaml \
+            --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-ci.log 2>&1 &
           sleep 3
           cat /tmp/aegis-ci.log || true
 
@@ -79,7 +82,7 @@ jobs:
         run: |
           BASE_URL=http://localhost:8080 ASSETS_DIR="$GITHUB_WORKSPACE/assets" tests/smoke/build_boot.sh
 
-  core-demo:
+  validation:
     runs-on: ubuntu-latest
     needs: build-and-boot
     services:
@@ -135,32 +138,51 @@ jobs:
           sudo mkdir -p /mnt/rootfs/workspace
           sudo umount /mnt/rootfs
 
-      - name: Start Aegis
+      - name: Create CI policy
         run: |
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin             --db "$DB_URL"             --policy configs/default-policy.yaml             --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-core.log 2>&1 &
+          cat >/tmp/aegis-ci-policy.yaml <<'EOF'
+          allowed_languages: [python, bash, node]
+          max_code_bytes: 65536
+          max_output_bytes: 65536
+          default_timeout_ms: 25000
+          max_timeout_ms: 25000
+          profiles:
+            nano:
+              vcpu_count: 1
+              memory_mb: 128
+            standard:
+              vcpu_count: 2
+              memory_mb: 512
+            crunch:
+              vcpu_count: 4
+              memory_mb: 2048
+          default_profile: nano
+          network:
+            mode: allowlist
+            presets: [pypi]
+          resources:
+            memory_max_mb: 128
+            cpu_percent: 50
+            pids_max: 100
+            timeout_ms: 25000
+          EOF
+
+      - name: Start Aegis with validation policy
+        run: |
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
+            --db "$DB_URL" \
+            --policy /tmp/aegis-ci-policy.yaml \
+            --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-validation.log 2>&1 &
           sleep 3
-          cat /tmp/aegis-core.log || true
+          cat /tmp/aegis-validation.log || true
 
-      - name: Verify health
-        run: BASE_URL=http://localhost:8080 tests/smoke/health.sh
-
-      - name: Verify bash execution
-        run: BASE_URL=http://localhost:8080 tests/smoke/execute_bash.sh
-
-      - name: Verify python execution
-        run: BASE_URL=http://localhost:8080 tests/smoke/execute_python.sh
-
-      - name: Verify audit write
-        run: BASE_URL=http://localhost:8080 DB_URL="$DB_URL" tests/integration/audit_log.sh
-
-      - name: Verify worker pool 429
-        run: BASE_URL=http://localhost:8080 tests/integration/worker_pool_429.sh
-
-      - name: Verify teardown cleanup
+      - name: Run smoke validation
         run: |
-          sleep 2
-          leftovers=$(find /tmp/aegis -maxdepth 1 \( -name 'scratch-*.ext4' -o -name 'fc-*.sock' -o -name 'vsock-*.sock' \) | wc -l)
-          test "$leftovers" -eq 0 || { echo "leftover sandbox artifacts: $leftovers" >&2; find /tmp/aegis -maxdepth 1; exit 1; }
+          BASE_URL=http://localhost:8080 tests/integration/smoke.sh
+
+      - name: Run abuse validation
+        run: |
+          BASE_URL=http://localhost:8080 tests/integration/abuse.sh
 
   isolation-checks:
     runs-on: ubuntu-latest
@@ -221,7 +243,10 @@ jobs:
       - name: Start Aegis in isolated mode
         run: |
           sed -i 's/mode: none/mode: isolated/' configs/default-policy.yaml || true
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin             --db "$DB_URL"             --policy configs/default-policy.yaml             --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-isolated.log 2>&1 &
+          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
+            --db "$DB_URL" \
+            --policy configs/default-policy.yaml \
+            --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-isolated.log 2>&1 &
           sleep 5
           cat /tmp/aegis-isolated.log || true
           BASE_URL=http://localhost:8080 tests/smoke/health.sh

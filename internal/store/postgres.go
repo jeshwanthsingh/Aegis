@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -32,6 +33,10 @@ func Connect(connStr string) (*Store, error) {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func (s *Store) PingContext(ctx context.Context) error {
+	return s.db.PingContext(ctx)
 }
 
 func (s *Store) WriteExecution(r ExecutionRecord) error {

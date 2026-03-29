@@ -9,7 +9,8 @@ var ErrPoolFull = errors.New("worker pool at capacity")
 
 // Pool is a counting semaphore that bounds concurrent VM executions.
 type Pool struct {
-	slots chan struct{}
+	slots    chan struct{}
+	capacity int
 }
 
 // NewPool creates a pool with capacity concurrent slots.
@@ -18,7 +19,7 @@ func NewPool(capacity int) *Pool {
 	for i := 0; i < capacity; i++ {
 		slots <- struct{}{}
 	}
-	return &Pool{slots: slots}
+	return &Pool{slots: slots, capacity: capacity}
 }
 
 // Acquire claims a slot. Returns ErrPoolFull immediately if none are available.
@@ -39,4 +40,9 @@ func (p *Pool) Release() {
 // Available returns the number of free slots.
 func (p *Pool) Available() int {
 	return len(p.slots)
+}
+
+// Capacity returns the total number of slots in the pool.
+func (p *Pool) Capacity() int {
+	return p.capacity
 }
