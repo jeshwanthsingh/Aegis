@@ -8,13 +8,24 @@ payload='{"lang":"bash","code":"sleep 5; echo worker","timeout_ms":15000}'
 
 for i in 1 2 3 4 5 6 7 8; do
   (
-    curl -sS -o "$tmpdir/$i.body" -D "$tmpdir/$i.headers" \
-      -X POST "$BASE_URL/v1/execute" \
-      -H "Content-Type: application/json" \
-      -d "$payload" >/dev/null
+    code="$(
+      curl -sS \
+        -o "$tmpdir/$i.body" \
+        -D "$tmpdir/$i.headers" \
+        -w '%{http_code}' \
+        -X POST "$BASE_URL/v1/execute" \
+        -H "Content-Type: application/json" \
+        -d "$payload" || true
+    )"
+    printf '%s\n' "$code" > "$tmpdir/$i.code"
   ) &
 done
-wait
+wait || true
+
+for f in "$tmpdir"/*.code; do
+  echo "=== $f ==="
+  cat "$f"
+done
 
 count_429_matches="$(grep -l '^HTTP/.* 429' "$tmpdir"/*.headers 2>/dev/null || true)"
 count_429="$(printf '%s\n' "$count_429_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
