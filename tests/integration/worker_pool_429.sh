@@ -4,8 +4,8 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
-hold_payload='{"lang":"bash","code":"sleep 8; echo worker","timeout_ms":15000}'
-overflow_payload='{"lang":"bash","code":"echo overflow","timeout_ms":15000}'
+hold_payload='{"lang":"bash","code":"sleep 5","timeout_ms":8000}'
+overflow_payload='{"lang":"bash","code":"echo overflow","timeout_ms":8000}'
 
 for i in 1 2 3 4 5; do
   (
