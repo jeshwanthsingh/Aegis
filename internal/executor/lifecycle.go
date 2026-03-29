@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"hash/crc32"
 	"log"
@@ -10,9 +11,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"aegis/internal/policy"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 const (
@@ -21,14 +25,18 @@ const (
 )
 
 type NetworkConfig struct {
-	TapName    string
-	SubnetCIDR string
-	HostIP     string
-	GuestIP    string
-	GatewayIP  string
-	GuestMAC   string
-	Mode       string
-	Presets    []string
+	TapName      string
+	SubnetCIDR   string
+	HostIP       string
+	GuestIP      string
+	GatewayIP    string
+	GuestMAC     string
+	Mode         string
+	Presets      []string
+	allowedHosts map[string]struct{}
+	allowedIPs   map[string]struct{}
+	dnsConn      net.PacketConn
+	dnsMu        sync.Mutex
 }
 
 func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy) error {
@@ -116,19 +124,10 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 			return nil, err
 		}
 		for _, host := range hosts {
-			ips, err := net.LookupIP(host)
-			if err != nil {
-				return nil, fmt.Errorf("resolve %s: %w", host, err)
-			}
-			for _, ip := range ips {
-				if ip4 := ip.To4(); ip4 != nil {
-					for _, port := range []string{"80", "443"} {
-						if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "-d", ip4.String(), "--dport", port, "-j", "ACCEPT"); err != nil {
-							return nil, err
-						}
-					}
-				}
-			}
+			cfg.allowedHosts[normalizeHostname(host)] = struct{}{}
+		}
+		if err := startDNSInterceptor(cfg); err != nil {
+			return nil, err
 		}
 	} else {
 		for _, port := range []string{"80", "443"} {
@@ -256,21 +255,15 @@ func teardownNetwork(cfg *NetworkConfig) error {
 	}
 
 	if cfg.Mode == "allowlist" {
-		hosts, err := resolvePresetHosts(cfg.Presets)
-		if err == nil {
-			for _, host := range hosts {
-				ips, err := net.LookupIP(host)
-				if err != nil {
-					continue
-				}
-				for _, ip := range ips {
-					if ip4 := ip.To4(); ip4 != nil {
-						for _, port := range []string{"80", "443"} {
-							if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip4.String(), "--dport", port, "-j", "ACCEPT"); err != nil && !isMissingRule(err) {
-								errs = append(errs, err)
-							}
-						}
-					}
+		if cfg.dnsConn != nil {
+			if err := cfg.dnsConn.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		for _, ip := range snapshotAllowedIPs(cfg) {
+			for _, port := range []string{"80", "443"} {
+				if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", port, "-j", "ACCEPT"); err != nil && !isMissingRule(err) {
+					errs = append(errs, err)
 				}
 			}
 		}
@@ -298,14 +291,16 @@ func newNetworkConfig(execID string, np policy.NetworkPolicy) *NetworkConfig {
 	short := shortID(execID)
 	subnet, hostIP, guestIP := subnetForID(short)
 	return &NetworkConfig{
-		TapName:    "tap-" + short,
-		SubnetCIDR: subnet,
-		HostIP:     hostIP,
-		GuestIP:    guestIP,
-		GatewayIP:  hostIP,
-		GuestMAC:   "AA:FC:00:00:00:01",
-		Mode:       np.Mode,
-		Presets:    append([]string(nil), np.Presets...),
+		TapName:      "tap-" + short,
+		SubnetCIDR:   subnet,
+		HostIP:       hostIP,
+		GuestIP:      guestIP,
+		GatewayIP:    hostIP,
+		GuestMAC:     "AA:FC:00:00:00:01",
+		Mode:         np.Mode,
+		Presets:      append([]string(nil), np.Presets...),
+		allowedHosts: map[string]struct{}{},
+		allowedIPs:   map[string]struct{}{},
 	}
 }
 
@@ -343,6 +338,214 @@ func resolvePresetHosts(presets []string) ([]string, error) {
 		}
 	}
 	return hosts, nil
+}
+
+func normalizeHostname(name string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+}
+
+func snapshotAllowedIPs(cfg *NetworkConfig) []string {
+	cfg.dnsMu.Lock()
+	defer cfg.dnsMu.Unlock()
+	ips := make([]string, 0, len(cfg.allowedIPs))
+	for ip := range cfg.allowedIPs {
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+func allowResolvedIP(cfg *NetworkConfig, ip string) error {
+	cfg.dnsMu.Lock()
+	if _, ok := cfg.allowedIPs[ip]; ok {
+		cfg.dnsMu.Unlock()
+		return nil
+	}
+	cfg.allowedIPs[ip] = struct{}{}
+	cfg.dnsMu.Unlock()
+
+	addedPorts := make([]string, 0, 2)
+	for _, port := range []string{"80", "443"} {
+		if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", port, "-j", "ACCEPT"); err != nil {
+			for _, rollbackPort := range addedPorts {
+				_ = runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", rollbackPort, "-j", "ACCEPT")
+			}
+			cfg.dnsMu.Lock()
+			delete(cfg.allowedIPs, ip)
+			cfg.dnsMu.Unlock()
+			return err
+		}
+		addedPorts = append(addedPorts, port)
+	}
+	return nil
+}
+
+func startDNSInterceptor(cfg *NetworkConfig) error {
+	addr := net.JoinHostPort(cfg.HostIP, "53")
+	log.Printf("dns [%s]: starting interceptor on %s for presets=%v", cfg.TapName, addr, cfg.Presets)
+	conn, err := net.ListenPacket("udp4", addr)
+	if err != nil {
+		return fmt.Errorf("start dns interceptor: %w", err)
+	}
+	cfg.dnsConn = conn
+	go serveDNS(cfg, conn)
+	return nil
+}
+
+func serveDNS(cfg *NetworkConfig, conn net.PacketConn) {
+	buf := make([]byte, 1500)
+	for {
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				continue
+			}
+			return
+		}
+		msg := append([]byte(nil), buf[:n]...)
+		log.Printf("dns [%s]: received query from %v", cfg.TapName, addr)
+
+		resp, err := buildDNSResponse(cfg, msg)
+		if err != nil {
+			log.Printf("dns [%s]: build response error: %v", cfg.TapName, err)
+			continue
+		}
+		if len(resp) == 0 {
+			log.Printf("dns [%s]: empty response for %v", cfg.TapName, addr)
+			continue
+		}
+
+		if _, err := conn.WriteTo(resp, addr); err != nil {
+			log.Printf("dns [%s]: write response to %v failed: %v", cfg.TapName, addr, err)
+		}
+	}
+}
+
+func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
+	var parser dnsmessage.Parser
+	head, err := parser.Start(req)
+	if err != nil {
+		return nil, err
+	}
+	question, err := parser.Question()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if _, err := parser.Question(); err != nil {
+			if err == dnsmessage.ErrSectionDone {
+				break
+			}
+			return nil, err
+		}
+	}
+
+	respHeader := dnsmessage.Header{
+		ID:                 head.ID,
+		Response:           true,
+		Authoritative:      true,
+		RecursionAvailable: true,
+		RecursionDesired:   head.RecursionDesired,
+	}
+
+	name := normalizeHostname(question.Name.String())
+	allowed := false
+	if _, ok := cfg.allowedHosts[name]; ok {
+		allowed = true
+	}
+	log.Printf("dns [%s]: question name=%q type=%v allowed=%t", cfg.TapName, name, question.Type, allowed)
+
+	builder := dnsmessage.NewBuilder(nil, respHeader)
+	builder.EnableCompression()
+	if err := builder.StartQuestions(); err != nil {
+		return nil, err
+	}
+	if err := builder.Question(question); err != nil {
+		return nil, err
+	}
+	if err := builder.StartAnswers(); err != nil {
+		return nil, err
+	}
+
+	if !allowed {
+		builder = dnsmessage.NewBuilder(nil, dnsmessage.Header{
+			ID:                 head.ID,
+			Response:           true,
+			Authoritative:      true,
+			RecursionAvailable: true,
+			RecursionDesired:   head.RecursionDesired,
+			RCode:              dnsmessage.RCodeNameError,
+		})
+		builder.EnableCompression()
+		if err := builder.StartQuestions(); err != nil {
+			return nil, err
+		}
+		if err := builder.Question(question); err != nil {
+			return nil, err
+		}
+		if err := builder.StartAnswers(); err != nil {
+			return nil, err
+		}
+		log.Printf("dns [%s]: returning NXDOMAIN for %q", cfg.TapName, name)
+		return builder.Finish()
+	}
+
+	if question.Type == dnsmessage.TypeA {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", name)
+		log.Printf("dns [%s]: resolve %q -> ips=%v err=%v", cfg.TapName, name, ips, err)
+		if err != nil {
+			return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
+		}
+		answerCount := 0
+		for _, ip := range ips {
+			ip4 := ip.To4()
+			if ip4 == nil {
+				continue
+			}
+			if err := allowResolvedIP(cfg, ip4.String()); err != nil {
+				return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
+			}
+			var arr [4]byte
+			copy(arr[:], ip4)
+			if err := builder.AResource(dnsmessage.ResourceHeader{
+				Name:  question.Name,
+				Type:  dnsmessage.TypeA,
+				Class: dnsmessage.ClassINET,
+				TTL:   30,
+			}, dnsmessage.AResource{A: arr}); err != nil {
+				return nil, err
+			}
+			answerCount++
+		}
+		log.Printf("dns [%s]: answered %d A record(s) for %q", cfg.TapName, answerCount, name)
+	} else {
+		log.Printf("dns [%s]: no records for query type=%v for %q, returning empty NOERROR", cfg.TapName, question.Type, name)
+	}
+
+	return builder.Finish()
+}
+
+func dnsErrorResponse(head dnsmessage.Header, question dnsmessage.Question, code dnsmessage.RCode) ([]byte, error) {
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{
+		ID:                 head.ID,
+		Response:           true,
+		Authoritative:      true,
+		RecursionAvailable: true,
+		RecursionDesired:   head.RecursionDesired,
+		RCode:              code,
+	})
+	builder.EnableCompression()
+	if err := builder.StartQuestions(); err != nil {
+		return nil, err
+	}
+	if err := builder.Question(question); err != nil {
+		return nil, err
+	}
+	if err := builder.StartAnswers(); err != nil {
+		return nil, err
+	}
+	return builder.Finish()
 }
 
 func forwardRules(cfg *NetworkConfig, delete bool) [][]string {

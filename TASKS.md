@@ -1,75 +1,56 @@
-# Aegis — Task Tracker
+# Aegis - Task Tracker
 
 ## Done
 - [x] v1: Firecracker microVM execution (Python, bash)
 - [x] v1: Worker pool (5 concurrent slots), 429 on overflow
-- [x] v1: API key auth, GET /health endpoint
-- [x] v1: Audit log (PostgreSQL), execution state machine
-- [x] v1: cgroup v2 limits (memory, CPU, pids), no-network default
-- [x] v1: Deterministic teardown, startup reconciliation
-- [x] v1.5: Two-drive overlayfs (read-only base + 50MB scratch per execution)
-- [x] v1.5: PID 1 zombie reaping (SIGCHLD + Wait4 in guest-runner)
-- [x] v2: YAML policy engine (allowed languages, resource limits, max timeout)
+- [x] v1: API key auth and GET /health
+- [x] v1: PostgreSQL audit log and execution state machine
+- [x] v1: cgroup v2 limits (memory, CPU, pids) with no-network default
+- [x] v1: Deterministic teardown and startup reconciliation
+- [x] v1.5: Overlay scratch disk per execution
+- [x] v2: YAML policy engine
 - [x] v2: aegis-cli
 - [x] v2: Streaming I/O / SSE path
 - [x] v2.1: Compute profiles
-  - [x] Added profile-aware API request handling
-  - [x] Added default profiles: nano (1 vCPU / 128MB), standard (2 vCPU / 512MB), crunch (4 vCPU / 2048MB)
-  - [x] Firecracker machine-config now uses profile VCPU and memory values
-  - [x] Invalid profiles fail fast with `invalid compute profile`
-  - [x] Verified in guest: nano reports 1 CPU / ~112MB, standard reports 2 CPU / ~490MB
 - [x] v2.2: Persistent workspaces
-  - [x] Added host-side reusable ext4 workspace disks under `/tmp/aegis/workspaces`
-  - [x] Added `workspace_id` API support and `DELETE /v1/workspaces/{id}`
-  - [x] Guest runner now mounts `/dev/vdb` at `/workspace`
-  - [x] Verified persistence across executions: write in VM 1, read in VM 2
-  - [x] Verified ephemeral runs still do not persist workspace state
-- [x] README, install flow, OpenClaw docs, and CI workflow scaffolded
-- [x] Core demo tests 1-4 passing on WSL2
-- [x] GitHub Actions workflow YAML syntax fixed and validated locally
+- [x] Core GitHub Actions workflow green
+- [x] Allowlist DNS interception / smoke test stabilization
+  - [x] Managed-child SIGCHLD gating in guest-runner
+  - [x] Guest DIAG stderr is now opt-in via `AEGIS_DEBUG=1`
+  - [x] Python guest invocation stabilized with `-S -u`
+  - [x] Loopback initialization added in guest network setup
+  - [x] 100ms post-network settle delay added before user process launch
+  - [x] Guest resolver timeout increased to `timeout:5 attempts:2`
+  - [x] Host-side per-VM DNS interceptor resolves allowlisted hosts and denies non-allowlisted hosts
+  - [x] DNS interceptor now handles packets synchronously for the single-VM path
+  - [x] `tests/integration/allowlist_dns.sh` passes repeatedly with `timeout_ms: 25000`
 
 ## In Progress
-- [ ] GitHub Actions CI stabilization
-  - Core demo tests are split cleanly from isolated-mode checks
-  - Workflow now parses correctly again after removing corrupted non-ASCII text
-  - Remaining work is isolated-mode rule verification, not YAML or boot-time failures
-- [ ] Core runtime validation hardening
-  - [ ] Split CI into build/boot, core-demo, and isolation-check jobs
-  - [ ] Make bash + python execution mandatory green checks
-  - [ ] Verify audit log row creation and teardown on every CI run
-  - [ ] Verify 429 overflow behavior under worker pool saturation
+- [ ] Crunch profile validation follow-up
+- [ ] Workspace durability cleanup
 
-## Up Next (priority order)
+## Up Next
 
-### 1. GitHub Actions CI — 1 day
-- [ ] Make CI green on real Linux runners
-- [ ] Keep the badge honest: prove build, boot, DB, and core demo flow work end-to-end
-- [ ] Stabilize the isolated-mode verification around valid host-side firewall checks
+### 1. Crunch profile validation follow-up
+- [ ] Re-test `crunch` with a higher timeout on WSL2 and Linux CI
+- [ ] Decide whether `crunch` needs a timeout recommendation or CI exception
+- [ ] Add a stronger kernel-level memory pressure test if hard OOM proof is required
 
-### 2. DNS interception — 3 days
-- [ ] Replace brittle domain allowlist logic with DNS-layer interception
-- [ ] Resolve preset policy at the DNS boundary instead of hardcoding destination IPs
-- [ ] Keep host-side enforcement as the source of truth
-- [ ] Use this as the cleaner replacement for the current allowlist approach
-
-### 3. Crunch profile validation follow-up
-- [ ] Re-test `crunch` with a higher timeout (20s+) on WSL2 and Linux CI
-- [ ] Decide whether `crunch` needs a profile-specific timeout recommendation or CI exemption
-- [ ] Add a stronger kernel-level memory pressure test if we want OOM-kill proof beyond Python `MemoryError`
-
-### 4. Workspace durability cleanup
+### 2. Workspace durability cleanup
 - [ ] Investigate why the second successful workspace read still reports `exit_code: 1`
 - [ ] Decide whether this is guest-runner cleanup noise or a shell-level nonzero exit worth surfacing differently
 
+### 3. Integration smoke coverage
+- [ ] Add `tests/integration/smoke.sh` to prove the core end-to-end system works in one pass
+
 ## Deferred
-- Node.js on WSL2 — still sensitive to guest entropy/runtime behavior
-- Full vsock HTTP proxy (pip install support) — useful, but more moving parts than CI stabilization
-- Filesystem jail inside guest — better as a dedicated follow-up after workspaces land
-- GitHub IAM proxy — strong v3 feature, separate trust boundary
-- Firecracker snapshots — operationally valuable, but not the best immediate leverage
+- Node.js on WSL2 remains sensitive to guest entropy/runtime behavior
+- Full vsock HTTP proxy for package installs
+- Filesystem jail inside guest
+- GitHub IAM proxy
+- Firecracker snapshots
 
 ## Notes
-- The project is already beyond toy stage: it boots real microVMs, executes untrusted code, enforces cgroup limits, tears down cleanly, and has a policy surface
-- The weakest area right now is not the core execution model; it is validation/operability on real Linux CI and the next layer of product polish
-- Default direction should remain: host-enforced isolation first, guest behavior second
-- Compute profiles and persistent workspaces are platform-hardening work: they increase utility without weakening the VM boundary
+- The core product is beyond toy stage: real microVMs, audited execution, cgroup enforcement, deterministic teardown, and a policy surface all work
+- Host-side enforcement remains the source of truth for isolation
+- Compute profiles and persistent workspaces are useful platform hardening, not architectural experiments
