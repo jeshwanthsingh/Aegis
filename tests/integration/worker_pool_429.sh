@@ -4,45 +4,48 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
-payload='{"lang":"bash","code":"sleep 5; echo worker","timeout_ms":15000}'
+hold_payload='{"lang":"bash","code":"sleep 8; echo worker","timeout_ms":15000}'
+overflow_payload='{"lang":"bash","code":"echo overflow","timeout_ms":15000}'
 
-for i in 1 2 3 4 5 6 7 8; do
+for i in 1 2 3 4 5; do
   (
-    code="$(
-      curl -sS \
-        -o "$tmpdir/$i.body" \
-        -D "$tmpdir/$i.headers" \
-        -w '%{http_code}' \
-        -X POST "$BASE_URL/v1/execute" \
-        -H "Content-Type: application/json" \
-        -d "$payload" || true
-    )"
-    printf '%s\n' "$code" > "$tmpdir/$i.code"
+    curl -sS \
+      -o "$tmpdir/hold-$i.body" \
+      -D "$tmpdir/hold-$i.headers" \
+      -w '%{http_code}' \
+      -X POST "$BASE_URL/v1/execute" \
+      -H "Content-Type: application/json" \
+      -d "$hold_payload" > "$tmpdir/hold-$i.code" || true
   ) &
 done
-wait || true
 
-for f in "$tmpdir"/*.code; do
-  echo "=== $f ==="
-  cat "$f"
-done
+sleep 1
 
-count_429_matches="$(grep -l '^HTTP/.* 429' "$tmpdir"/*.headers 2>/dev/null || true)"
-count_429="$(printf '%s\n' "$count_429_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
-[ "$count_429" -ge 1 ] || {
-  echo "expected at least one 429 response" >&2
-  for f in "$tmpdir"/*.headers; do
-    echo "=== $f ===" >&2
-    cat "$f" >&2
-  done
+curl -sS \
+  -o "$tmpdir/overflow.body" \
+  -D "$tmpdir/overflow.headers" \
+  -w '%{http_code}' \
+  -X POST "$BASE_URL/v1/execute" \
+  -H "Content-Type: application/json" \
+  -d "$overflow_payload" > "$tmpdir/overflow.code" || true
+
+overflow_code="$(cat "$tmpdir/overflow.code")"
+header_dump="$(tr -d '\r' < "$tmpdir/overflow.headers")"
+
+echo "overflow_code=$overflow_code"
+printf '%s\n' "$header_dump"
+
+[ "$overflow_code" = "429" ] || {
+  echo "expected overflow request to return 429" >&2
+  echo "=== overflow body ===" >&2
+  cat "$tmpdir/overflow.body" >&2
   exit 1
 }
 
-header_dump="$(cat "$tmpdir"/*.headers | tr -d '\r')"
 printf '%s\n' "$header_dump" | grep -qi '^Retry-After: 5$' || {
   echo "missing Retry-After header on overflow response" >&2
-  printf '%s\n' "$header_dump" >&2
   exit 1
 }
 
-echo "worker pool overflow produced $count_429 429 response(s)"
+wait || true
+echo "worker pool overflow produced 429 as expected"
