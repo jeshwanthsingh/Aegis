@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/mdlayher/vsock"
+	"golang.org/x/sys/unix"
 )
 
 type Payload struct {
-	Lang      string `json:"lang"`
-	Code      string `json:"code"`
-	TimeoutMs int    `json:"timeout_ms"`
+	Lang               string `json:"lang"`
+	Code               string `json:"code"`
+	TimeoutMs          int    `json:"timeout_ms"`
+	WorkspaceRequested bool   `json:"workspace_requested,omitempty"`
 }
 
 type GuestChunk struct {
@@ -75,6 +77,31 @@ func nodeEnvDiag() string {
 	return sb.String()
 }
 
+func setupWorkspace(requested bool) (bool, error) {
+	const workspaceDir = "/workspace"
+	const blockDevice = "/dev/vdb"
+
+	if !requested {
+		return false, nil
+	}
+
+	if _, err := os.Stat(blockDevice); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		return false, err
+	}
+
+	if err := unix.Mount(blockDevice, workspaceDir, "ext4", 0, ""); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 func main() {
 	go func() {
 		c := make(chan os.Signal, 1)
@@ -109,6 +136,12 @@ func main() {
 	}
 	if len(p.Code) > 64*1024 {
 		sendError(conn, "payload too large")
+		return
+	}
+
+	mountedWorkspace, err := setupWorkspace(p.WorkspaceRequested)
+	if err != nil {
+		sendError(conn, "setup workspace: "+err.Error())
 		return
 	}
 
@@ -166,8 +199,6 @@ func main() {
 		writeErr <- nil
 	}()
 
-
-
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		sendError(conn, diagPrefix+"start "+interpreter+": "+err.Error())
@@ -193,6 +224,13 @@ func main() {
 	}
 
 	wg.Wait()
+	if mountedWorkspace {
+		unix.Sync()
+		if err := unix.Unmount("/workspace", 0); err != nil {
+			chunks <- GuestChunk{Type: "stderr", Chunk: "workspace unmount: " + err.Error() + "\n"}
+		}
+		unix.Sync()
+	}
 	chunks <- GuestChunk{Type: "done", ExitCode: exitCode, DurationMs: time.Since(start).Milliseconds()}
 	close(chunks)
 	_ = <-writeErr

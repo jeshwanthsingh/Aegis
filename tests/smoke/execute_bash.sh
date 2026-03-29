@@ -6,7 +6,8 @@ resp="$(curl -fsS -X POST "$BASE_URL/v1/execute" -H "Content-Type: application/j
 echo "$resp"
 error="$(printf '%s' "$resp" | jq -r '.error // empty')"
 stdout="$(printf '%s' "$resp" | jq -r '.stdout // empty')"
+stderr="$(printf '%s' "$resp" | jq -r '.stderr // empty')"
 exit_code="$(printf '%s' "$resp" | jq -r '.exit_code // 0')"
 [ -z "$error" ] || { echo "unexpected error: $error" >&2; exit 1; }
 [ "$stdout" = "hello-from-bash" ] || { echo "unexpected stdout: $stdout" >&2; exit 1; }
-[ "$exit_code" = "0" ] || { echo "unexpected exit_code: $exit_code" >&2; exit 1; }
+[ "$exit_code" = "0" ] || { echo "unexpected exit_code: $exit_code" >&2; [ -z "$stderr" ] || echo "stderr: $stderr" >&2; exit 1; }

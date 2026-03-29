@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -18,9 +19,11 @@ import (
 )
 
 type ExecuteRequest struct {
-	Lang      string `json:"lang"`
-	Code      string `json:"code"`
-	TimeoutMs int    `json:"timeout_ms"`
+	Lang        string `json:"lang"`
+	Code        string `json:"code"`
+	TimeoutMs   int    `json:"timeout_ms"`
+	Profile     string `json:"profile,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
 type ExecuteResponse struct {
@@ -69,6 +72,28 @@ func HandleHealth(pool *executor.Pool) http.HandlerFunc {
 	}
 }
 
+func HandleDeleteWorkspace() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := r.PathValue("id")
+		if id == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "workspace ID is required"})
+			return
+		}
+		if err := executor.DeleteWorkspace(id); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, os.ErrNotExist) {
+				status = http.StatusNotFound
+			}
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "workspace_id": id})
+	}
+}
+
 func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -113,6 +138,18 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
 		}
+		if req.Profile == "" {
+			req.Profile = pol.DefaultProfile
+		}
+		computeProfile, ok := pol.Profiles[req.Profile]
+		if !ok {
+			execID := uuid.New().String()
+			respond(
+				ExecuteResponse{ExecutionID: execID, Error: "invalid compute profile"},
+				store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: "invalid compute profile"},
+			)
+			return
+		}
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
 			execID := uuid.New().String()
 			msg := err.Error()
@@ -129,7 +166,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 		deadline, _ := ctx.Deadline()
 		log.Printf("[%s] lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
 
-		vm, err := executor.NewVM(execID, pol, assetsDir)
+		vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir)
 		if err != nil {
 			respond(
 				ExecuteResponse{ExecutionID: execID, Error: err.Error()},
@@ -171,7 +208,12 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 
 		log.Printf("[%s] vsock connected, %.0fms remaining", execID, float64(time.Until(deadline).Milliseconds()))
 
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs}
+		payload := models.Payload{
+			Lang:               req.Lang,
+			Code:               req.Code,
+			TimeoutMs:          timeoutMs,
+			WorkspaceRequested: req.WorkspaceID != "",
+		}
 
 		result, err := executor.SendPayload(conn, payload, deadline)
 		if err != nil {
@@ -242,6 +284,16 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
 		}
+		if req.Profile == "" {
+			req.Profile = pol.DefaultProfile
+		}
+		computeProfile, ok := pol.Profiles[req.Profile]
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "invalid compute profile"})
+			return
+		}
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: err.Error()})
@@ -263,7 +315,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 		deadline, _ := ctx.Deadline()
 		log.Printf("[%s] stream lang=%s timeout_ms=%d deadline=%s", execID, req.Lang, timeoutMs, deadline.Format("15:04:05.000"))
 
-		vm, err := executor.NewVM(execID, pol, assetsDir)
+		vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir)
 		if err != nil {
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
@@ -298,7 +350,12 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs}
+		payload := models.Payload{
+			Lang:               req.Lang,
+			Code:               req.Code,
+			TimeoutMs:          timeoutMs,
+			WorkspaceRequested: req.WorkspaceID != "",
+		}
 		if err := json.NewEncoder(conn).Encode(payload); err != nil {
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
