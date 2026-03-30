@@ -33,6 +33,15 @@
   - [x] `/metrics` exports Prometheus-style execution, boot, teardown, and worker-slot metrics
   - [x] orchestrator and executor hot paths now emit structured JSON logs
 
+- [x] Phase 4 install simplicity
+  - [x] scripts/preflight.sh checks Linux, KVM, Firecracker, assets, cgroup v2, iptables, and Postgres reachability
+  - [x] scripts/install.sh is idempotent enough to rerun safely in local setup
+  - [x] scripts/smoke-local.sh provides a one-command local doctor path and can reuse an existing healthy orchestrator
+- [x] Phase 5 documentation
+  - [x] THREAT_MODEL.md documents the security boundary and explicit non-goals
+  - [x] KNOWN_LIMITATIONS.md documents current runtime and platform caveats
+  - [x] README.md now links to both docs, includes the architecture diagram, and documents install/demo/validation entry points
+
 ## In Progress
 - [ ] Crunch profile validation follow-up
 - [ ] Workspace durability cleanup

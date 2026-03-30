@@ -18,3 +18,7 @@ assets/firecracker
 # Local kernel/source dumps accidentally copied into repo
 linux-6.1.80/
 linux-6.1.80.tar.xz
+
+# Local workstation-only guidance files
+AGENTS.md
+CLAUDE.md

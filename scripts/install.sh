@@ -3,113 +3,144 @@ set -euo pipefail
 
 RELEASE_URL="https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GO_BIN=""
+DB_URL_DEFAULT="postgres://postgres:postgres@localhost/postgres?sslmode=disable"
+DB_URL="${DB_URL:-$DB_URL_DEFAULT}"
+
+find_go() {
+  if command -v go >/dev/null 2>&1; then
+    command -v go
+  elif [ -x "$HOME/local/go/bin/go" ]; then
+    printf '%s\n' "$HOME/local/go/bin/go"
+  elif [ -x "/usr/local/go/bin/go" ]; then
+    printf '%s\n' "/usr/local/go/bin/go"
+  else
+    return 1
+  fi
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'Missing prerequisite: %s\n' "$2" >&2
+    exit 1
+  }
+}
+
+source_newer_than() {
+  local target="$1"
+  shift
+  [ ! -f "$target" ] && return 0
+  find "$@" -type f -newer "$target" -print -quit | grep -q .
+}
+
+download_if_missing() {
+  local url="$1"
+  local path="$2"
+  local label="$3"
+  if [ -f "$path" ]; then
+    printf '%s already present, skipping.\n' "$label"
+    return
+  fi
+  printf 'Downloading %s...\n' "$label"
+  curl -L "$url" -o "$path"
+}
+
+safe_mount_rootfs() {
+  sudo mkdir -p /mnt/rootfs
+  if mountpoint -q /mnt/rootfs; then
+    sudo umount /mnt/rootfs
+  fi
+  sudo mount "$REPO_DIR/assets/alpine-base.ext4" /mnt/rootfs
+}
+
+safe_umount_rootfs() {
+  if mountpoint -q /mnt/rootfs; then
+    sudo umount /mnt/rootfs
+  fi
+}
+
+trap safe_umount_rootfs EXIT
 
 echo "=== Aegis Installer ==="
 
-# 1. Check prerequisites
-missing=()
-GO_BIN=""
+[ "$(uname -s)" = "Linux" ] || { echo "Aegis install requires Linux" >&2; exit 1; }
+[ -e /dev/kvm ] || { echo "Missing prerequisite: /dev/kvm" >&2; exit 1; }
+need_cmd curl curl
+need_cmd psql "psql (install: sudo apt install postgresql-client)"
+need_cmd sudo sudo
+need_cmd iptables iptables
+GO_BIN="$(find_go)" || { echo "Missing prerequisite: go (install from https://go.dev/dl/)" >&2; exit 1; }
 
-if [ ! -e /dev/kvm ]; then
-    missing+=("/dev/kvm")
-fi
-
-# Check for go in common locations, not just PATH
-if command -v go &>/dev/null; then
-    GO_BIN=$(command -v go)
-elif [ -x "$HOME/local/go/bin/go" ]; then
-    GO_BIN="$HOME/local/go/bin/go"
-elif [ -x "/usr/local/go/bin/go" ]; then
-    GO_BIN="/usr/local/go/bin/go"
-elif [ -x "/home/$(logname)/local/go/bin/go" ]; then
-    GO_BIN="/home/$(logname)/local/go/bin/go"
-fi
-
-if [ -z "$GO_BIN" ]; then
-    missing+=("go (install from https://go.dev/dl/)")
-fi
-
-if ! command -v psql &>/dev/null; then
-    missing+=("psql (install: sudo apt install postgresql)")
-fi
-
-if ! command -v curl &>/dev/null; then
-    missing+=("curl")
-fi
-
-if [ ${#missing[@]} -gt 0 ]; then
-    echo "Missing prerequisites: ${missing[*]}"
-    exit 1
-fi
-
-# 2. Download assets (skip if already present)
 mkdir -p "$REPO_DIR/assets"
+download_if_missing "$RELEASE_URL/vmlinux" "$REPO_DIR/assets/vmlinux" "vmlinux"
+download_if_missing "$RELEASE_URL/alpine-base.ext4" "$REPO_DIR/assets/alpine-base.ext4" "alpine-base.ext4"
 
-if [ ! -f "$REPO_DIR/assets/vmlinux" ]; then
-    echo "Downloading vmlinux (20MB)..."
-    curl -L "$RELEASE_URL/vmlinux" -o "$REPO_DIR/assets/vmlinux"
+if ! command -v firecracker >/dev/null 2>&1; then
+  echo "Downloading firecracker..."
+  curl -L "$RELEASE_URL/firecracker" -o /tmp/firecracker
+  sudo install -m 0755 /tmp/firecracker /usr/local/bin/firecracker
 else
-    echo "vmlinux already present, skipping."
+  echo "firecracker already on PATH, skipping."
 fi
 
-if [ ! -f "$REPO_DIR/assets/alpine-base.ext4" ]; then
-    echo "Downloading alpine-base.ext4 (812MB, this will take a while)..."
-    curl -L "$RELEASE_URL/alpine-base.ext4" -o "$REPO_DIR/assets/alpine-base.ext4"
-else
-    echo "alpine-base.ext4 already present, skipping."
-fi
-
-if ! command -v firecracker &>/dev/null; then
-    echo "Downloading firecracker..."
-    curl -L "$RELEASE_URL/firecracker" -o /tmp/firecracker
-    sudo mv /tmp/firecracker /usr/local/bin/firecracker
-    sudo chmod +x /usr/local/bin/firecracker
-else
-    echo "firecracker already on PATH, skipping."
-fi
-
-# 3. Build orchestrator
-echo "Building orchestrator..."
 cd "$REPO_DIR"
-"$GO_BIN" build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
+if source_newer_than /tmp/aegis-bin cmd internal go.mod go.sum; then
+  echo "Building orchestrator..."
+  "$GO_BIN" build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
+else
+  echo "orchestrator already up to date, skipping build."
+fi
 
-# 4. Build aegis-cli
-echo "Building aegis-cli..."
-cd "$REPO_DIR"
-"$GO_BIN" build -buildvcs=false -o /tmp/aegis-cli ./cmd/aegis-cli
-sudo mv /tmp/aegis-cli /usr/local/bin/aegis
-echo "aegis-cli installed to /usr/local/bin/aegis"
+if source_newer_than /usr/local/bin/aegis cmd go.mod go.sum; then
+  echo "Building aegis-cli..."
+  "$GO_BIN" build -buildvcs=false -o /tmp/aegis-cli ./cmd/aegis-cli
+  sudo install -m 0755 /tmp/aegis-cli /usr/local/bin/aegis
+else
+  echo "aegis-cli already up to date, skipping build."
+fi
 
-# 5. Build guest-runner and bake into rootfs
-echo "Building guest-runner..."
-cd "$REPO_DIR/guest-runner"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build -buildvcs=false -a -o guest-runner .
-sudo mkdir -p /mnt/rootfs
-sudo mount "$REPO_DIR/assets/alpine-base.ext4" /mnt/rootfs
-sudo cp guest-runner /mnt/rootfs/usr/local/bin/guest-runner
-sudo umount /mnt/rootfs
+if source_newer_than "$REPO_DIR/guest-runner/guest-runner" "$REPO_DIR/guest-runner" "$REPO_DIR/go.mod" "$REPO_DIR/go.sum"; then
+  echo "Building guest-runner..."
+  (
+    cd "$REPO_DIR/guest-runner"
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build -buildvcs=false -a -o guest-runner .
+  )
+else
+  echo "guest-runner already up to date, skipping build."
+fi
 
-# 6. Set up database
+echo "Baking guest-runner into rootfs..."
+safe_mount_rootfs
+sudo install -m 0755 "$REPO_DIR/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
+safe_umount_rootfs
+
+if [ -z "${PGPASSWORD:-}" ]; then
+  read -rsp "Enter PostgreSQL password for user 'postgres' (leave blank to use local auth/.pgpass): " PGPASSWORD_INPUT
+  echo ""
+  if [ -n "$PGPASSWORD_INPUT" ]; then
+    export PGPASSWORD="$PGPASSWORD_INPUT"
+  fi
+fi
+
 echo "Setting up database..."
-cd "$REPO_DIR"
+if ! psql "$DB_URL" -tAc "SELECT 1 FROM pg_database WHERE datname='aegis'" | grep -q 1; then
+  psql "$DB_URL" -c "CREATE DATABASE aegis;"
+else
+  echo "Database aegis already exists, skipping create."
+fi
 
-# Get postgres password
-read -rsp "Enter PostgreSQL password for user 'postgres': " PG_PASS
-echo ""
-
-export PGPASSWORD="$PG_PASS"
-
-psql -h localhost -U postgres -c "CREATE DATABASE aegis;" 2>/dev/null || echo "Database already exists."
-psql -h localhost -U postgres -d aegis -f db/schema.sql
-
-unset PGPASSWORD
+A_DB_URL="${DB_URL%/postgres*}/aegis?sslmode=disable"
+psql "$A_DB_URL" -f db/schema.sql >/dev/null
+echo "Schema applied."
 
 echo ""
 echo "=== Aegis installed successfully ==="
 echo ""
-echo "Run with:"
-echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db 'postgres://postgres:<your-password>@localhost/aegis?sslmode=disable'"
+echo "Run preflight with:"
+echo "  ./scripts/preflight.sh"
 echo ""
-echo "Test with:"
-echo "  aegis health"
-echo "  aegis run --lang python --code \"print('hello')\""
+echo "Run local smoke with:"
+echo "  ./scripts/smoke-local.sh"
+echo ""
+echo "Run with:"
+echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db '$A_DB_URL' --assets-dir '$REPO_DIR/assets'"

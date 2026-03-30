@@ -1,7 +1,7 @@
 # HANDOFF.md
 
 ## Status
-Baseline Aegis works. Compute profiles and persistent workspaces are implemented, allowlist DNS interception is stable, Phase 2 validation passes locally, and Phase 3 observability endpoints/logging are now live.
+Baseline Aegis works. Compute profiles and persistent workspaces are implemented, allowlist DNS interception is stable, Phase 2 validation passes locally, Phase 3 observability endpoints/logging are live, and Phase 4/5 install+documentation cleanup is now in place.
 
 ## What works
 - Python execution: yes, full VM boot -> vsock -> result
@@ -21,6 +21,8 @@ Baseline Aegis works. Compute profiles and persistent workspaces are implemented
 - `/ready`: implemented and returning readiness from DB ping + worker-slot availability
 - `/metrics`: implemented and exporting Prometheus-style counters, histograms, and worker-slot gauge
 - Structured JSON logs: implemented for orchestrator and executor hot paths
+- scripts/preflight.sh and scripts/smoke-local.sh: implemented and passing locally
+- THREAT_MODEL.md and KNOWN_LIMITATIONS.md: added and linked from the README
 
 ## Current blocker
 No core execution blocker remains. The main follow-ups are:

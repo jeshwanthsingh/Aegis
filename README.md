@@ -1,108 +1,137 @@
 [![CI](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml)
 # Aegis
 
-A self-hostable Firecracker-backed execution plane for OpenClaw that isolates untrusted AI-generated code in hardware-isolated microVMs.
+Aegis is a self-hostable Firecracker-backed execution plane for running untrusted AI-generated code inside disposable microVMs instead of on the host.
 
-## Install
+It is built for the boring failures that actually matter in agent systems: runaway code, resource abuse, accidental host access, accidental egress, and dirty teardown.
 
-```bash
-curl -sSL https://raw.githubusercontent.com/jeshwanthsingh/Aegis/main/scripts/install.sh | sudo bash
-```
-
-## Why It Exists
-
-OpenClaw can write and run code on demand, which means a bad prompt, bad tool call, or bad generated script can execute with ambient trust on the host machine. Cisco's public work on agentic AI security makes the same gap clear: prompt and policy controls do not solve the code-execution boundary problem by themselves. Aegis exists to close that gap by forcing execution into disposable Firecracker microVMs with hard resource limits, no network interfaces, and deterministic teardown.
+Read these first:
+- [THREAT_MODEL.md](THREAT_MODEL.md)
+- [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)
 
 ## Architecture
 
 ```text
-OpenClaw
-   |
-   | POST /v1/execute { lang, code, timeout_ms, profile?, workspace_id? }
-   v
-Aegis control plane (Go HTTP API)
-   |
-   | boot VM + apply cgroup limits + dial vsock
-   v
-Firecracker microVM
-   |
-   | virtio-vsock
-   v
-Guest runner (Go binary inside guest)
-   |
-   | exec python3 or bash
-   v
-Result { stdout, stderr, exit_code, duration_ms }
+Agent / CLI / API client
+        |
+        | POST /v1/execute
+        v
++-----------------------------+
+| Aegis orchestrator (Go)     |
+| - policy enforcement        |
+| - worker pool               |
+| - audit log                 |
+| - metrics / ready / health  |
++-----------------------------+
+        |
+        | boot Firecracker VM
+        v
++-----------------------------+
+| Firecracker microVM         |
+| - cgroup limits on host     |
+| - scratch disk / workspace  |
+| - optional DNS allowlist    |
++-----------------------------+
+        |
+        | virtio-vsock
+        v
++-----------------------------+
+| guest-runner                |
+| - exec python / bash / node |
+| - capture stdout / stderr   |
+| - return exit status        |
++-----------------------------+
 ```
 
-## Security Model
+## What It Protects Against
 
-What Aegis protects:
-- The code execution lane. Generated code runs in a separate VM, not on the host.
-- The host filesystem and process table from guest reads and writes.
-- The host from fork bombs and runaway processes via `pids.max`, CPU, memory, and timeout enforcement.
-- The network boundary by booting the VM with no NIC attached.
+Aegis is meant to reduce blast radius for:
+- untrusted generated code
+- CPU, memory, PID, and timeout abuse
+- accidental network egress
+- persistent host residue after execution
 
-Non-goals:
-- It does not stop prompt injection at the LLM layer.
-- It does not secure agent integrations such as Slack, email, GitHub, or cloud APIs.
-- It does not manage credentials outside the execution path.
-- It does not replace OpenClaw policy controls or NeMo Guardrails.
+It is not a solution for prompt injection, supply-chain trust, IAM, or model correctness. The blunt version is in [THREAT_MODEL.md](THREAT_MODEL.md).
 
-## Demo Results
+## Install
 
-Current passing WSL2 demo on the restored kernel:
+Primary path:
 
-1. Fork bomb
-
-```text
-PASS - fork bomb contained in 8002ms
+```bash
+bash scripts/install.sh
 ```
 
-Proves: the guest can be forced into failure without exhausting host PID space.
+Preflight only:
 
-2. Network exfiltration
-
-```text
-PASS - outbound connection blocked in 10004ms
+```bash
+./scripts/preflight.sh
 ```
 
-Proves: with no network interface attached, guest code cannot reach the internet.
+One-command local doctor:
 
-3. Host filesystem escape
-
-```text
-PASS - guest /etc/passwd returned in 5193ms; VM file had 22 lines vs host 29 lines
+```bash
+./scripts/smoke-local.sh
 ```
 
-Proves: the guest sees its own root filesystem, not the host filesystem.
+### Requirements
+- Linux with KVM available at `/dev/kvm`
+- Firecracker installed
+- PostgreSQL available
+- guest assets in `assets/`
 
-4. Worker pool concurrency
+WSL2 works for development, but native Linux is the cleaner target. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
-```text
-PASS - 5/5 concurrent workers, /tmp/aegis/ clean
+## One-Command Demo
+
+With the orchestrator running on `localhost:8080`:
+
+```bash
+curl -s -X POST http://localhost:8080/v1/execute \
+  -H "Content-Type: application/json" \
+  -d '{"lang":"python","code":"print(1)","timeout_ms":8000}'
 ```
 
-Proves: the worker pool, teardown path, and scratch cleanup all hold under concurrent load on WSL2.
+Expected shape:
 
-## Benchmarks
+```json
+{
+  "stdout": "1\n",
+  "stderr": "",
+  "exit_code": 0,
+  "duration_ms": 6223,
+  "execution_id": "023ebc28-dca0-4241-a5ae-ff4ed4f51505"
+}
+```
 
-- Python p50: ~2-3s bare metal, ~3-6s WSL2
-- Bash p50: ~2s bare metal, ~2-3s WSL2
+## Local Validation
 
-WSL2, cold boot, full-copy clone. Bare metal expected 2-3x faster.
+Aegis now has two integration scripts that prove the core system works:
 
-## Supported Languages
+```bash
+BASE_URL=http://localhost:8080 tests/integration/smoke.sh
+BASE_URL=http://localhost:8080 tests/integration/abuse.sh
+```
 
-- Python: supported.
-- Bash: supported.
-- Node.js: works on bare metal Linux, not on WSL2 in the current setup due to guest entropy/runtime limitations.
+`smoke.sh` covers:
+- health
+- bash execute
+- python execute
+- timeout enforcement
+- concurrency and 429 overflow
+- teardown verification
+- allowlist DNS resolve and deny
+
+`abuse.sh` covers:
+- fork bomb containment
+- infinite loop containment
+- memory abuse containment
+- huge stdout truncation
+- process explosion containment
+- post-abuse health
 
 ## API
 
 ### `POST /v1/execute`
-
-Request body:
 
 ```json
 {
@@ -118,49 +147,22 @@ Supported `lang` values:
 - `node`
 
 Optional request fields:
-- `profile`: select a compute profile such as `nano`, `standard`, or `crunch`
-- `workspace_id`: attach a persistent ext4-backed workspace mounted at `/workspace`
-
-Response body:
-
-```json
-{
-  "stdout": "1\n",
-  "stderr": "",
-  "exit_code": 0,
-  "duration_ms": 6223,
-  "execution_id": "023ebc28-dca0-4241-a5ae-ff4ed4f51505"
-}
-```
-
-Timeout and sandbox failures return an `error` field instead of normal process output.
-
-### `DELETE /v1/workspaces/{id}`
-
-Deletes a persistent workspace image from the host.
-
-Response body:
-
-```json
-{
-  "status": "deleted",
-  "workspace_id": "agent-alpha-123"
-}
-```
+- `profile`
+- `workspace_id`
 
 ### `GET /health`
+Returns process health and worker-slot counts.
 
-Response body:
+### `GET /ready`
+Returns ready only when the orchestrator can talk to Postgres and has worker capacity available.
 
-```json
-{
-  "status": "ok",
-  "worker_slots_available": 5,
-  "worker_slots_total": 5
-}
-```
+### `GET /metrics`
+Returns Prometheus-style metrics for executions, boot, teardown, and worker-slot availability.
 
-### CLI
+### `DELETE /v1/workspaces/{id}`
+Deletes a persistent workspace image.
+
+## CLI
 
 ```bash
 aegis health
@@ -169,74 +171,23 @@ aegis run --lang bash --file script.sh
 aegis run --lang python --code "..." --stream
 ```
 
-## Install Details
-
-Primary install path:
-
-```bash
-bash scripts/install.sh
-```
-
-Prerequisites:
-- Linux host with KVM available at `/dev/kvm`
-- Go 1.22+
-- Firecracker v1.7.0 on `PATH`
-- PostgreSQL
-- Guest assets present in `assets/`
-
-Manual build:
-
-```bash
-cd ~/aegis
-go build -o /tmp/aegis-bin ./cmd/orchestrator
-cd ~/aegis/guest-runner
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o guest-runner .
-```
-
-Database:
-
-```bash
-psql -d aegis -f db/schema.sql
-```
-
-Run:
-
-```bash
-sudo env "PATH=$PATH" /tmp/aegis-bin --db 'postgres://postgres:<your-password>@localhost/aegis?sslmode=disable'
-```
-
-Example request:
-
-```bash
-curl -s -X POST http://localhost:8080/v1/execute \
-  -H "Content-Type: application/json" \
-  -d '{"lang":"python","code":"print(1)","timeout_ms":8000}' | jq .
-```
-
 ## OpenClaw Integration
 
-Aegis ships a skill that lets your OpenClaw agent run code in isolated Firecracker microVMs instead of locally.
+Aegis ships an OpenClaw skill so the agent can execute code in a disposable microVM rather than on the host machine.
 
-### Quick setup
+Quick setup:
 
-1. Start Aegis orchestrator
-2. Install the skill:
 ```bash
 mkdir -p ~/.openclaw/workspace/skills/aegis-exec
 curl -L https://raw.githubusercontent.com/jeshwanthsingh/Aegis/main/openclaw-plugin/SKILL.md \
   -o ~/.openclaw/workspace/skills/aegis-exec/SKILL.md
 ```
-3. Restart your OpenClaw gateway
-4. Ask your agent: `Use the Aegis sandbox to run this Python code: print('hello')`
 
-See `docs/openclaw-integration.md` for full setup and troubleshooting.
+See `docs/openclaw-integration.md` for the full setup flow.
 
 ## Roadmap
 
-- v1 â€” shipped: Python + bash execution, worker pool, API key auth, audit log, cgroup v2 limits
-- v1.5 â€” shipped: two-drive overlayfs fast boot, PID 1 zombie reaping
-- v2 â€” shipped: YAML policy engine, streaming I/O (SSE), aegis-cli
-- v2.1 â€” shipped: compute profiles
-- v2.2 â€” shipped: persistent workspaces (`workspace_id`, `/workspace`, delete API)
-- v3 â€” planned: vsock HTTP proxy (pip install support)
-- v4 â€” planned: GitHub IAM proxy for credential isolation
+- v1 — shipped: Python + bash execution, worker pool, audit logging, cgroup enforcement
+- v2 — shipped: YAML policy engine, streaming I/O, CLI, compute profiles, persistent workspaces
+- v3 — planned: vsock HTTP proxy for package installs
+- v4 — planned: GitHub IAM proxy
