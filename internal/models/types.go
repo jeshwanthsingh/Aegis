@@ -5,6 +5,10 @@ type Payload struct {
 	Code               string `json:"code"`
 	TimeoutMs          int    `json:"timeout_ms"`
 	WorkspaceRequested bool   `json:"workspace_requested,omitempty"`
+	NetworkRequested   bool   `json:"network_requested,omitempty"`
+	GuestIP            string `json:"guest_ip,omitempty"`
+	GatewayIP          string `json:"gateway_ip,omitempty"`
+	DNSServer          string `json:"dns_server,omitempty"`
 }
 
 type GuestChunk struct {
