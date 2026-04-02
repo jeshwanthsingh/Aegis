@@ -43,6 +43,7 @@
   - [x] README.md now links to both docs, includes the architecture diagram, and documents install/demo/validation entry points
 
 ## In Progress
+- [ ] Alpine rootfs migration
 - [ ] Crunch profile validation follow-up
 - [ ] Workspace durability cleanup
 - [ ] Observability cleanup

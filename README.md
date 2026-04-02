@@ -8,6 +8,7 @@ It is built for the boring failures that actually matter in agent systems: runaw
 Read these first:
 - [THREAT_MODEL.md](THREAT_MODEL.md)
 - [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)
+- [docs/alpine-rootfs-migration.md](docs/alpine-rootfs-migration.md)
 
 ## Architecture
 
@@ -73,6 +74,18 @@ One-command local doctor:
 ./scripts/smoke-local.sh
 ```
 
+Rebuild the Alpine candidate rootfs:
+
+```bash
+./scripts/build-alpine-rootfs.sh --output assets/alpine-base.ext4 --backup-existing assets/ubuntu-legacy.ext4
+```
+
+Build the real Alpine/musl guest image:
+
+```bash
+./scripts/build-alpine-rootfs.sh
+```
+
 ### Requirements
 - Linux with KVM available at `/dev/kvm`
 - Firecracker installed
@@ -80,6 +93,14 @@ One-command local doctor:
 - guest assets in `assets/`
 
 WSL2 works for development, but native Linux is the cleaner target. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+
+For migration or rollback testing, start Aegis with an explicit rootfs override:
+
+```bash
+/tmp/aegis-bin --db "$DB_URL" --assets-dir "$PWD/assets" --rootfs-path "$PWD/assets/alpine-base.ext4"
+```
+
+During the rootfs migration, the legacy image remains the default. To validate the new Alpine image without changing defaults, run Aegis with `AEGIS_ROOTFS_PATH=/absolute/path/to/alpine-musl.ext4`.
 
 ## One-Command Demo
 
@@ -191,3 +212,9 @@ See `docs/openclaw-integration.md` for the full setup flow.
 - v2 — shipped: YAML policy engine, streaming I/O, CLI, compute profiles, persistent workspaces
 - v3 — planned: vsock HTTP proxy for package installs
 - v4 — planned: GitHub IAM proxy
+
+## Rootfs Migration
+
+A reproducible Alpine/musl rootfs build flow now exists in `scripts/build-alpine-rootfs.sh`.
+
+The current default remains the legacy `assets/alpine-base.ext4` image for rollback safety. Use `AEGIS_ROOTFS_PATH` to opt into a real Alpine image during migration validation. See `docs/alpine-rootfs-migration.md` for the migration notes, parity checklist, and benchmark guidance.

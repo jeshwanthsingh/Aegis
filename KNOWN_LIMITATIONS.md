@@ -17,3 +17,6 @@ The system is stable with the current timeout settings, but some of that stabili
 
 ## Temporary diagnostic debt still exists
 Some diagnostics were added to stabilize DNS and execution behavior. They were useful, but parts of that visibility are still debt that should be trimmed once CI and repeated local validation stay green.
+
+## Rootfs migration is still gated
+The repo now has an Alpine rootfs build path and rollback mechanism, but the default image should not be switched until the migration baseline, parity matrix, and before/after benchmark report are captured.
