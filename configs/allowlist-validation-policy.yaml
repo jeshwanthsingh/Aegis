@@ -1,0 +1,13 @@
+allowed_languages: [python, bash, node]
+max_code_bytes: 65536
+max_output_bytes: 65536
+default_timeout_ms: 10000
+max_timeout_ms: 10000
+network:
+  mode: allowlist
+  presets: [pypi]
+resources:
+  memory_max_mb: 128
+  cpu_percent: 50
+  pids_max: 100
+  timeout_ms: 10000

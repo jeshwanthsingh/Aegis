@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aegis Proving Ground Preview</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body style="margin:0;background:#090b10;">
+  <div id="root"></div>
+
+  <script>
+    (async function mountPreview() {
+      const response = await fetch("/ui/aegis-proving-ground.jsx");
+      const source = await response.text();
+      const normalized = source
+        .replace(
+          /^import React, \{ useEffect, useMemo, useRef, useState \} from "react";\s*/,
+          "const { useEffect, useMemo, useRef, useState } = React;\n"
+        )
+        .replace(
+          /\(typeof import\.meta !== "undefined" && import\.meta\.env && import\.meta\.env\.VITE_AEGIS_API_BASE\) \|\|\s*/,
+          ""
+        )
+        .replace(/export default AegisProvingGround;\s*$/, "");
+      const compiled = Babel.transform(normalized, { presets: ["react"] }).code;
+      new Function(compiled)();
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(React.createElement(window.AegisProvingGround));
+    })().catch((error) => {
+      document.body.innerHTML =
+        '<pre style="color:#fecaca;background:#090b10;padding:24px;font:14px/1.5 monospace;">Preview failed: ' +
+        String(error) +
+        "</pre>";
+    });
+  </script>
+</body>
+</html>
