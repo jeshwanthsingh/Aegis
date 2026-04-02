@@ -11,10 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"aegis/internal/observability"
 	"aegis/internal/policy"
+	"aegis/internal/telemetry"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -36,10 +38,11 @@ type NetworkConfig struct {
 	allowedHosts map[string]struct{}
 	allowedIPs   map[string]struct{}
 	dnsConn      net.PacketConn
+	upstreamDNS  *net.Resolver
 	dnsMu        sync.Mutex
 }
 
-func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy) error {
+func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *telemetry.Bus) error {
 	_ = os.WriteFile(cgroupRoot+"/cgroup.subtree_control", []byte("+cpu +memory +pids"), 0o644)
 
 	if err := os.MkdirAll(cgroupParent, 0o755); err != nil {
@@ -74,6 +77,13 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy) error {
 	if err := os.WriteFile(filepath.Join(cgPath, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o644); err != nil {
 		return fmt.Errorf("write cgroup.procs: %w", err)
 	}
+	emitIfBus(bus, telemetry.KindCgroupConfigured, telemetry.CgroupConfiguredData{
+		MemoryMax:  limits[0].value,
+		MemoryHigh: limits[1].value,
+		PidsMax:    limits[2].value,
+		CpuMax:     limits[3].value,
+		SwapMax:    limits[4].value,
+	})
 	return nil
 }
 
@@ -85,7 +95,7 @@ func CreateScratchDisk(uuid string) (string, error) {
 	return path, nil
 }
 
-func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error) {
+func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*NetworkConfig, error) {
 	mode := np.Mode
 	if mode == "" || mode == "none" {
 		return nil, nil
@@ -117,6 +127,11 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 	if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-j", "DROP"); err != nil {
 		return nil, err
 	}
+	emitIfBus(bus, telemetry.KindNetRuleDrop, telemetry.NetRuleData{
+		Rule:      "DROP",
+		Chain:     "FORWARD",
+		Direction: "outbound",
+	})
 
 	if mode == "allowlist" {
 		hosts, err := resolvePresetHosts(np.Presets)
@@ -126,7 +141,7 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 		for _, host := range hosts {
 			cfg.allowedHosts[normalizeHostname(host)] = struct{}{}
 		}
-		if err := startDNSInterceptor(cfg); err != nil {
+		if err := startDNSInterceptor(cfg, bus); err != nil {
 			return nil, err
 		}
 	} else {
@@ -135,6 +150,10 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 				return nil, err
 			}
 		}
+		emitIfBus(bus, telemetry.KindNetRuleAdd, telemetry.NetRuleData{
+			Rule:  "ACCEPT",
+			Ports: "80,443",
+		})
 	}
 
 	for _, rule := range forwardRules(cfg, false) {
@@ -147,8 +166,12 @@ func SetupNetwork(execID string, np policy.NetworkPolicy) (*NetworkConfig, error
 	return cfg, nil
 }
 
-func Teardown(vm *VMInstance) error {
+func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
 	var errs []error
+	emitIfBus(bus, telemetry.KindCleanupStart, map[string]string{})
+	cleanup := telemetry.CleanupDoneData{}
+	fcSocketRemoved := false
+	vsockSocketRemoved := false
 
 	if err := vm.Kill(); err != nil {
 		observability.Error("teardown_kill_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
@@ -163,16 +186,21 @@ func Teardown(vm *VMInstance) error {
 			errs = append(errs, err)
 		} else {
 			observability.Info("teardown_tap_removed", observability.Fields{"execution_id": vm.UUID, "tap_name": vm.Network.TapName})
+			cleanup.TapRemoved = true
 		}
+	} else {
+		cleanup.TapRemoved = true
 	}
 
 	if vm.IsPersistent {
 		observability.Info("teardown_workspace_preserved", observability.Fields{"execution_id": vm.UUID, "scratch_path": vm.ScratchPath})
+		cleanup.ScratchRemoved = true
 	} else if err := os.Remove(vm.ScratchPath); err != nil && !os.IsNotExist(err) {
 		observability.Error("teardown_scratch_remove_failed", observability.Fields{"execution_id": vm.UUID, "error": err.Error()})
 		errs = append(errs, err)
 	} else {
 		observability.Info("teardown_scratch_removed", observability.Fields{"execution_id": vm.UUID})
+		cleanup.ScratchRemoved = true
 	}
 
 	if err := os.Remove(vm.SocketPath); err != nil && !os.IsNotExist(err) {
@@ -180,6 +208,7 @@ func Teardown(vm *VMInstance) error {
 		errs = append(errs, err)
 	} else {
 		observability.Info("teardown_fc_socket_removed", observability.Fields{"execution_id": vm.UUID})
+		fcSocketRemoved = true
 	}
 
 	if err := os.Remove(vm.VsockPath); err != nil && !os.IsNotExist(err) {
@@ -187,7 +216,9 @@ func Teardown(vm *VMInstance) error {
 		errs = append(errs, err)
 	} else {
 		observability.Info("teardown_vsock_socket_removed", observability.Fields{"execution_id": vm.UUID})
+		vsockSocketRemoved = true
 	}
+	cleanup.SocketRemoved = fcSocketRemoved && vsockSocketRemoved
 
 	cgPath := fmt.Sprintf("%s/%s", cgroupParent, vm.UUID)
 	cgRemoved := false
@@ -196,6 +227,7 @@ func Teardown(vm *VMInstance) error {
 		if err := os.Remove(cgPath); err == nil || os.IsNotExist(err) {
 			observability.Info("teardown_cgroup_removed", observability.Fields{"execution_id": vm.UUID})
 			cgRemoved = true
+			cleanup.CgroupRemoved = true
 			break
 		}
 	}
@@ -206,8 +238,14 @@ func Teardown(vm *VMInstance) error {
 	}
 
 	if len(errs) > 0 {
+		cleanup.AllClean = cleanup.TapRemoved && cleanup.CgroupRemoved && cleanup.ScratchRemoved && cleanup.SocketRemoved
+		vm.Cleanup = cleanup
+		emitIfBus(bus, telemetry.KindCleanupDone, cleanup)
 		return fmt.Errorf("teardown had %d error(s), first: %w", len(errs), errs[0])
 	}
+	cleanup.AllClean = cleanup.TapRemoved && cleanup.CgroupRemoved && cleanup.ScratchRemoved && cleanup.SocketRemoved
+	vm.Cleanup = cleanup
+	emitIfBus(bus, telemetry.KindCleanupDone, cleanup)
 	return nil
 }
 
@@ -354,7 +392,74 @@ func snapshotAllowedIPs(cfg *NetworkConfig) []string {
 	return ips
 }
 
-func allowResolvedIP(cfg *NetworkConfig, ip string) error {
+var runAllowlistRuleCmd = runCmd
+
+func parseNameserverList(contents string) []string {
+	var servers []string
+	for _, line := range strings.Split(contents, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		servers = append(servers, strings.Trim(fields[1], "[]"))
+	}
+	return servers
+}
+
+func isLoopbackNameserver(server string) bool {
+	ip := net.ParseIP(strings.Trim(server, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func chooseUpstreamNameservers(contents string) []string {
+	servers := parseNameserverList(contents)
+	var nonLoopback []string
+	hasSystemdStub := false
+	for _, server := range servers {
+		if strings.TrimSpace(server) == "127.0.0.53" {
+			hasSystemdStub = true
+		}
+		if isLoopbackNameserver(server) {
+			continue
+		}
+		nonLoopback = append(nonLoopback, server)
+	}
+	if len(nonLoopback) > 0 {
+		return nonLoopback
+	}
+	if hasSystemdStub {
+		return []string{"127.0.0.53"}
+	}
+	return []string{"8.8.8.8", "1.1.1.1"}
+}
+
+func newUpstreamResolver() *net.Resolver {
+	servers := []string{"8.8.8.8", "1.1.1.1"}
+	if contents, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		servers = chooseUpstreamNameservers(string(contents))
+	}
+
+	var next uint32
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			idx := atomic.AddUint32(&next, 1) - 1
+			server := servers[int(idx)%len(servers)]
+			dialNetwork := "udp4"
+			if ip := net.ParseIP(strings.Trim(server, "[]")); ip != nil && ip.To4() == nil {
+				dialNetwork = "udp6"
+			}
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, dialNetwork, net.JoinHostPort(strings.Trim(server, "[]"), "53"))
+		},
+	}
+}
+
+func allowResolvedIP(cfg *NetworkConfig, ip string, bus *telemetry.Bus) error {
 	cfg.dnsMu.Lock()
 	if _, ok := cfg.allowedIPs[ip]; ok {
 		cfg.dnsMu.Unlock()
@@ -365,9 +470,9 @@ func allowResolvedIP(cfg *NetworkConfig, ip string) error {
 
 	addedPorts := make([]string, 0, 2)
 	for _, port := range []string{"80", "443"} {
-		if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", port, "-j", "ACCEPT"); err != nil {
+		if err := runAllowlistRuleCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", port, "-j", "ACCEPT"); err != nil {
 			for _, rollbackPort := range addedPorts {
-				_ = runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", rollbackPort, "-j", "ACCEPT")
+				_ = runAllowlistRuleCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", rollbackPort, "-j", "ACCEPT")
 			}
 			cfg.dnsMu.Lock()
 			delete(cfg.allowedIPs, ip)
@@ -375,23 +480,36 @@ func allowResolvedIP(cfg *NetworkConfig, ip string) error {
 			return err
 		}
 		addedPorts = append(addedPorts, port)
+		emitIfBus(bus, telemetry.KindNetRuleAdd, telemetry.NetRuleData{
+			Rule:  "ACCEPT",
+			Dst:   ip,
+			Ports: port,
+		})
 	}
 	return nil
 }
 
-func startDNSInterceptor(cfg *NetworkConfig) error {
+var lookupAllowlistIPv4 = func(ctx context.Context, resolver *net.Resolver, host string) ([]net.IP, error) {
+	if resolver == nil {
+		resolver = newUpstreamResolver()
+	}
+	return resolver.LookupIP(ctx, "ip4", host)
+}
+
+func startDNSInterceptor(cfg *NetworkConfig, bus *telemetry.Bus) error {
 	addr := net.JoinHostPort(cfg.HostIP, "53")
+	cfg.upstreamDNS = newUpstreamResolver()
 	observability.Info("dns_interceptor_start", observability.Fields{"tap_name": cfg.TapName, "addr": addr, "presets": cfg.Presets})
 	conn, err := net.ListenPacket("udp4", addr)
 	if err != nil {
 		return fmt.Errorf("start dns interceptor: %w", err)
 	}
 	cfg.dnsConn = conn
-	go serveDNS(cfg, conn)
+	go serveDNS(cfg, conn, bus)
 	return nil
 }
 
-func serveDNS(cfg *NetworkConfig, conn net.PacketConn) {
+func serveDNS(cfg *NetworkConfig, conn net.PacketConn, bus *telemetry.Bus) {
 	buf := make([]byte, 1500)
 	for {
 		n, addr, err := conn.ReadFrom(buf)
@@ -404,7 +522,7 @@ func serveDNS(cfg *NetworkConfig, conn net.PacketConn) {
 		msg := append([]byte(nil), buf[:n]...)
 		observability.Info("dns_query_received", observability.Fields{"tap_name": cfg.TapName, "client_addr": addr.String()})
 
-		resp, err := buildDNSResponse(cfg, msg)
+		resp, err := buildDNSResponse(cfg, msg, bus)
 		if err != nil {
 			observability.Error("dns_build_response_failed", observability.Fields{"tap_name": cfg.TapName, "error": err.Error()})
 			continue
@@ -420,7 +538,7 @@ func serveDNS(cfg *NetworkConfig, conn net.PacketConn) {
 	}
 }
 
-func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
+func buildDNSResponse(cfg *NetworkConfig, req []byte, bus *telemetry.Bus) ([]byte, error) {
 	var parser dnsmessage.Parser
 	head, err := parser.Start(req)
 	if err != nil {
@@ -467,6 +585,11 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
 	}
 
 	if !allowed {
+		emitIfBus(bus, telemetry.KindDNSQuery, telemetry.DNSQueryData{
+			Domain: name,
+			Action: "deny",
+			Reason: "not in allowlist",
+		})
 		builder = dnsmessage.NewBuilder(nil, dnsmessage.Header{
 			ID:                 head.ID,
 			Response:           true,
@@ -492,20 +615,27 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
 	if question.Type == dnsmessage.TypeA {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", name)
+		ips, err := lookupAllowlistIPv4(ctx, cfg.upstreamDNS, name)
 		observability.Info("dns_upstream_resolve", observability.Fields{"tap_name": cfg.TapName, "name": name, "ips": ips, "resolve_error": err})
 		if err != nil {
+			emitIfBus(bus, telemetry.KindDNSQuery, telemetry.DNSQueryData{
+				Domain: name,
+				Action: "error",
+				Reason: err.Error(),
+			})
 			return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
 		}
 		answerCount := 0
+		resolvedIPs := make([]string, 0, len(ips))
 		for _, ip := range ips {
 			ip4 := ip.To4()
 			if ip4 == nil {
 				continue
 			}
-			if err := allowResolvedIP(cfg, ip4.String()); err != nil {
+			if err := allowResolvedIP(cfg, ip4.String(), bus); err != nil {
 				return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
 			}
+			resolvedIPs = append(resolvedIPs, ip4.String())
 			var arr [4]byte
 			copy(arr[:], ip4)
 			if err := builder.AResource(dnsmessage.ResourceHeader{
@@ -518,6 +648,11 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte) ([]byte, error) {
 			}
 			answerCount++
 		}
+		emitIfBus(bus, telemetry.KindDNSQuery, telemetry.DNSQueryData{
+			Domain:   name,
+			Action:   "allow",
+			Resolved: resolvedIPs,
+		})
 		observability.Info("dns_answered_a", observability.Fields{"tap_name": cfg.TapName, "name": name, "answer_count": answerCount})
 	} else {
 		observability.Info("dns_empty_noerror", observability.Fields{"tap_name": cfg.TapName, "name": name, "query_type": question.Type.String()})

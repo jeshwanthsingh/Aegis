@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB_URL_DEFAULT="postgres://postgres:postgres@localhost/postgres?sslmode=disable"
 DB_URL="${DB_URL:-$DB_URL_DEFAULT}"
+ROOTFS_IMAGE="${ROOTFS_PATH:-${AEGIS_ROOTFS_PATH:-$REPO_DIR/assets/alpine-base.ext4}}"
 FAILURES=0
 
 pass() {
@@ -56,10 +57,10 @@ check_kernel_image() {
 }
 
 check_rootfs() {
-  if [ -f "$REPO_DIR/assets/alpine-base.ext4" ]; then
+  if [ -f "$ROOTFS_IMAGE" ]; then
     pass "rootfs"
   else
-    fail "rootfs" "missing $REPO_DIR/assets/alpine-base.ext4"
+    fail "rootfs" "missing $ROOTFS_IMAGE"
   fi
 }
 

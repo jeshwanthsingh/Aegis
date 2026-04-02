@@ -6,6 +6,7 @@ BASE_URL="${BASE_URL:-http://localhost:8080}"
 DB_URL="${DB_URL:-postgres://postgres:postgres@localhost/aegis?sslmode=disable}"
 POLICY_PATH="${POLICY_PATH:-$REPO_DIR/configs/default-policy.yaml}"
 ASSETS_DIR="${ASSETS_DIR:-$REPO_DIR/assets}"
+ROOTFS_PATH="${ROOTFS_PATH:-${AEGIS_ROOTFS_PATH:-}}"
 ORCH_BIN="${ORCH_BIN:-/tmp/aegis-bin}"
 LOG_FILE="${LOG_FILE:-/tmp/aegis-smoke-local.log}"
 FAILURES=0
@@ -70,10 +71,14 @@ else
     fi
   fi
 
-  sudo env "PATH=$PATH:/sbin:/usr/sbin" SUDO_USER="${SUDO_USER:-$(id -un)}" "$ORCH_BIN" \
+  cmd=(sudo env "PATH=$PATH:/sbin:/usr/sbin" SUDO_USER="${SUDO_USER:-$(id -un)}" "$ORCH_BIN" \
     --db "$DB_URL" \
     --policy "$POLICY_PATH" \
-    --assets-dir "$ASSETS_DIR" >"$LOG_FILE" 2>&1 &
+    --assets-dir "$ASSETS_DIR")
+  if [ -n "$ROOTFS_PATH" ]; then
+    cmd+=(--rootfs-path "$ROOTFS_PATH")
+  fi
+  "${cmd[@]}" >"$LOG_FILE" 2>&1 &
   A_STARTED=1
   sleep 3
 

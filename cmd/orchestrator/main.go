@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,11 +19,15 @@ import (
 func main() {
 	dbConn := flag.String("db", "postgres://localhost/aegis?sslmode=disable", "postgres connection string")
 	policyPath := flag.String("policy", "configs/default-policy.yaml", "path to policy yaml")
-	assetsDir := flag.String("assets-dir", "", "path to assets directory (vmlinux, alpine-base.ext4)")
+	assetsDir := flag.String("assets-dir", "", "path to assets directory (vmlinux, rootfs images)")
+	rootfsPath := flag.String("rootfs-path", os.Getenv("AEGIS_ROOTFS_PATH"), "optional rootfs image override for migration/rollback")
 	flag.Parse()
 
-	if err := os.MkdirAll("/tmp/aegis", 0o755); err != nil {
+	if err := os.MkdirAll("/tmp/aegis", 0o700); err != nil {
 		observability.Fatal("startup_failed", observability.Fields{"step": "create_tmp_dir", "error": err.Error()})
+	}
+	if err := os.Chmod("/tmp/aegis", 0o700); err != nil {
+		observability.Fatal("startup_failed", observability.Fields{"step": "chmod_tmp_dir", "error": err.Error()})
 	}
 	if err := executor.InitWorkspacesDir(); err != nil {
 		observability.Fatal("startup_failed", observability.Fields{"step": "init_workspaces_dir", "error": err.Error()})
@@ -51,14 +56,34 @@ func main() {
 
 	pool := executor.NewPool(5)
 	observability.SetWorkerSlotsFunc(pool.Available)
+	registry := api.NewBusRegistry()
+	stats := api.NewStatsCounter()
+	uiDir := os.Getenv("AEGIS_UI_DIR")
+	if uiDir == "" {
+		uiDir = "ui"
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", api.HandleHealth(pool))
 	mux.HandleFunc("GET /ready", api.HandleReady(s, pool))
 	mux.HandleFunc("GET /metrics", observability.HandleMetrics())
+	mux.HandleFunc("GET /v1/stats", api.NewStatsHandler(stats))
+	mux.HandleFunc("GET /v1/events/{exec_id}", api.NewTelemetryHandler(registry))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
-	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol, *assetsDir)))
-	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol, *assetsDir)))
+	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
+	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
+	if info, err := os.Stat(uiDir); err == nil && info.IsDir() {
+		uiFS := http.FileServer(http.Dir(uiDir))
+		mux.Handle("GET /ui/", http.StripPrefix("/ui/", uiFS))
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, filepath.Join(uiDir, "index.html"))
+		})
+		observability.Info("ui_enabled", observability.Fields{"ui_dir": uiDir})
+	} else if err != nil {
+		observability.Warn("ui_disabled", observability.Fields{"ui_dir": uiDir, "error": err.Error()})
+	} else {
+		observability.Warn("ui_disabled", observability.Fields{"ui_dir": uiDir, "error": fmt.Sprintf("%s is not a directory", uiDir)})
+	}
 
 	observability.Info("server_listen", observability.Fields{"addr": ":8080"})
 	if err := http.ListenAndServe(":8080", mux); err != nil {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,7 @@ type Payload struct {
 	Lang               string `json:"lang"`
 	Code               string `json:"code"`
 	TimeoutMs          int    `json:"timeout_ms"`
+	PidsLimit          int    `json:"pids_limit,omitempty"`
 	WorkspaceRequested bool   `json:"workspace_requested,omitempty"`
 	NetworkRequested   bool   `json:"network_requested,omitempty"`
 	GuestIP            string `json:"guest_ip,omitempty"`
@@ -32,12 +34,29 @@ type Payload struct {
 }
 
 type GuestChunk struct {
-	Type       string `json:"type"`
-	Chunk      string `json:"chunk,omitempty"`
-	ExitCode   int    `json:"exit_code,omitempty"`
-	DurationMs int64  `json:"duration_ms,omitempty"`
-	Error      string `json:"error,omitempty"`
+	Type       string          `json:"type"`
+	Name       string          `json:"name,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
+	Chunk      string          `json:"chunk,omitempty"`
+	ExitCode   int             `json:"exit_code,omitempty"`
+	Reason     string          `json:"reason,omitempty"`
+	DurationMs int64           `json:"duration_ms,omitempty"`
+	Error      string          `json:"error,omitempty"`
 }
+
+type guestProcSampleData struct {
+	PidsCurrent int `json:"pids_current"`
+	PidsLimit   int `json:"pids_limit"`
+	PidsPct     int `json:"pids_pct"`
+}
+
+const (
+	guestExecUID            = 65534
+	guestExecGID            = 65534
+	guestProcSampleInterval = 100 * time.Millisecond
+	guestProcSampleKind     = "guest.proc.sample"
+	guestStreamChunkBytes   = 16 * 1024
+)
 
 var managedChildren atomic.Int32
 
@@ -133,8 +152,169 @@ func setupWorkspace(requested bool) (bool, error) {
 	if err := unix.Mount(blockDevice, workspaceDir, "ext4", 0, ""); err != nil {
 		return false, err
 	}
+	if err := os.Chmod(workspaceDir, 0o777); err != nil {
+		_ = unix.Unmount(workspaceDir, 0)
+		return false, err
+	}
 
 	return true, nil
+}
+
+func createLauncher(limit int) (string, error) {
+	f, err := os.CreateTemp("", "launcher-*.sh")
+	if err != nil {
+		return "", err
+	}
+	script := "#!/bin/sh\nulimit -u \"$1\"\nshift\nexec \"$@\"\n"
+	if _, err := f.WriteString(script); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := os.Chmod(f.Name(), 0o755); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+func createTempResolvConf(dnsServer string) (string, error) {
+	resolvPath, err := os.CreateTemp("", "resolv-*.conf")
+	if err != nil {
+		return "", err
+	}
+	cleanupPath := resolvPath.Name()
+	contents := fmt.Sprintf("nameserver %s\noptions timeout:5 attempts:2\n", dnsServer)
+	if _, err := resolvPath.WriteString(contents); err != nil {
+		resolvPath.Close()
+		os.Remove(cleanupPath)
+		return "", err
+	}
+	if err := resolvPath.Close(); err != nil {
+		os.Remove(cleanupPath)
+		return "", err
+	}
+	// The executed child runs as nobody, so the bind-mounted resolver file must
+	// be readable by non-root code that performs name resolution.
+	if err := os.Chmod(cleanupPath, 0o644); err != nil {
+		os.Remove(cleanupPath)
+		return "", err
+	}
+	return cleanupPath, nil
+}
+
+func countProcessTree(rootPID int) (int, error) {
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", rootPID)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	children := make(map[int][]int)
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, err
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+		if err != nil {
+			continue
+		}
+		ppid := -1
+		for _, line := range strings.Split(string(status), "\n") {
+			if !strings.HasPrefix(line, "PPid:") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if parsed, err := strconv.Atoi(fields[1]); err == nil {
+					ppid = parsed
+				}
+			}
+			break
+		}
+		if ppid >= 0 {
+			children[ppid] = append(children[ppid], pid)
+		}
+	}
+
+	count := 0
+	queue := []int{rootPID}
+	seen := map[int]struct{}{}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[pid]; ok {
+			continue
+		}
+		seen[pid] = struct{}{}
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
+			continue
+		}
+		count++
+		queue = append(queue, children[pid]...)
+	}
+	return count, nil
+}
+
+func sampleGuestProcesses(rootPID int, limit int, send func(GuestChunk) bool, stop <-chan struct{}, limitHit *atomic.Bool) {
+	ticker := time.NewTicker(guestProcSampleInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			count, err := countProcessTree(rootPID)
+			if err != nil || count == 0 {
+				continue
+			}
+			if limit > 0 && count >= limit {
+				limitHit.Store(true)
+			}
+			data, err := json.Marshal(guestProcSampleData{
+				PidsCurrent: count,
+				PidsLimit:   limit,
+				PidsPct:     percentInt(count, limit),
+			})
+			if err != nil {
+				continue
+			}
+			if !send(GuestChunk{Type: "telemetry", Name: guestProcSampleKind, Data: data}) {
+				return
+			}
+		}
+	}
+}
+
+func percentInt(current int, limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	return (current * 100) / limit
+}
+
+func classifyExitReason(timedOut bool, guestPidsLimitHit bool, fallback string) string {
+	if guestPidsLimitHit {
+		return "pids_limit"
+	}
+	if timedOut {
+		return "timeout"
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "completed"
 }
 
 func findCommand(names ...string) string {
@@ -202,20 +382,9 @@ func setupNetwork(p Payload, emit func(string)) (func() error, error) {
 	}
 
 	emit("create temp resolv.conf")
-	resolvPath, err := os.CreateTemp("", "resolv-*.conf")
-	if err != nil {
-		return nil, err
-	}
-	cleanupPath := resolvPath.Name()
-	contents := fmt.Sprintf("nameserver %s\noptions timeout:5 attempts:2\n", p.DNSServer)
 	emit("write temp resolv.conf for " + p.DNSServer)
-	if _, err := resolvPath.WriteString(contents); err != nil {
-		resolvPath.Close()
-		os.Remove(cleanupPath)
-		return nil, err
-	}
-	if err := resolvPath.Close(); err != nil {
-		os.Remove(cleanupPath)
+	cleanupPath, err := createTempResolvConf(p.DNSServer)
+	if err != nil {
 		return nil, err
 	}
 	emit("bind mount resolv.conf")
@@ -253,14 +422,24 @@ func main() {
 		}
 	}()
 
-	l, err := vsock.Listen(1024, nil)
-	if err != nil {
-		os.Exit(1)
+	var l net.Listener
+	for i := 0; ; i++ {
+		var listenErr error
+		l, listenErr = vsock.Listen(1024, nil)
+		if listenErr == nil {
+			break
+		}
+		if i >= 20 {
+			fmt.Fprintf(os.Stderr, "vsock.Listen failed: %v\n", listenErr)
+			os.Exit(1)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	defer l.Close()
 
 	conn, err := l.Accept()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "vsock.Accept failed: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
@@ -369,12 +548,40 @@ func main() {
 		return
 	}
 	_ = f.Close()
+	_ = os.Chmod(f.Name(), 0o644)
 
-	cmdArgs := []string{f.Name()}
+	interpArgs := []string{f.Name()}
 	if p.Lang == "python" {
-		cmdArgs = []string{"-S", "-u", f.Name()}
+		interpArgs = []string{"-S", "-u", f.Name()}
 	}
-	cmd := exec.Command(interpreter, cmdArgs...)
+	execPath := interpreter
+	execArgs := interpArgs
+	var launcherPath string
+	if p.PidsLimit > 0 {
+		launcherPath, err = createLauncher(p.PidsLimit)
+		if err != nil {
+			if !sendChunk(GuestChunk{Type: "error", Error: diagPrefix + "create launcher: " + err.Error()}) {
+				return
+			}
+			close(chunks)
+			_ = <-writeErr
+			return
+		}
+		defer os.Remove(launcherPath)
+		execPath = launcherPath
+		execArgs = append([]string{strconv.Itoa(p.PidsLimit), interpreter}, interpArgs...)
+	}
+	cmd := exec.Command(execPath, execArgs...)
+	workDir := "/tmp"
+	if mountedWorkspace {
+		workDir = "/workspace"
+	}
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), "HOME="+workDir, "USER=nobody", "LOGNAME=nobody")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: guestExecUID, Gid: guestExecGID},
+		Setpgid:    true,
+	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		if !sendChunk(GuestChunk{Type: "error", Error: diagPrefix + "stdout pipe: " + err.Error()}) {
@@ -412,31 +619,50 @@ func main() {
 	}
 
 	var timedOut atomic.Bool
+	var guestPidsLimitHit atomic.Bool
 	timer := time.AfterFunc(time.Duration(p.TimeoutMs)*time.Millisecond, func() {
 		timedOut.Store(true)
 		_ = cmd.Process.Kill()
 	})
 	defer timer.Stop()
 
+	samplerStop := make(chan struct{})
+	var samplerWG sync.WaitGroup
+	samplerWG.Add(1)
+	go func() {
+		defer samplerWG.Done()
+		sampleGuestProcesses(cmd.Process.Pid, p.PidsLimit, sendChunk, samplerStop, &guestPidsLimitHit)
+	}()
+	defer func() {
+		close(samplerStop)
+		samplerWG.Wait()
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go streamPipe(&wg, stdoutPipe, "stdout", chunks, writerDone)
 	go streamPipe(&wg, stderrPipe, "stderr", chunks, writerDone)
 
+	wg.Wait()
+
 	exitCode := 0
+	exitReason := "completed"
 	if err := cmd.Wait(); err != nil {
 		var exitErr *exec.ExitError
 		if timedOut.Load() {
 			exitCode = -1
+			exitReason = classifyExitReason(true, guestPidsLimitHit.Load(), exitReason)
 			_ = sendChunk(GuestChunk{Type: "stderr", Chunk: "execution timeout\n"})
 		} else if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
+			if guestPidsLimitHit.Load() {
+				exitReason = classifyExitReason(false, true, exitReason)
+			}
 		} else {
 			exitCode = 1
 		}
 	}
 
-	wg.Wait()
 	if networkCleanup != nil {
 		if err := networkCleanup(); err != nil {
 			_ = sendChunk(GuestChunk{Type: "stderr", Chunk: "network cleanup: " + err.Error() + "\n"})
@@ -449,7 +675,7 @@ func main() {
 		}
 		unix.Sync()
 	}
-	if !sendChunk(GuestChunk{Type: "done", ExitCode: exitCode, DurationMs: time.Since(start).Milliseconds()}) {
+	if !sendChunk(GuestChunk{Type: "done", ExitCode: exitCode, Reason: exitReason, DurationMs: time.Since(start).Milliseconds()}) {
 		_ = <-writeErr
 		return
 	}
@@ -459,13 +685,20 @@ func main() {
 
 func streamPipe(wg *sync.WaitGroup, pipe io.Reader, chunkType string, chunks chan<- GuestChunk, writerDone <-chan struct{}) {
 	defer wg.Done()
-	scanner := bufio.NewScanner(pipe)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-	for scanner.Scan() {
-		select {
-		case chunks <- GuestChunk{Type: chunkType, Chunk: scanner.Text() + "\n"}:
-		case <-writerDone:
+	reader := bufio.NewReaderSize(pipe, guestStreamChunkBytes)
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) > 0 {
+			select {
+			case chunks <- GuestChunk{Type: chunkType, Chunk: string(chunk)}:
+			case <-writerDone:
+				return
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil {
 			return
 		}
 	}

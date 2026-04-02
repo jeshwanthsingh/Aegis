@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,11 +16,13 @@ import (
 	"aegis/internal/observability"
 	"aegis/internal/policy"
 	"aegis/internal/store"
+	"aegis/internal/telemetry"
 
 	"github.com/google/uuid"
 )
 
 type ExecuteRequest struct {
+	ExecutionID string `json:"execution_id,omitempty"`
 	Lang        string `json:"lang"`
 	Code        string `json:"code"`
 	TimeoutMs   int    `json:"timeout_ms"`
@@ -67,7 +71,10 @@ func HandleDeleteWorkspace() http.HandlerFunc {
 		}
 		if err := executor.DeleteWorkspace(id); err != nil {
 			status := http.StatusInternalServerError
-			if errors.Is(err, os.ErrNotExist) {
+			switch {
+			case errors.Is(err, executor.ErrInvalidWorkspaceID):
+				status = http.StatusBadRequest
+			case errors.Is(err, os.ErrNotExist):
 				status = http.StatusNotFound
 			}
 			w.WriteHeader(status)
@@ -78,7 +85,7 @@ func HandleDeleteWorkspace() http.HandlerFunc {
 	}
 }
 
-func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string) http.HandlerFunc {
+func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string, rootfsPath string, registry *BusRegistry, stats *StatsCounter, policyVersion string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		execStatus := "error"
@@ -121,6 +128,25 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			return
 		}
 
+		execID, err := chooseExecutionID(req.ExecutionID)
+		if err != nil {
+			execStatus = "invalid_request"
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{Error: err.Error()})
+			return
+		}
+		bus, execID, err := claimExecutionBus(registry, execID, req.ExecutionID != "")
+		if err != nil {
+			execStatus = "conflict"
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: err.Error()})
+			return
+		}
+		defer func() {
+			bus.Close()
+			registry.Complete(execID)
+		}()
+
 		timeoutMs := req.TimeoutMs
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
@@ -131,19 +157,51 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 		computeProfile, ok := pol.Profiles[req.Profile]
 		if !ok {
 			execStatus = "invalid_profile"
-			execID := uuid.New().String()
-			respond(ExecuteResponse{ExecutionID: execID, Error: "invalid compute profile"}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: "invalid compute profile"})
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: "invalid compute profile"})
 			return
 		}
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
 			execStatus = "validation_error"
-			execID := uuid.New().String()
-			msg := err.Error()
-			respond(ExecuteResponse{ExecutionID: execID, Error: msg}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg})
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: err.Error()})
 			return
 		}
 
-		execID := uuid.New().String()
+		var (
+			vm              *executor.VMInstance
+			exitCode        int
+			exitReason      = "completed"
+			outputTruncated bool
+			recordStats     bool
+			receiptPolicy   = buildReceiptPolicy(pol, policyVersion, req.Profile)
+		)
+
+		defer func() {
+			cleanup := cleanupFromVM(vm)
+			network := buildReceiptNetwork(pol, bus.Drain())
+			receipt := models.ContainmentReceipt{
+				ExecID:     execID,
+				StartedAt:  start.Format(time.RFC3339Nano),
+				EndedAt:    time.Now().Format(time.RFC3339Nano),
+				DurationMs: time.Since(start).Milliseconds(),
+				Language:   req.Lang,
+				Policy:     receiptPolicy,
+				Network:    network,
+				Exit: models.ReceiptExit{
+					Code:            exitCode,
+					Reason:          exitReason,
+					OutputTruncated: outputTruncated,
+				},
+				Cleanup: cleanup,
+				Verdict: verdictFor(exitCode, exitReason),
+			}
+			bus.Emit(telemetry.KindReceipt, receipt)
+			if recordStats && stats != nil {
+				stats.RecordReceipt(receipt)
+			}
+		}()
+
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond+startupSlack)
 		defer cancel()
 		deadline, _ := ctx.Deadline()
@@ -159,16 +217,25 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			observability.ObserveBootDuration(time.Since(bootStart))
 		}
 
-		vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir)
+		vm, err = executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir, rootfsPath, bus)
 		if err != nil {
 			recordBoot()
+			if errors.Is(err, executor.ErrInvalidWorkspaceID) {
+				execStatus = "validation_error"
+				msg := err.Error()
+				respond(ExecuteResponse{ExecutionID: execID, Error: msg}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg})
+				return
+			}
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
+			recordStats = true
 			respond(ExecuteResponse{ExecutionID: execID, Error: err.Error()}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()})
 			return
 		}
 		defer func() {
 			teardownStart := time.Now()
-			if err := executor.Teardown(vm); err != nil {
+			if err := executor.Teardown(vm, bus); err != nil {
 				observability.Error("teardown_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
 			} else {
 				observability.Info("teardown_completed", observability.Fields{"execution_id": execID})
@@ -176,12 +243,20 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			observability.ObserveTeardownDuration(time.Since(teardownStart))
 		}()
 
-		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources); err != nil {
+		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources, bus); err != nil {
 			recordBoot()
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
+			recordStats = true
 			respond(ExecuteResponse{ExecutionID: execID, Error: err.Error()}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()})
 			return
 		}
+
+		pollCtx, cancelPoller := context.WithCancel(ctx)
+		defer cancelPoller()
+		stopPoller := telemetry.StartCgroupPoller(pollCtx, bus, execID, 100*time.Millisecond)
+		defer stopPoller()
 
 		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		defer proxyCancel()
@@ -196,19 +271,27 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			recordBoot()
 			outcome, status := "error", "sandbox_error"
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
 			if ctx.Err() == context.DeadlineExceeded {
 				outcome, status = "timeout", "timed_out"
 				execStatus = "timeout"
+				exitReason = "timeout"
 			}
+			recordStats = true
+			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
 			respond(ExecuteResponse{ExecutionID: execID, Error: outcome}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			return
 		}
 		defer conn.Close()
 		recordBoot()
+		bus.Emit(telemetry.KindVMBootReady, map[string]interface{}{
+			"elapsed_ms": time.Since(bootStart).Milliseconds(),
+		})
 
 		observability.Info("vsock_connected", observability.Fields{"execution_id": execID, "remaining_ms": time.Until(deadline).Milliseconds()})
 
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, WorkspaceRequested: req.WorkspaceID != ""}
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: pol.Resources.PidsMax, WorkspaceRequested: req.WorkspaceID != ""}
 		if vm.Network != nil {
 			payload.NetworkRequested = true
 			payload.GuestIP = vm.Network.GuestIP
@@ -216,14 +299,19 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			payload.DNSServer = vm.Network.GatewayIP
 		}
 
-		result, err := executor.SendPayload(conn, payload, deadline)
+		result, err := executor.SendPayload(conn, payload, deadline, bus)
 		if err != nil {
 			outcome, status := "error", "sandbox_error"
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
 			if ctx.Err() == context.DeadlineExceeded {
 				outcome, status = "timeout", "timed_out"
 				execStatus = "timeout"
+				exitReason = "timeout"
 			}
+			recordStats = true
+			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
 			respond(ExecuteResponse{ExecutionID: execID, Error: outcome}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			return
 		}
@@ -234,11 +322,18 @@ func NewHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsD
 			outcome = "completed_nonzero"
 			execStatus = "completed_nonzero"
 		}
+		exitCode = result.ExitCode
+		exitReason = result.ExitReason
+		if exitReason == "" {
+			exitReason = "completed"
+		}
+		outputTruncated = result.OutputTruncated
+		recordStats = true
 		respond(ExecuteResponse{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode, ExecutionID: execID, OutputTruncated: result.OutputTruncated}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: "completed", StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes})
 	}
 }
 
-func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string) http.HandlerFunc {
+func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, assetsDir string, rootfsPath string, registry *BusRegistry, stats *StatsCounter, policyVersion string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		execStatus := "error"
@@ -271,6 +366,27 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			return
 		}
 
+		execID, err := chooseExecutionID(req.ExecutionID)
+		if err != nil {
+			execStatus = "invalid_request"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{Error: err.Error()})
+			return
+		}
+		bus, execID, err := claimExecutionBus(registry, execID, req.ExecutionID != "")
+		if err != nil {
+			execStatus = "conflict"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: err.Error()})
+			return
+		}
+		defer func() {
+			bus.Close()
+			registry.Complete(execID)
+		}()
+
 		timeoutMs := req.TimeoutMs
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
@@ -283,13 +399,14 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			execStatus = "invalid_profile"
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: "invalid compute profile"})
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: "invalid compute profile"})
 			return
 		}
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
 			execStatus = "validation_error"
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: uuid.New().String(), Error: err.Error()})
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: err.Error()})
 			return
 		}
 
@@ -302,8 +419,41 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Execution-ID", execID)
+		var (
+			vm              *executor.VMInstance
+			exitCode        int
+			exitReason      = "completed"
+			outputTruncated bool
+			recordStats     bool
+			receiptPolicy   = buildReceiptPolicy(pol, policyVersion, req.Profile)
+		)
 
-		execID := uuid.New().String()
+		defer func() {
+			cleanup := cleanupFromVM(vm)
+			network := buildReceiptNetwork(pol, bus.Drain())
+			receipt := models.ContainmentReceipt{
+				ExecID:     execID,
+				StartedAt:  start.Format(time.RFC3339Nano),
+				EndedAt:    time.Now().Format(time.RFC3339Nano),
+				DurationMs: time.Since(start).Milliseconds(),
+				Language:   req.Lang,
+				Policy:     receiptPolicy,
+				Network:    network,
+				Exit: models.ReceiptExit{
+					Code:            exitCode,
+					Reason:          exitReason,
+					OutputTruncated: outputTruncated,
+				},
+				Cleanup: cleanup,
+				Verdict: verdictFor(exitCode, exitReason),
+			}
+			bus.Emit(telemetry.KindReceipt, receipt)
+			if recordStats && stats != nil {
+				stats.RecordReceipt(receipt)
+			}
+		}()
+
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond+startupSlack)
 		defer cancel()
 		deadline, _ := ctx.Deadline()
@@ -319,16 +469,26 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			observability.ObserveBootDuration(time.Since(bootStart))
 		}
 
-		vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir)
+		vm, err = executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir, rootfsPath, bus)
 		if err != nil {
 			recordBoot()
+			if errors.Is(err, executor.ErrInvalidWorkspaceID) {
+				execStatus = "validation_error"
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(ExecuteResponse{ExecutionID: execID, Error: err.Error()})
+				return
+			}
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
+			recordStats = true
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
 		defer func() {
 			teardownStart := time.Now()
-			if err := executor.Teardown(vm); err != nil {
+			if err := executor.Teardown(vm, bus); err != nil {
 				observability.Error("teardown_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
 			} else {
 				observability.Info("teardown_completed", observability.Fields{"execution_id": execID})
@@ -336,12 +496,20 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			observability.ObserveTeardownDuration(time.Since(teardownStart))
 		}()
 
-		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources); err != nil {
+		if err := executor.SetupCgroup(execID, vm.FirecrackerPID, pol.Resources, bus); err != nil {
 			recordBoot()
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
+			recordStats = true
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
+
+		pollCtx, cancelPoller := context.WithCancel(ctx)
+		defer cancelPoller()
+		stopPoller := telemetry.StartCgroupPoller(pollCtx, bus, execID, 100*time.Millisecond)
+		defer stopPoller()
 
 		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		defer proxyCancel()
@@ -356,22 +524,33 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			recordBoot()
 			execStatus = "sandbox_error"
 			outcome := "error"
+			exitCode = -1
+			exitReason = "sandbox_error"
 			if ctx.Err() == context.DeadlineExceeded {
 				execStatus = "timeout"
 				outcome = "timeout"
+				exitReason = "timeout"
 			}
+			recordStats = true
+			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: outcome})
 			return
 		}
 		defer conn.Close()
 		recordBoot()
+		bus.Emit(telemetry.KindVMBootReady, map[string]interface{}{
+			"elapsed_ms": time.Since(bootStart).Milliseconds(),
+		})
 
 		if err := conn.SetDeadline(deadline); err != nil {
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
+			recordStats = true
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, WorkspaceRequested: req.WorkspaceID != ""}
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: pol.Resources.PidsMax, WorkspaceRequested: req.WorkspaceID != ""}
 		if vm.Network != nil {
 			payload.NetworkRequested = true
 			payload.GuestIP = vm.Network.GuestIP
@@ -380,18 +559,28 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 		}
 		if err := json.NewEncoder(conn).Encode(payload); err != nil {
 			execStatus = "sandbox_error"
+			exitCode = -1
+			exitReason = "sandbox_error"
+			recordStats = true
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
 
-		result, err := executor.ReadChunks(conn, deadline, func(chunkType, chunk string) { writeSSE(w, flusher, models.GuestChunk{Type: chunkType, Chunk: chunk}) })
+		result, err := executor.ReadChunks(conn, deadline, func(chunkType, chunk string) {
+			writeSSE(w, flusher, models.GuestChunk{Type: chunkType, Chunk: chunk})
+		}, bus)
 		if err != nil {
 			execStatus = "sandbox_error"
 			outcome := err.Error()
+			exitCode = -1
+			exitReason = "sandbox_error"
 			if ctx.Err() == context.DeadlineExceeded {
 				execStatus = "timeout"
 				outcome = "timeout"
+				exitReason = "timeout"
 			}
+			recordStats = true
+			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: outcome})
 			return
 		}
@@ -403,10 +592,104 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, pol *policy.Policy, a
 			outcome = "completed_nonzero"
 			execStatus = "completed_nonzero"
 		}
+		exitCode = result.ExitCode
+		exitReason = result.ExitReason
+		if exitReason == "" {
+			exitReason = "completed"
+		}
+		outputTruncated = result.OutputTruncated
+		recordStats = true
 		if err := s.WriteExecution(store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: "completed", DurationMs: time.Since(start).Milliseconds(), StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes}); err != nil {
 			observability.Warn("audit_log_write_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
 		}
 	}
+}
+
+func buildReceiptPolicy(pol *policy.Policy, version string, profile string) models.ReceiptPolicy {
+	if pol == nil {
+		return models.ReceiptPolicy{Version: version, Profile: profile}
+	}
+	return models.ReceiptPolicy{
+		Version:        version,
+		Profile:        profile,
+		NetworkMode:    pol.Network.Mode,
+		AllowedDomains: policyAllowedDomains(pol),
+		CgroupLimits: models.ReceiptCgroupLimits{
+			MemoryMax: strconv.Itoa(pol.Resources.MemoryMaxMB) + "M",
+			PidsMax:   strconv.Itoa(pol.Resources.PidsMax),
+			CpuQuota:  strconv.Itoa(pol.Resources.CPUPercent*1000) + " 100000",
+			Swap:      "disabled",
+		},
+	}
+}
+
+func policyAllowedDomains(pol *policy.Policy) []string {
+	if pol == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var domains []string
+	for _, preset := range pol.Network.Presets {
+		for _, host := range policy.NetworkPresets[preset] {
+			if _, ok := seen[host]; ok {
+				continue
+			}
+			seen[host] = struct{}{}
+			domains = append(domains, host)
+		}
+	}
+	slices.Sort(domains)
+	return domains
+}
+
+func cleanupFromVM(vm *executor.VMInstance) models.ReceiptCleanup {
+	if vm == nil {
+		return models.ReceiptCleanup{}
+	}
+	return models.ReceiptCleanup{
+		TapRemoved:     vm.Cleanup.TapRemoved,
+		CgroupRemoved:  vm.Cleanup.CgroupRemoved,
+		ScratchRemoved: vm.Cleanup.ScratchRemoved,
+		SocketRemoved:  vm.Cleanup.SocketRemoved,
+		AllClean:       vm.Cleanup.AllClean,
+	}
+}
+
+func buildReceiptNetwork(pol *policy.Policy, events []telemetry.Event) models.ReceiptNetwork {
+	summary := models.ReceiptNetwork{
+		NetworkMode:    "",
+		AllowedDomains: nil,
+	}
+	if pol != nil {
+		summary.NetworkMode = pol.Network.Mode
+		summary.AllowedDomains = policyAllowedDomains(pol)
+	}
+	for _, event := range events {
+		switch event.Kind {
+		case telemetry.KindDNSQuery:
+			var data telemetry.DNSQueryData
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				continue
+			}
+			summary.DNSQueriesTotal++
+			switch data.Action {
+			case "allow":
+				summary.DNSQueriesAllowed++
+			case "deny":
+				summary.DNSQueriesDenied++
+			}
+		case telemetry.KindNetRuleAdd:
+			summary.IptablesRulesAdded++
+		}
+	}
+	return summary
+}
+
+func verdictFor(exitCode int, reason string) string {
+	if exitCode == 0 && reason == "completed" {
+		return "completed"
+	}
+	return "contained"
 }
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk models.GuestChunk) {
@@ -418,4 +701,31 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk models.GuestChu
 	_, _ = w.Write(b)
 	_, _ = w.Write([]byte("\n\n"))
 	flusher.Flush()
+}
+
+func chooseExecutionID(raw string) (string, error) {
+	if raw == "" {
+		return uuid.New().String(), nil
+	}
+	if strings.TrimSpace(raw) != raw {
+		return "", errors.New("invalid execution_id")
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		return "", errors.New("invalid execution_id")
+	}
+	return parsed.String(), nil
+}
+
+func claimExecutionBus(registry *BusRegistry, execID string, clientSupplied bool) (*telemetry.Bus, string, error) {
+	for {
+		bus := telemetry.NewBus(execID)
+		if registry.TryRegister(execID, bus) {
+			return bus, execID, nil
+		}
+		if clientSupplied {
+			return nil, execID, errors.New("execution_id already in use")
+		}
+		execID = uuid.New().String()
+	}
 }

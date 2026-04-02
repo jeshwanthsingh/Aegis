@@ -16,6 +16,7 @@ import (
 
 	"aegis/internal/observability"
 	"aegis/internal/policy"
+	"aegis/internal/telemetry"
 )
 
 type VMInstance struct {
@@ -27,9 +28,30 @@ type VMInstance struct {
 	GuestCID       uint32
 	IsPersistent   bool
 	Network        *NetworkConfig
+	Cleanup        telemetry.CleanupDoneData
 }
 
 const scratchDir = "/tmp/aegis"
+
+func resolveRootfsImage(baseDir string, explicit string) (string, error) {
+	if explicit != "" {
+		if _, err := os.Stat(explicit); err != nil {
+			return "", fmt.Errorf("stat rootfs image %s: %w", explicit, err)
+		}
+		return explicit, nil
+	}
+	if envPath := os.Getenv("AEGIS_ROOTFS_PATH"); envPath != "" {
+		if _, err := os.Stat(envPath); err != nil {
+			return "", fmt.Errorf("stat rootfs image %s: %w", envPath, err)
+		}
+		return envPath, nil
+	}
+	defaultPath := filepath.Join(baseDir, "alpine-base.ext4")
+	if _, err := os.Stat(defaultPath); err != nil {
+		return "", fmt.Errorf("stat rootfs image %s: %w", defaultPath, err)
+	}
+	return defaultPath, nil
+}
 
 func resolveHomeDir() (string, error) {
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
@@ -41,26 +63,43 @@ func resolveHomeDir() (string, error) {
 	return os.UserHomeDir()
 }
 
-func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.ComputeProfile, assetsDir string) (*VMInstance, error) {
-	var baseDir string
+func resolveAssetsDir(assetsDir string) (string, error) {
 	if assetsDir != "" {
-		baseDir = assetsDir
-	} else {
-		homeDir, err := resolveHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("get home dir: %w", err)
-		}
-		baseDir = filepath.Join(homeDir, "aegis", "assets")
+		return assetsDir, nil
 	}
+	homeDir, err := resolveHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	return filepath.Join(homeDir, "aegis", "assets"), nil
+}
 
-	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
+func emitIfBus(bus *telemetry.Bus, kind string, data interface{}) {
+	if bus != nil {
+		bus.Emit(kind, data)
+	}
+}
+
+func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*VMInstance, error) {
+	baseDir, err := resolveAssetsDir(assetsDir)
+	if err != nil {
+		return nil, err
+	}
+	emitIfBus(bus, telemetry.KindVMBootStart, map[string]string{})
+
+	if err := os.MkdirAll(scratchDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create scratch dir: %w", err)
 	}
+	if err := os.Chmod(scratchDir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod scratch dir: %w", err)
+	}
 
-	baseImage := filepath.Join(baseDir, "alpine-base.ext4")
+	rootfsPath, err = resolveRootfsImage(baseDir, rootfsPath)
+	if err != nil {
+		return nil, err
+	}
 	isPersistent := false
 	var scratchPath string
-	var err error
 	if workspaceID != "" {
 		scratchPath, err = GetOrCreateWorkspace(workspaceID, 256)
 		if err != nil {
@@ -76,7 +115,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	var networkCfg *NetworkConfig
 	if pol != nil {
-		networkCfg, err = SetupNetwork(uuid, pol.Network)
+		networkCfg, err = SetupNetwork(uuid, pol.Network, bus)
 		if err != nil {
 			return nil, fmt.Errorf("setup network: %w", err)
 		}
@@ -87,8 +126,11 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	kernelPath := filepath.Join(baseDir, "vmlinux")
 
 	cmd := exec.Command("firecracker", "--api-sock", socketPath)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Env = []string{}
+	serialLogPath := fmt.Sprintf("%s/serial-%s.log", scratchDir, uuid)
+	serialLog, _ := os.OpenFile(serialLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	cmd.Stdout = serialLog
+	cmd.Stderr = serialLog
 	if err := cmd.Start(); err != nil {
 		if networkCfg != nil {
 			_ = teardownNetwork(networkCfg)
@@ -96,6 +138,8 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
 	pid := cmd.Process.Pid
+
+	observability.Info("rootfs_selected", observability.Fields{"execution_id": uuid, "rootfs_path": rootfsPath})
 
 	vm := &VMInstance{
 		UUID:           uuid,
@@ -135,7 +179,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	if err := fcPUT(client, "http://localhost/drives/rootfs", map[string]any{
 		"drive_id":       "rootfs",
-		"path_on_host":   baseImage,
+		"path_on_host":   rootfsPath,
 		"is_root_device": true,
 		"is_read_only":   true,
 	}); err != nil {

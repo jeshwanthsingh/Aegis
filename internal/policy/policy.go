@@ -115,6 +115,9 @@ func (p *Policy) Validate(lang string, codeLen int, timeoutMs int) error {
 	if codeLen > p.MaxCodeBytes {
 		return fmt.Errorf("code exceeds %d bytes", p.MaxCodeBytes)
 	}
+	if timeoutMs < 0 {
+		return fmt.Errorf("timeout_ms must be greater than 0")
+	}
 	if timeoutMs > p.MaxTimeoutMs {
 		return fmt.Errorf("timeout_ms exceeds maximum of %d", p.MaxTimeoutMs)
 	}

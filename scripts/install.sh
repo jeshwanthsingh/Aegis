@@ -6,6 +6,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO_BIN=""
 DB_URL_DEFAULT="postgres://postgres:postgres@localhost/postgres?sslmode=disable"
 DB_URL="${DB_URL:-$DB_URL_DEFAULT}"
+ROOTFS_IMAGE_PATH="${ROOTFS_IMAGE_PATH:-$REPO_DIR/assets/alpine-base.ext4}"
+ROOTFS_BUILD_MODE="${ROOTFS_BUILD_MODE:-download}"
+LEGACY_ROOTFS_BACKUP="${LEGACY_ROOTFS_BACKUP:-$REPO_DIR/assets/ubuntu-legacy.ext4}"
+CHECKSUM_FILE="${CHECKSUM_FILE:-$REPO_DIR/scripts/release-checksums.txt}"
 
 find_go() {
   if command -v go >/dev/null 2>&1; then
@@ -50,7 +54,7 @@ safe_mount_rootfs() {
   if mountpoint -q /mnt/rootfs; then
     sudo umount /mnt/rootfs
   fi
-  sudo mount "$REPO_DIR/assets/alpine-base.ext4" /mnt/rootfs
+  sudo mount "$ROOTFS_IMAGE_PATH" /mnt/rootfs
 }
 
 safe_umount_rootfs() {
@@ -69,15 +73,47 @@ need_cmd curl curl
 need_cmd psql "psql (install: sudo apt install postgresql-client)"
 need_cmd sudo sudo
 need_cmd iptables iptables
+need_cmd sha256sum sha256sum
 GO_BIN="$(find_go)" || { echo "Missing prerequisite: go (install from https://go.dev/dl/)" >&2; exit 1; }
+
+expected_checksum() {
+  local artifact="$1"
+  awk -v target="$artifact" '$2 == target { print $1 }' "$CHECKSUM_FILE"
+}
+
+verify_checksum() {
+  local artifact="$1"
+  local path="$2"
+  local expected
+  expected="$(expected_checksum "$artifact")"
+  if [ -z "$expected" ]; then
+    echo "Missing checksum entry for $artifact in $CHECKSUM_FILE" >&2
+    exit 1
+  fi
+  local actual
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    echo "Checksum mismatch for $artifact" >&2
+    echo "  expected: $expected" >&2
+    echo "  actual:   $actual" >&2
+    echo "Refusing to install unverified artifact." >&2
+    exit 1
+  fi
+}
 
 mkdir -p "$REPO_DIR/assets"
 download_if_missing "$RELEASE_URL/vmlinux" "$REPO_DIR/assets/vmlinux" "vmlinux"
-download_if_missing "$RELEASE_URL/alpine-base.ext4" "$REPO_DIR/assets/alpine-base.ext4" "alpine-base.ext4"
+verify_checksum "vmlinux" "$REPO_DIR/assets/vmlinux"
+if [ "$ROOTFS_BUILD_MODE" != "build" ] && [ "$ROOTFS_IMAGE_PATH" != "$REPO_DIR/assets/alpine-base.ext4" ] && [ ! -f "$ROOTFS_IMAGE_PATH" ]; then
+  echo "Selected rootfs image not found at $ROOTFS_IMAGE_PATH" >&2
+  echo "Build it with: ./scripts/build-alpine-rootfs.sh --output $ROOTFS_IMAGE_PATH" >&2
+  exit 1
+fi
 
 if ! command -v firecracker >/dev/null 2>&1; then
   echo "Downloading firecracker..."
   curl -L "$RELEASE_URL/firecracker" -o /tmp/firecracker
+  verify_checksum "firecracker" /tmp/firecracker
   sudo install -m 0755 /tmp/firecracker /usr/local/bin/firecracker
 else
   echo "firecracker already on PATH, skipping."
@@ -108,6 +144,16 @@ if source_newer_than "$REPO_DIR/guest-runner/guest-runner" "$REPO_DIR/guest-runn
 else
   echo "guest-runner already up to date, skipping build."
 fi
+
+mkdir -p "$(dirname "$ROOTFS_IMAGE_PATH")"
+if [ "$ROOTFS_BUILD_MODE" = "build" ]; then
+  echo "Building Alpine rootfs..."
+  "$REPO_DIR/scripts/build-alpine-rootfs.sh" --output "$ROOTFS_IMAGE_PATH" --backup-existing "$LEGACY_ROOTFS_BACKUP" --guest-runner "$REPO_DIR/guest-runner/guest-runner"
+else
+  download_if_missing "$RELEASE_URL/alpine-base.ext4" "$ROOTFS_IMAGE_PATH" "alpine-base.ext4"
+  verify_checksum "alpine-base.ext4" "$ROOTFS_IMAGE_PATH"
+fi
+
 
 echo "Baking guest-runner into rootfs..."
 safe_mount_rootfs
@@ -142,5 +188,8 @@ echo ""
 echo "Run local smoke with:"
 echo "  ./scripts/smoke-local.sh"
 echo ""
+echo "Build a real Alpine/musl guest image with:"
+echo "  ./scripts/build-alpine-rootfs.sh"
+echo ""
 echo "Run with:"
-echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db '$A_DB_URL' --assets-dir '$REPO_DIR/assets'"
+echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db '$A_DB_URL' --assets-dir '$REPO_DIR/assets' [--rootfs-path /path/to/rootfs.ext4]"
