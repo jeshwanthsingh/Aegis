@@ -165,7 +165,10 @@ func createLauncher(limit int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	script := "#!/bin/sh\nulimit -u \"$1\"\nshift\nexec \"$@\"\n"
+	// Use bash instead of /bin/sh because `ulimit -u` is not portable across
+	// all /bin/sh implementations used by our guest images. Bash is an explicit
+	// guest dependency in the supported rootfs builds.
+	script := "#!/bin/bash\nulimit -u \"$1\"\nshift\nexec \"$@\"\n"
 	if _, err := f.WriteString(script); err != nil {
 		f.Close()
 		os.Remove(f.Name())
