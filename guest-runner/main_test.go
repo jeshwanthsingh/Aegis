@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -344,6 +345,59 @@ os.write(1, msg.encode())
 	if !strings.Contains(stdout, "GOOD: connection blocked: errno=") {
 		t.Fatalf("expected blocked connect stdout, got stdout=%q stderr=%q", stdout, stderr)
 	}
+}
+
+func TestTimeoutKillsWholeProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("/bin/bash", "-lc", "sleep 30 & wait")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+
+	chunks := make(chan GuestChunk, 8)
+	writerDone := make(chan struct{})
+
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go streamPipe(&readers, stdoutPipe, "stdout", chunks, writerDone)
+	go streamPipe(&readers, stderrPipe, "stderr", chunks, writerDone)
+
+	timer := time.AfterFunc(150*time.Millisecond, func() {
+		if cmd.Process == nil {
+			return
+		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
+	})
+	defer timer.Stop()
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitDone:
+		if err == nil {
+			t.Fatal("expected process to be killed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for process group kill")
+	}
+
+	readers.Wait()
+	close(writerDone)
+	close(chunks)
 }
 
 func TestCaptureHelloOutput(t *testing.T) {

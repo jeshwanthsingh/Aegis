@@ -622,6 +622,13 @@ func main() {
 	var guestPidsLimitHit atomic.Bool
 	timer := time.AfterFunc(time.Duration(p.TimeoutMs)*time.Millisecond, func() {
 		timedOut.Store(true)
+		if cmd.Process == nil {
+			return
+		}
+		// The child runs in its own process group. Kill the whole group so
+		// descendants like `sleep` do not keep stdout/stderr open after the
+		// parent shell is gone.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Process.Kill()
 	})
 	defer timer.Stop()

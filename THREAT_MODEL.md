@@ -1,45 +1,107 @@
 # Threat Model
 
-Aegis exists to run untrusted generated code in a smaller blast radius than the host machine.
+Aegis exists to reduce blast radius for untrusted AI-generated code. It is a containment boundary, not a trust system for the rest of the stack.
 
-## What Aegis Is Trying To Protect
+## What Aegis Protects
 
 ### Host integrity
-Aegis is meant to stop generated code from running with direct access to the host process table, host filesystem, host network stack, and host credentials. Code runs inside a disposable Firecracker microVM, not on the host OS.
+
+Aegis is designed to keep generated code off the host:
+- code runs in a Firecracker microVM instead of a host process
+- guest execution uses a dedicated guest-runner, not the host control plane
+- per-run scratch state is torn down after execution
+- host-side cgroups constrain CPU, memory, PID, and swap policy
 
 ### Resource abuse
-Aegis is meant to contain the obvious failure modes of untrusted execution:
+
+Aegis is meant to contain common failure modes:
 - infinite loops
 - fork bombs
 - process explosions
-- memory abuse
-- huge stdout/stderr floods
-- hung executions that never return on their own
+- oversized stdout / stderr
+- memory pressure
+- hung executions that would otherwise sit forever
 
-The control plane applies timeouts, cgroup limits, and deterministic teardown so one bad execution does not permanently poison the host.
+This is where the system is strongest today. It is built to survive bad runs, not trust them.
 
-### Network exfiltration
-In the default isolated mode, the guest gets no NIC at all. In allowlist mode, DNS is intercepted per execution and only explicitly allowed destinations should resolve. The goal is not “safe internet access.” The goal is “no ambient egress, and narrowly scoped exceptions when absolutely required.”
+### Network egress
 
-### Persistence and residue
-Aegis is meant to prevent one execution from leaving durable host state behind. Scratch disks, TAP devices, sockets, and cgroups are created per execution and then torn down. Persistent workspaces are explicit, named storage objects, not accidental leftovers.
+Default behavior is conservative:
+- no-network mode gives the guest no NIC
+- allowlist mode intercepts DNS and installs narrow outbound rules only for explicitly allowed destinations
 
-## What Aegis Does Not Protect Against
+The goal is not safe arbitrary internet access. The goal is no ambient egress and visible, scoped exceptions when a policy allows them.
 
-### Prompt injection and agent misbehavior
-Aegis does not fix upstream agent judgment. If the model decides to run the wrong code, Aegis only limits where that code runs. It does not make the decision safe or correct.
+### Residual state
 
-### Supply chain compromise
-Aegis does not prove the guest image, host binaries, downloaded dependencies, or the orchestrator build pipeline are trustworthy. If your rootfs, Firecracker binary, package mirror, or build environment is compromised, Aegis inherits that compromise.
+Aegis is designed to prevent accidental host residue:
+- scratch state is per execution
+- TAP state is per execution
+- cgroup state is per execution
+- sockets are per execution
+- containment receipts are emitted after cleanup state is known
+
+Persistent workspaces are explicit named objects, not accidental leftovers.
+
+## What Aegis Does Not Protect
+
+### Prompting and tool judgment
+
+Aegis does not make the model correct. If an agent chooses to run the wrong code, Aegis only limits where that code runs.
+
+### Supply-chain trust
+
+Aegis does not prove the host, rootfs, build pipeline, or dependencies are fully trustworthy. Recent checksum verification improves the install story, but it is not a full supply-chain security program.
 
 ### IAM and secret misuse outside the sandbox
-Aegis does not secure GitHub tokens, cloud keys, Slack tokens, or email credentials that live outside the execution path. If another part of the system can misuse those credentials directly, Aegis is not the control that stops it.
 
-### Model-layer policy failures
-Aegis does not replace guardrails, review, allow/deny policy at the prompt/tool layer, or human approval. It is a containment boundary, not a behavioral guarantee.
+Aegis does not protect credentials that are exposed outside the execution path. If another component can misuse a token directly, Aegis is not the thing that stops it.
 
-### Kernel or hypervisor escape
-Aegis meaningfully raises the bar compared to local execution, but it is not a formal guarantee against Firecracker, KVM, kernel, or virtio escape bugs. If you need that claim, you need a much deeper security program than this repo currently provides.
+### Hypervisor or kernel escape
 
-## Operational Reality
-Aegis is strongest against the boring, common failures that actually happen in agent systems: runaway code, host contamination, accidental egress, and poor teardown hygiene. It is not a silver bullet. If you market it like one, you are lying to yourself.
+Aegis raises the bar compared to host execution, but it does not claim a formal guarantee against Firecracker, KVM, virtio, or kernel escape bugs.
+
+## Current Enforced Boundaries
+
+Current host/guest protections:
+- Firecracker microVM boundary
+- KVM-backed virtualization
+- host cgroups v2
+- default-deny or allowlist network mode
+- host/guest transport over Firecracker's Unix-socket vsock proxy
+- deterministic teardown with cleanup reflected in the final receipt
+
+Recent hardening reflected in the current repo:
+- workspace path traversal / file clobber fix
+- Firecracker environment inheritance tightening
+- SSE wait abuse reduction
+- guest-control vsock size cap
+- install-time checksum verification
+
+## Public Demo Claims That Are Reasonable
+
+Reasonable claims:
+- Aegis runs untrusted code inside disposable Firecracker microVMs
+- the proving ground is wired to a live backend
+- DNS allow/deny telemetry is real
+- selective egress rule installation is real
+- PID-cap containment is real
+- output truncation is real
+- blocked outbound connect is real
+- containment receipts and in-memory stats are real
+
+Claims that should stay conservative:
+- Memory Pressure is a safe-failure demo under pressure, not a kernel OOM-kill proof
+- compute profiles are real at the VM-shape level, not full resource envelopes
+- snapshots and cold-boot optimization are future work, not shipped behavior
+
+## Threat Model for the Proving Ground
+
+The proving ground deliberately accepts hostile or sloppy payloads from strangers. That makes the trust boundary real:
+- visitors can trigger live executions
+- the UI subscribes to live telemetry before execution starts
+- the receipt reflects real cleanup state
+
+This is useful because it forces the project to prove containment behavior in public, not just in private scripts.
+
+It is also why the docs should stay sober. The project is strongest when it says exactly what it proves today and nothing more.

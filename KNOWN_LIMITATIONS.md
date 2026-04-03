@@ -1,22 +1,74 @@
 # Known Limitations
 
-## Startup latency on the current glibc rootfs
-Cold starts are still expensive, especially on WSL2. The current Ubuntu/glibc guest has noticeable startup overhead before user code even begins. The system works, but it is not low-latency. Timeout budgets need to account for VM boot, guest bootstrap, resolver behavior, and teardown.
+This document is the short list of real caveats that still matter for Aegis today.
 
-## WSL2 caveats
-WSL2 is a valid development environment for Aegis, but it is not the cleanest or fastest one. KVM access, networking behavior, mount semantics, and timing all have more edge cases on WSL2 than on a native Linux host. If something is flaky on WSL2 and solid on bare metal Linux, believe the Linux result first.
+## Compute profiles are VM-shape-only today
 
-## Node.js remains more fragile than Python and bash
-Python and bash are the stable paths today. Node.js is still more sensitive to guest runtime conditions, especially around entropy and startup behavior on WSL2. Treat Node support as weaker until it has the same repeatable validation coverage as the other runtimes.
+Profiles are real:
+- `nano` → 1 vCPU / 128 MiB
+- `standard` → 2 vCPU / 512 MiB
+- `crunch` → 4 vCPU / 2048 MiB
 
-## Workspace exit-code ambiguity
-There is still an open ambiguity in the persistent workspace path where a successful second read can surface a nonzero `exit_code`. The data path appears to work, but the reported status is not fully trustworthy yet. That needs cleanup before workspace durability can be called finished.
+But today they only change Firecracker machine shape.
 
-## Timeout budgets are still operational, not elegant
-The system is stable with the current timeout settings, but some of that stability comes from giving the runtime enough slack rather than making every path intrinsically fast. Validation is good. Latency is not yet impressive.
+They do not yet change host cgroup policy:
+- `memory.max`
+- `memory.high`
+- `pids.max`
+- `cpu.max`
+- `memory.swap.max`
 
-## Temporary diagnostic debt still exists
-Some diagnostics were added to stabilize DNS and execution behavior. They were useful, but parts of that visibility are still debt that should be trimmed once CI and repeated local validation stay green.
+So profiles are not full resource envelopes yet.
 
-## Rootfs migration is still gated
-The repo now has an Alpine rootfs build path and rollback mechanism, but the default image should not be switched until the migration baseline, parity matrix, and before/after benchmark report are captured.
+## Memory Pressure is intentionally conservative
+
+The Memory Pressure preset is useful, but it should be described carefully.
+
+What is proven:
+- code can fail safely under memory pressure
+- teardown still completes cleanly
+
+What is not yet proven:
+- a kernel OOM kill
+- a cgroup OOM event
+- a stronger memory-isolation claim than what has been directly observed
+
+## Snapshots are not implemented yet
+
+Aegis currently uses the existing cold-boot path. Snapshot-based startup, resume, or similar boot optimizations are future work.
+
+That means:
+- cold boot is still visible
+- current benchmark numbers are about this stack, not a snapshot design
+
+## WSL2 remains a development environment
+
+WSL2 works for development and validation, but it is not the cleanest performance baseline.
+
+Expect more edge cases around:
+- KVM access
+- networking behavior
+- path and mount semantics
+- timing variability
+
+Native Linux remains the more reliable baseline for runtime and benchmark claims.
+
+## Node is supported, but less battle-tested
+
+Python and bash are the strongest execution paths today. Node remains supported, but it should not be described as equally battle-tested on every environment.
+
+## Workspace durability cleanup still needs polish
+
+Persistent workspaces exist, but workspace durability cleanup is still not fully finished. The data path is useful; the last bit of status correctness and cleanup polish is still open.
+
+## Observability still has cleanup debt
+
+The telemetry path is useful and real, but some debug-era presentation and logging cleanup still remains.
+
+## Public demo operations still have follow-up work
+
+The proving ground is live and useful, but a few things still belong on the follow-up list:
+- more polished benchmark documentation
+- demo assets and screenshots
+- a clearer long-term decision on compute-profile semantics
+- snapshot and cold-start investigation

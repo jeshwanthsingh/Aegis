@@ -106,8 +106,8 @@ PY
 
 check_concurrency_and_429() {
   local label="concurrent execution + 429"
-  local hold_payload='{"lang":"bash","code":"sleep 6","timeout_ms":20000}'
-  local overflow_payload='{"lang":"bash","code":"echo overflow","timeout_ms":20000}'
+  local hold_payload='{"lang":"bash","code":"sleep 6","timeout_ms":10000}'
+  local overflow_payload='{"lang":"bash","code":"echo overflow","timeout_ms":10000}'
 
   for i in 1 2 3 4 5; do
     (
@@ -173,9 +173,17 @@ check_teardown() {
   local label="teardown verification"
   sleep 2
   local leftover_files tap_count cgroup_count
-  leftover_files="$(find /tmp/aegis -maxdepth 1 \( -name 'scratch-*.ext4' -o -name 'fc-*.sock' -o -name 'vsock-*.sock' \) 2>/dev/null | wc -l | tr -d ' ')"
-  tap_count="$(as_root ip -o link show 2>/dev/null | awk -F': ' '/tap-[[:alnum:]-]+/ {count++} END {print count+0}')"
-  cgroup_count="$(find /sys/fs/cgroup/aegis -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+  if [ -d /tmp/aegis ]; then
+    leftover_files="$( (find /tmp/aegis -maxdepth 1 \( -name 'scratch-*.ext4' -o -name 'fc-*.sock' -o -name 'vsock-*.sock' \) 2>/dev/null || true) | wc -l | tr -d ' ')"
+  else
+    leftover_files="0"
+  fi
+  tap_count="$( (as_root ip -o link show 2>/dev/null || true) | awk -F': ' '/tap-[[:alnum:]-]+/ {count++} END {print count+0}')"
+  if [ -d /sys/fs/cgroup/aegis ]; then
+    cgroup_count="$( (find /sys/fs/cgroup/aegis -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true) | wc -l | tr -d ' ')"
+  else
+    cgroup_count="0"
+  fi
 
   if [ "$leftover_files" = "0" ] && [ "$tap_count" = "0" ] && [ "$cgroup_count" = "0" ]; then
     pass "$label"
@@ -190,8 +198,8 @@ check_execute_success "python execute" '{"lang":"python","code":"print(\"SMOKE_P
 check_timeout
 check_concurrency_and_429
 check_teardown
-check_execute_success "allowlist DNS resolve" '{"lang":"python","code":"import socket\ninfos = socket.getaddrinfo(\"pypi.org\", 443, type=socket.SOCK_STREAM)\nips = []\nfor family, socktype, proto, canonname, sockaddr in infos:\n    ip = sockaddr[0]\n    if ip not in ips:\n        ips.append(ip)\nif not ips:\n    raise SystemExit(\"no addresses resolved\")\nprint(\"ALLOWED_DNS=\" + \",\".join(ips))\n","timeout_ms":25000}' 'ALLOWED_DNS='
-check_execute_success "allowlist DNS deny" '{"lang":"python","code":"import socket\ntry:\n    socket.gethostbyname(\"example.com\")\nexcept Exception:\n    print(\"DENIED_DNS=ok\")\nelse:\n    raise SystemExit(\"unexpectedly resolved example.com\")\n","timeout_ms":25000}' 'DENIED_DNS=ok'
+check_execute_success "allowlist DNS resolve" '{"lang":"python","code":"import socket\ninfos = socket.getaddrinfo(\"pypi.org\", 443, type=socket.SOCK_STREAM)\nips = []\nfor family, socktype, proto, canonname, sockaddr in infos:\n    ip = sockaddr[0]\n    if ip not in ips:\n        ips.append(ip)\nif not ips:\n    raise SystemExit(\"no addresses resolved\")\nprint(\"ALLOWED_DNS=\" + \",\".join(ips))\n","timeout_ms":10000}' 'ALLOWED_DNS='
+check_execute_success "allowlist DNS deny" '{"lang":"python","code":"import socket\ntry:\n    socket.gethostbyname(\"example.com\")\nexcept Exception:\n    print(\"DENIED_DNS=ok\")\nelse:\n    raise SystemExit(\"unexpectedly resolved example.com\")\n","timeout_ms":10000}' 'DENIED_DNS=ok'
 
 if [ "$FAILURES" -ne 0 ]; then
   printf 'smoke.sh failed with %d failure(s)\n' "$FAILURES" >&2
