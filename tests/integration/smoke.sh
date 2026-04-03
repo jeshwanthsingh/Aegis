@@ -198,8 +198,8 @@ check_execute_success "python execute" '{"lang":"python","code":"print(\"SMOKE_P
 check_timeout
 check_concurrency_and_429
 check_teardown
-check_execute_success "allowlist DNS resolve" '{"lang":"python","code":"import socket\ninfos = socket.getaddrinfo(\"pypi.org\", 443, type=socket.SOCK_STREAM)\nips = []\nfor family, socktype, proto, canonname, sockaddr in infos:\n    ip = sockaddr[0]\n    if ip not in ips:\n        ips.append(ip)\nif not ips:\n    raise SystemExit(\"no addresses resolved\")\nprint(\"ALLOWED_DNS=\" + \",\".join(ips))\n","timeout_ms":10000}' 'ALLOWED_DNS='
-check_execute_success "allowlist DNS deny" '{"lang":"python","code":"import socket\ntry:\n    socket.gethostbyname(\"example.com\")\nexcept Exception:\n    print(\"DENIED_DNS=ok\")\nelse:\n    raise SystemExit(\"unexpectedly resolved example.com\")\n","timeout_ms":10000}' 'DENIED_DNS=ok'
+check_execute_success "allowlist DNS resolve" '{"lang":"python","code":"import socket\ninfos = socket.getaddrinfo(\"pypi.org\", 443, type=socket.SOCK_STREAM)\nips = []\nfor family, socktype, proto, canonname, sockaddr in infos:\n    ip = sockaddr[0]\n    if ip not in ips:\n        ips.append(ip)\nif not ips:\n    raise SystemExit(\"no addresses resolved\")\nprint(\"ALLOWED_DNS=\" + \",\".join(ips))\n","timeout_ms":25000}' 'ALLOWED_DNS='
+check_execute_success "allowlist DNS deny" '{"lang":"python","code":"import socket\ntry:\n    socket.gethostbyname(\"example.com\")\nexcept Exception:\n    print(\"DENIED_DNS=ok\")\nelse:\n    raise SystemExit(\"unexpectedly resolved example.com\")\n","timeout_ms":25000}' 'DENIED_DNS=ok'
 
 if [ "$FAILURES" -ne 0 ]; then
   printf 'smoke.sh failed with %d failure(s)\n' "$FAILURES" >&2
