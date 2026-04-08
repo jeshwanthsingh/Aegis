@@ -179,8 +179,8 @@ check_teardown() {
     leftover_files="0"
   fi
   tap_count="$( (as_root ip -o link show 2>/dev/null || true) | awk -F': ' '/tap-[[:alnum:]-]+/ {count++} END {print count+0}')"
-  if [ -d /sys/fs/cgroup/aegis ]; then
-    cgroup_count="$( (find /sys/fs/cgroup/aegis -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true) | wc -l | tr -d ' ')"
+  if [ -n "${AEGIS_CGROUP_PARENT:-}" ] && [ -d "$AEGIS_CGROUP_PARENT" ]; then
+    cgroup_count="$( (find "$AEGIS_CGROUP_PARENT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true) | wc -l | tr -d ' ')"
   else
     cgroup_count="0"
   fi

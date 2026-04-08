@@ -156,9 +156,7 @@ fi
 
 
 echo "Baking guest-runner into rootfs..."
-safe_mount_rootfs
-sudo install -m 0755 "$REPO_DIR/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
-safe_umount_rootfs
+"$REPO_DIR/scripts/rebake-guest-runner.sh"
 
 if [ -z "${PGPASSWORD:-}" ]; then
   read -rsp "Enter PostgreSQL password for user 'postgres' (leave blank to use local auth/.pgpass): " PGPASSWORD_INPUT

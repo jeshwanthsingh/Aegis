@@ -38,6 +38,12 @@ func main() {
 		observability.Fatal("startup_failed", observability.Fields{"step": "connect_postgres", "error": err.Error()})
 	}
 
+	cgroupParent := executor.DefaultCgroupParent()
+	if err := executor.ValidateCgroupParent(cgroupParent); err != nil {
+		observability.Fatal("startup_failed", observability.Fields{"step": "validate_cgroup_parent", "error": err.Error(), "cgroup_parent": cgroupParent})
+	}
+	observability.Info("cgroup_parent_ready", observability.Fields{"cgroup_parent": cgroupParent})
+
 	reconcile(s)
 	if err := executor.CleanupLeakedNetworks(); err != nil {
 		observability.Warn("reconcile_leaked_networks_failed", observability.Fields{"error": err.Error()})
@@ -93,6 +99,7 @@ func main() {
 
 // reconcile cleans up orphaned scratch images and sockets from a previous crash.
 func reconcile(s *store.Store) {
+	cgroupParent := executor.DefaultCgroupParent()
 	matches, err := filepath.Glob("/tmp/aegis/scratch-*.ext4")
 	if err != nil || len(matches) == 0 {
 		return
@@ -105,7 +112,7 @@ func reconcile(s *store.Store) {
 
 		socketPath := "/tmp/aegis/fc-" + uuid + ".sock"
 		vsockPath := "/tmp/aegis/vsock-" + uuid + ".sock"
-		cgPath := "/sys/fs/cgroup/aegis/" + uuid
+		cgPath := executor.CgroupPath(cgroupParent, uuid)
 
 		procsPath := cgPath + "/cgroup.procs"
 		if data, err := os.ReadFile(procsPath); err == nil {

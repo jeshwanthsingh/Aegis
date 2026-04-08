@@ -5,6 +5,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB_URL_DEFAULT="postgres://postgres:postgres@localhost/postgres?sslmode=disable"
 DB_URL="${DB_URL:-$DB_URL_DEFAULT}"
 ROOTFS_IMAGE="${ROOTFS_PATH:-${AEGIS_ROOTFS_PATH:-$REPO_DIR/assets/alpine-base.ext4}}"
+DEFAULT_CGROUP_PARENT="/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/aegis"
+CGROUP_PARENT="${AEGIS_CGROUP_PARENT:-$DEFAULT_CGROUP_PARENT}"
 FAILURES=0
 
 pass() {
@@ -72,6 +74,26 @@ check_cgroup_v2() {
   fi
 }
 
+check_cgroup_parent() {
+  local parent="$CGROUP_PARENT"
+  local parent_dir
+  parent_dir="$(dirname "$parent")"
+  if [ ! -d "$parent_dir" ]; then
+    fail "cgroup parent" "parent directory missing: $parent_dir"
+    return
+  fi
+  if [ ! -w "$parent_dir" ]; then
+    fail "cgroup parent" "parent directory not writable: $parent_dir (set AEGIS_CGROUP_PARENT to a writable delegated subtree or run with sufficient privileges)"
+    return
+  fi
+  mkdir -p "$parent" 2>/dev/null || { fail "cgroup parent" "unable to create $parent"; return; }
+  if printf '+cpu +memory +pids' >"$parent/cgroup.subtree_control" 2>/dev/null; then
+    pass "cgroup parent"
+  else
+    fail "cgroup parent" "unable to enable controllers in $parent/cgroup.subtree_control"
+  fi
+}
+
 check_iptables() {
   if command -v iptables >/dev/null 2>&1; then
     pass "iptables"
@@ -98,6 +120,7 @@ check_firecracker
 check_kernel_image
 check_rootfs
 check_cgroup_v2
+check_cgroup_parent
 check_iptables
 check_postgres
 

@@ -30,6 +30,11 @@ func NewBus(execID string) *Bus {
 	}
 }
 
+// ExecID returns the execution identifier associated with the bus.
+func (b *Bus) ExecID() string {
+	return b.execID
+}
+
 // Emit publishes an event to the internal buffer and active subscribers without blocking.
 func (b *Bus) Emit(kind string, data interface{}) {
 	payload, err := json.Marshal(data)

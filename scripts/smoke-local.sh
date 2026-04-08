@@ -7,6 +7,7 @@ DB_URL="${DB_URL:-postgres://postgres:postgres@localhost/aegis?sslmode=disable}"
 POLICY_PATH="${POLICY_PATH:-$REPO_DIR/configs/default-policy.yaml}"
 ASSETS_DIR="${ASSETS_DIR:-$REPO_DIR/assets}"
 ROOTFS_PATH="${ROOTFS_PATH:-${AEGIS_ROOTFS_PATH:-}}"
+AEGIS_CGROUP_PARENT="${AEGIS_CGROUP_PARENT:-/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/aegis}"
 ORCH_BIN="${ORCH_BIN:-/tmp/aegis-bin}"
 LOG_FILE="${LOG_FILE:-/tmp/aegis-smoke-local.log}"
 FAILURES=0
@@ -71,7 +72,7 @@ else
     fi
   fi
 
-  cmd=(sudo env "PATH=$PATH:/sbin:/usr/sbin" SUDO_USER="${SUDO_USER:-$(id -un)}" "$ORCH_BIN" \
+  cmd=(sudo env "PATH=$PATH:/sbin:/usr/sbin" SUDO_USER="${SUDO_USER:-$(id -un)}" AEGIS_CGROUP_PARENT="$AEGIS_CGROUP_PARENT" "$ORCH_BIN" \
     --db "$DB_URL" \
     --policy "$POLICY_PATH" \
     --assets-dir "$ASSETS_DIR")
@@ -118,7 +119,11 @@ fi
 sleep 2
 leftover_files="$(find /tmp/aegis -maxdepth 1 \( -name 'scratch-*.ext4' -o -name 'fc-*.sock' -o -name 'vsock-*.sock' \) 2>/dev/null | wc -l | tr -d ' ')"
 tap_count="$(as_root ip -o link show 2>/dev/null | awk -F': ' '/tap-[[:alnum:]-]+/ {count++} END {print count+0}')"
-cgroup_count="$(find /sys/fs/cgroup/aegis -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+if [ -d "$AEGIS_CGROUP_PARENT" ]; then
+  cgroup_count="$(find "$AEGIS_CGROUP_PARENT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+else
+  cgroup_count="0"
+fi
 if [ "$leftover_files" = "0" ] && [ "$tap_count" = "0" ] && [ "$cgroup_count" = "0" ]; then
   pass "teardown verification"
 else

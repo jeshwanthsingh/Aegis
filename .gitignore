@@ -22,3 +22,4 @@ linux-6.1.80.tar.xz
 # Local workstation-only guidance files
 AGENTS.md
 CLAUDE.md
+.venv

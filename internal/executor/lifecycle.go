@@ -19,12 +19,104 @@ import (
 	"aegis/internal/telemetry"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/sys/unix"
 )
 
-const (
-	cgroupRoot   = "/sys/fs/cgroup"
-	cgroupParent = "/sys/fs/cgroup/aegis"
-)
+const cgroupRoot = "/sys/fs/cgroup"
+
+func currentProcessCgroupPath() string {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 || parts[0] != "0" {
+			continue
+		}
+		return strings.TrimSpace(parts[2])
+	}
+	return ""
+}
+
+func isWritableDir(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	return unix.Access(path, unix.W_OK) == nil
+}
+
+func preferredUserCgroupBase() string {
+	uid := os.Getuid()
+	base := filepath.Join(cgroupRoot, "user.slice", fmt.Sprintf("user-%d.slice", uid), fmt.Sprintf("user@%d.service", uid))
+	if isWritableDir(base) {
+		return base
+	}
+	return ""
+}
+
+func chooseWritableCgroupBase() string {
+	if base := preferredUserCgroupBase(); base != "" {
+		return base
+	}
+	if rel := currentProcessCgroupPath(); rel != "" {
+		base := filepath.Join(cgroupRoot, strings.TrimPrefix(rel, "/"))
+		for dir := base; dir != cgroupRoot && dir != "." && dir != string(filepath.Separator); dir = filepath.Dir(dir) {
+			if isWritableDir(dir) {
+				name := filepath.Base(dir)
+				if strings.HasSuffix(name, ".service") || strings.HasSuffix(name, ".scope") {
+					continue
+				}
+				return dir
+			}
+		}
+	}
+	return cgroupRoot
+}
+
+func DefaultCgroupParent() string {
+	if override := strings.TrimSpace(os.Getenv("AEGIS_CGROUP_PARENT")); override != "" {
+		return override
+	}
+	return filepath.Join(chooseWritableCgroupBase(), "aegis")
+}
+
+func ValidateCgroupParent(parent string) error {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return fmt.Errorf("cgroup parent is empty")
+	}
+	cleanParent := filepath.Clean(parent)
+	if !strings.HasPrefix(cleanParent, cgroupRoot) {
+		return fmt.Errorf("cgroup parent must live under %s: %s", cgroupRoot, cleanParent)
+	}
+	parts := []string{}
+	for dir := cleanParent; dir != cgroupRoot; dir = filepath.Dir(dir) {
+		parts = append(parts, dir)
+	}
+	for i := len(parts) - 1; i >= 0; i-- {
+		dir := parts[i]
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				return fmt.Errorf("create cgroup dir %s: %w", dir, err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("stat cgroup dir %s: %w", dir, err)
+		} else if !isWritableDir(dir) {
+			continue
+		}
+		subtreePath := filepath.Join(dir, "cgroup.subtree_control")
+		if err := os.WriteFile(subtreePath, []byte("+cpu +memory +pids"), 0o644); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("enable controllers in cgroup parent %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func CgroupPath(parent string, uuid string) string {
+	return filepath.Join(parent, uuid)
+}
 
 type NetworkConfig struct {
 	TapName      string
@@ -43,16 +135,12 @@ type NetworkConfig struct {
 }
 
 func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *telemetry.Bus) error {
-	_ = os.WriteFile(cgroupRoot+"/cgroup.subtree_control", []byte("+cpu +memory +pids"), 0o644)
-
-	if err := os.MkdirAll(cgroupParent, 0o755); err != nil {
-		return fmt.Errorf("create aegis cgroup parent: %w", err)
-	}
-	if err := os.WriteFile(cgroupParent+"/cgroup.subtree_control", []byte("+cpu +memory +pids"), 0o644); err != nil {
-		return fmt.Errorf("enable controllers in aegis parent: %w", err)
+	parent := DefaultCgroupParent()
+	if err := ValidateCgroupParent(parent); err != nil {
+		return err
 	}
 
-	cgPath := fmt.Sprintf("%s/%s", cgroupParent, uuid)
+	cgPath := CgroupPath(parent, uuid)
 	if err := os.MkdirAll(cgPath, 0o755); err != nil {
 		return fmt.Errorf("create cgroup dir: %w", err)
 	}
@@ -220,7 +308,8 @@ func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
 	}
 	cleanup.SocketRemoved = fcSocketRemoved && vsockSocketRemoved
 
-	cgPath := fmt.Sprintf("%s/%s", cgroupParent, vm.UUID)
+	parent := DefaultCgroupParent()
+	cgPath := CgroupPath(parent, vm.UUID)
 	cgRemoved := false
 	for i := 0; i < 10; i++ {
 		time.Sleep(50 * time.Millisecond)

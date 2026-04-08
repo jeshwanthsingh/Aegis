@@ -2,7 +2,6 @@ package telemetry
 
 import "encoding/json"
 
-// Event represents a single telemetry event emitted during execution.
 type Event struct {
 	ExecID    string          `json:"exec_id"`
 	Timestamp int64           `json:"ts"`
@@ -10,25 +9,25 @@ type Event struct {
 	Data      json.RawMessage `json:"data"`
 }
 
-// Telemetry event kinds emitted by the execution pipeline.
 const (
-	KindVMBootStart      = "vm.boot.start"
-	KindVMBootReady      = "vm.boot.ready"
-	KindCgroupConfigured = "cgroup.configured"
-	KindCgroupSample     = "cgroup.sample"
-	KindDNSQuery         = "dns.query"
-	KindNetRuleAdd       = "net.rule.add"
-	KindNetRuleDrop      = "net.rule.drop"
-	KindGuestProcSample  = "guest.proc.sample"
-	KindExecStdout       = "exec.stdout"
-	KindExecStderr       = "exec.stderr"
-	KindExecExit         = "exec.exit"
-	KindCleanupStart     = "cleanup.start"
-	KindCleanupDone      = "cleanup.done"
-	KindReceipt          = "containment.receipt"
+	KindVMBootStart         = "vm.boot.start"
+	KindVMBootReady         = "vm.boot.ready"
+	KindCgroupConfigured    = "cgroup.configured"
+	KindCgroupSample        = "cgroup.sample"
+	KindDNSQuery            = "dns.query"
+	KindNetRuleAdd          = "net.rule.add"
+	KindNetRuleDrop         = "net.rule.drop"
+	KindGuestProcSample     = "guest.proc.sample"
+	KindRuntimeEvent        = "runtime.event.v1"
+	KindRuntimeSensorStatus = "runtime.sensor.status"
+	KindExecStdout          = "exec.stdout"
+	KindExecStderr          = "exec.stderr"
+	KindExecExit            = "exec.exit"
+	KindCleanupStart        = "cleanup.start"
+	KindCleanupDone         = "cleanup.done"
+	KindReceipt             = "containment.receipt"
 )
 
-// CgroupConfiguredData describes the configured cgroup limits for an execution.
 type CgroupConfiguredData struct {
 	MemoryMax  string `json:"memory_max"`
 	MemoryHigh string `json:"memory_high"`
@@ -37,8 +36,6 @@ type CgroupConfiguredData struct {
 	SwapMax    string `json:"swap_max"`
 }
 
-// CgroupSampleData captures a sampled view of host-side Firecracker cgroup usage.
-// PidsCurrent/PidsMax reflect the VM process on the host, not guest process count.
 type CgroupSampleData struct {
 	MemoryCurrent int64   `json:"memory_current"`
 	MemoryMax     int64   `json:"memory_max"`
@@ -48,14 +45,21 @@ type CgroupSampleData struct {
 	PidsPct       float64 `json:"pids_pct"`
 }
 
-// GuestProcSampleData captures guest-side process tree pressure.
 type GuestProcSampleData struct {
 	PidsCurrent int `json:"pids_current"`
 	PidsLimit   int `json:"pids_limit"`
 	PidsPct     int `json:"pids_pct"`
 }
 
-// DNSQueryData describes an allowlist DNS decision.
+type RuntimeSensorStatusData struct {
+	DroppedEvents uint64 `json:"dropped_events"`
+	FloodDetected bool   `json:"flood_detected"`
+	QueueCapacity int    `json:"queue_capacity,omitempty"`
+	BatchEvents   int    `json:"batch_events,omitempty"`
+	Source        string `json:"source,omitempty"`
+	Detail        string `json:"detail,omitempty"`
+}
+
 type DNSQueryData struct {
 	Domain   string   `json:"domain"`
 	Action   string   `json:"action"`
@@ -63,7 +67,6 @@ type DNSQueryData struct {
 	Reason   string   `json:"reason,omitempty"`
 }
 
-// NetRuleData describes an emitted network rule action.
 type NetRuleData struct {
 	Rule      string `json:"rule"`
 	Chain     string `json:"chain,omitempty"`
@@ -72,13 +75,11 @@ type NetRuleData struct {
 	Direction string `json:"direction,omitempty"`
 }
 
-// ExecExitData describes the final execution exit state.
 type ExecExitData struct {
 	ExitCode int    `json:"exit_code"`
 	Reason   string `json:"reason,omitempty"`
 }
 
-// CleanupDoneData describes teardown cleanup results.
 type CleanupDoneData struct {
 	TapRemoved     bool `json:"tap_removed"`
 	CgroupRemoved  bool `json:"cgroup_removed"`

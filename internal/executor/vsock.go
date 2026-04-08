@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	maxOutputBytes     = 65536  // 64KB
-	maxGuestChunkBytes = 262144 // 256KB per newline-delimited guest control message
+	maxOutputBytes     = 65536
+	maxGuestChunkBytes = 262144
 )
 
 func DialWithRetry(vsockPath string, port uint32, timeout time.Duration) (net.Conn, error) {
@@ -85,6 +85,11 @@ func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxGuestChunkBytes)
 	var result models.Result
+	var runtimeNormalizer *runtimeEventNormalizer
+	if bus != nil {
+		runtimeNormalizer = newRuntimeEventNormalizer(bus.ExecID())
+	}
+
 	for {
 		var chunk models.GuestChunk
 		if !scanner.Scan() {
@@ -103,19 +108,14 @@ func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk
 		switch chunk.Type {
 		case "stdout":
 			result.StdoutBytes += len(chunk.Chunk)
-			emitIfBus(bus, telemetry.KindExecStdout, map[string]interface{}{
-				"bytes":     len(chunk.Chunk),
-				"truncated": false,
-			})
+			emitIfBus(bus, telemetry.KindExecStdout, map[string]interface{}{"bytes": len(chunk.Chunk), "truncated": false})
 			if onChunk != nil {
 				onChunk("stdout", chunk.Chunk)
 			}
 			appendChunk(&result.Stdout, chunk.Chunk, &result.OutputTruncated)
 		case "stderr":
 			result.StderrBytes += len(chunk.Chunk)
-			emitIfBus(bus, telemetry.KindExecStderr, map[string]interface{}{
-				"bytes": len(chunk.Chunk),
-			})
+			emitIfBus(bus, telemetry.KindExecStderr, map[string]interface{}{"bytes": len(chunk.Chunk)})
 			if onChunk != nil {
 				onChunk("stderr", chunk.Chunk)
 			}
@@ -128,10 +128,7 @@ func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk
 			if chunk.Reason != "" {
 				reason = chunk.Reason
 			}
-			emitIfBus(bus, telemetry.KindExecExit, telemetry.ExecExitData{
-				ExitCode: chunk.ExitCode,
-				Reason:   reason,
-			})
+			emitIfBus(bus, telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: chunk.ExitCode, Reason: reason})
 			return &result, nil
 		case "telemetry":
 			switch chunk.Name {
@@ -141,6 +138,26 @@ func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk
 					return nil, fmt.Errorf("decode guest proc telemetry: %w", err)
 				}
 				emitIfBus(bus, telemetry.KindGuestProcSample, data)
+			case guestRuntimeEventBatchKind:
+				if runtimeNormalizer == nil {
+					continue
+				}
+				var batch guestRuntimeEventBatch
+				if err := json.Unmarshal(chunk.Data, &batch); err != nil {
+					return nil, fmt.Errorf("decode runtime event batch: %w", err)
+				}
+				if err := runtimeNormalizer.emitBatch(batch, bus); err != nil {
+					return nil, fmt.Errorf("normalize runtime event batch: %w", err)
+				}
+			case guestRuntimeSensorStatusKind:
+				if runtimeNormalizer == nil {
+					continue
+				}
+				var status guestRuntimeSensorStatus
+				if err := json.Unmarshal(chunk.Data, &status); err != nil {
+					return nil, fmt.Errorf("decode runtime sensor status: %w", err)
+				}
+				runtimeNormalizer.emitStatus(status, bus)
 			}
 		case "error":
 			return nil, fmt.Errorf(chunk.Error)

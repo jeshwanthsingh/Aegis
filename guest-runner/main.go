@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -344,6 +345,18 @@ func runGuestCmd(name string, args ...string) error {
 	return nil
 }
 
+func ensureLoopbackUp(emit func(string)) error {
+	ipCmd := findCommand("ip", "/sbin/ip", "/usr/sbin/ip")
+	if ipCmd == "" {
+		return errors.New("ip command not found")
+	}
+	emit("ip link set lo up")
+	if err := runGuestCmd(ipCmd, "link", "set", "lo", "up"); err != nil {
+		return err
+	}
+	return nil
+}
+
 func setupNetwork(p Payload, emit func(string)) (func() error, error) {
 	if !p.NetworkRequested {
 		return nil, nil
@@ -498,6 +511,19 @@ func main() {
 
 	debugEnabled := os.Getenv("AEGIS_DEBUG") == "1"
 
+	if err := ensureLoopbackUp(func(msg string) {
+		if debugEnabled {
+			emitDiag(chunks, msg)
+		}
+	}); err != nil {
+		if !sendChunk(GuestChunk{Type: "error", Error: "setup loopback: " + err.Error()}) {
+			return
+		}
+		close(chunks)
+		_ = <-writeErr
+		return
+	}
+
 	networkCleanup, err := setupNetwork(p, func(msg string) {
 		if debugEnabled {
 			emitDiag(chunks, msg)
@@ -605,7 +631,24 @@ func main() {
 	}
 
 	start := time.Now()
+	beginManagedChild()
+	managedChildStarted := false
+	defer func() {
+		if managedChildStarted {
+			endManagedChild()
+		}
+	}()
+	runtime.LockOSThread()
+	lockedThread := true
+	defer func() {
+		if lockedThread {
+			runtime.UnlockOSThread()
+		}
+	}()
 	if err := cmd.Start(); err != nil {
+		endManagedChild()
+		runtime.UnlockOSThread()
+		lockedThread = false
 		if !sendChunk(GuestChunk{Type: "error", Error: diagPrefix + "start " + interpreter + ": " + err.Error()}) {
 			return
 		}
@@ -613,8 +656,23 @@ func main() {
 		_ = <-writeErr
 		return
 	}
-	beginManagedChild()
-	defer endManagedChild()
+	managedChildStarted = true
+	runtimeSensor := startRuntimeSensor(cmd.Process.Pid, sendChunk)
+	defer runtimeSensor.Close()
+	if err := runtimeSensor.AttachTraceRoot(); err != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
+		runtime.UnlockOSThread()
+		lockedThread = false
+		if !sendChunk(GuestChunk{Type: "error", Error: "runtime trace: " + err.Error()}) {
+			return
+		}
+		close(chunks)
+		_ = <-writeErr
+		return
+	}
+	runtime.UnlockOSThread()
+	lockedThread = false
 	if diagPrefix != "" {
 		if !sendChunk(GuestChunk{Type: "stderr", Chunk: diagPrefix}) {
 			return
@@ -653,24 +711,28 @@ func main() {
 	go streamPipe(&wg, stdoutPipe, "stdout", chunks, writerDone)
 	go streamPipe(&wg, stderrPipe, "stderr", chunks, writerDone)
 
+	traceResult, traceErr := runtimeSensor.WaitRootExit()
 	wg.Wait()
 
-	exitCode := 0
+	exitCode := traceResult.ExitCode
 	exitReason := "completed"
-	if err := cmd.Wait(); err != nil {
-		var exitErr *exec.ExitError
-		if timedOut.Load() {
-			exitCode = -1
-			exitReason = classifyExitReason(true, guestPidsLimitHit.Load(), exitReason)
-			_ = sendChunk(GuestChunk{Type: "stderr", Chunk: "execution timeout\n"})
-		} else if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-			if guestPidsLimitHit.Load() {
-				exitReason = classifyExitReason(false, true, exitReason)
-			}
-		} else {
-			exitCode = 1
-		}
+	if timedOut.Load() {
+		exitCode = -1
+		exitReason = classifyExitReason(true, guestPidsLimitHit.Load(), exitReason)
+		_ = sendChunk(GuestChunk{Type: "stderr", Chunk: "execution timeout\n"})
+	} else if guestPidsLimitHit.Load() {
+		exitReason = classifyExitReason(false, true, exitReason)
+	}
+	if traceErr != nil && !timedOut.Load() {
+		exitCode = 1
+		_ = sendChunk(GuestChunk{Type: "stderr", Chunk: "runtime trace: " + traceErr.Error() + "\n"})
+	}
+	if cmd.Process != nil {
+		_ = cmd.Process.Release()
+	}
+
+	if err := runtimeSensor.Close(); err != nil {
+		_ = sendChunk(GuestChunk{Type: "stderr", Chunk: "runtime sensor: " + err.Error() + "\n"})
 	}
 
 	if networkCleanup != nil {
