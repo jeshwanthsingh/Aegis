@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aegis.dev/schemas/receipt-predicate-v1.json",
+  "title": "Aegis ExecutionReceipt predicate v1",
+  "description": "Custom Aegis predicate payload embedded inside an in-toto Statement v1 and then wrapped in DSSE.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "execution_id",
+    "workflow_id",
+    "backend",
+    "intent_digest",
+    "event_log_digest",
+    "verdict",
+    "violations",
+    "broker_actions",
+    "resource_summary",
+    "network_summary",
+    "cleanup_summary",
+    "telemetry_summary",
+    "host_attestation",
+    "started_at",
+    "finished_at"
+  ],
+  "properties": {
+    "version": {
+      "const": "v1",
+      "description": "Schema version for the Aegis predicate."
+    },
+    "execution_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "workflow_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "backend": {
+      "type": "string",
+      "enum": [
+        "firecracker",
+        "gvisor"
+      ]
+    },
+    "intent_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Digest of the canonicalized IntentContract payload."
+    },
+    "event_log_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Digest of the normalized event stream or canonical event log representation."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "killed_on_divergence",
+        "budget_exceeded",
+        "failed"
+      ],
+      "description": "Final execution outcome after enforcement and teardown."
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "$ref": "violation-v1.json"
+      },
+      "maxItems": 1024,
+      "description": "Violations recorded during the execution."
+    },
+    "broker_actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/broker_action"
+      },
+      "maxItems": 512,
+      "description": "Summary of brokered actions observed during the execution."
+    },
+    "resource_summary": {
+      "$ref": "#/$defs/summary_object"
+    },
+    "network_summary": {
+      "$ref": "#/$defs/summary_object"
+    },
+    "cleanup_summary": {
+      "$ref": "#/$defs/summary_object"
+    },
+    "telemetry_summary": {
+      "$ref": "#/$defs/telemetry_summary"
+    },
+    "host_attestation": {
+      "description": "Optional host trust reference. Null for unsigned-host or non-attested runs.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/host_attestation"
+        }
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 execution start time."
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 execution end time."
+    },
+    "output_artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/output_artifact"
+      },
+      "maxItems": 512,
+      "description": "Optional convenience copy of produced artifacts for indexing. Canonical artifact binding belongs in in-toto `subject[]`, not in this predicate."
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]{16,}$"
+    },
+    "summary_value": {
+      "oneOf": [
+        {
+          "type": "string",
+          "maxLength": 1024
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "summary_object": {
+      "type": "object",
+      "description": "Compact execution summary for operator inspection and verification input.",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-zA-Z0-9_.-]+$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/summary_value"
+      },
+      "maxProperties": 64
+    },
+    "broker_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delegation",
+        "allowed",
+        "result_digest",
+        "metadata"
+      ],
+      "properties": {
+        "delegation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+        },
+        "allowed": {
+          "type": "boolean"
+        },
+        "result_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ],
+          "description": "Digest of the broker result payload when one exists."
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9_.-]+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "maxProperties": 32
+        }
+      }
+    },
+    "telemetry_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "emitted_events",
+        "dropped_events",
+        "flood_detected",
+        "event_digest_algo"
+      ],
+      "properties": {
+        "emitted_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dropped_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "flood_detected": {
+          "type": "boolean"
+        },
+        "event_digest_algo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[a-z0-9-]+$",
+          "description": "Digest algorithm label used for event log hashing."
+        }
+      }
+    },
+    "host_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attested",
+        "method",
+        "quote_digest",
+        "policy_id",
+        "signer_key_id"
+      ],
+      "properties": {
+        "attested": {
+          "type": "boolean"
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_.-]+$"
+        },
+        "quote_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "signer_key_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        }
+      }
+    },
+    "output_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "path",
+        "digest"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^/.*"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

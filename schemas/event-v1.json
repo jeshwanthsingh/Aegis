@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aegis.dev/schemas/event-v1.json",
+  "title": "Aegis RuntimeEvent v1",
+  "description": "Normalized execution event emitted by an Aegis backend or associated host truth source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "execution_id",
+    "backend",
+    "seq",
+    "ts_unix_nano",
+    "dropped_since_last",
+    "type",
+    "pid",
+    "ppid",
+    "comm",
+    "exe",
+    "path",
+    "flags",
+    "dst_ip",
+    "dst_port",
+    "domain",
+    "exit_code",
+    "metadata"
+  ],
+  "properties": {
+    "execution_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "description": "Execution identifier shared with the intent contract and receipt."
+    },
+    "backend": {
+      "type": "string",
+      "enum": [
+        "firecracker",
+        "gvisor"
+      ],
+      "description": "Backend that produced or normalized this event."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic per-execution sequence number assigned after normalization."
+    },
+    "ts_unix_nano": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Event timestamp in Unix nanoseconds."
+    },
+    "dropped_since_last": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of events dropped or coalesced since the prior emitted event for this execution."
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "process.exec",
+        "process.fork",
+        "process.exit",
+        "file.open",
+        "file.delete",
+        "net.connect",
+        "dns.query",
+        "broker.request",
+        "broker.result",
+        "budget.hit",
+        "policy.violation",
+        "cleanup.done"
+      ],
+      "description": "Normalized event class. Fields irrelevant to a given event type are represented as empty strings or zero values."
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Process identifier. Use `0` when not applicable to the event."
+    },
+    "ppid": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Parent process identifier. Use `0` when not applicable to the event."
+    },
+    "comm": {
+      "type": "string",
+      "maxLength": 256,
+      "description": "Short process or actor name. Use an empty string when not applicable."
+    },
+    "exe": {
+      "type": "string",
+      "maxLength": 1024,
+      "description": "Resolved executable path or binary label. Use an empty string when not applicable."
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "description": "Normalized file or resource path. Use an empty string when the event does not target a path."
+    },
+    "flags": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Compact bitfield or backend-specific flag value. Use `0` when not applicable."
+    },
+    "dst_ip": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Destination IP string for network events. Use an empty string when not applicable."
+    },
+    "dst_port": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "description": "Destination port for network events. Use `0` when not applicable."
+    },
+    "domain": {
+      "type": "string",
+      "maxLength": 253,
+      "description": "Queried or resolved domain name. Use an empty string when not applicable."
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": -1,
+      "maximum": 255,
+      "description": "Process exit status where available. Use `-1` when the event has no exit code."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Small string metadata for backend-specific normalization details. Large payloads, raw command lines, and full file contents are out of scope.",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-zA-Z0-9_.-]+$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 512
+      },
+      "maxProperties": 32
+    }
+  }
+}

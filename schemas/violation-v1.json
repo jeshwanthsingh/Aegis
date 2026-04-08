@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aegis.dev/schemas/violation-v1.json",
+  "title": "Aegis Violation v1",
+  "description": "Normalized divergence or policy violation recorded in an Aegis execution receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rule_id",
+    "severity",
+    "reason",
+    "event_digest",
+    "metadata"
+  ],
+  "properties": {
+    "rule_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_.-]*$",
+      "description": "Stable identifier for the rule that produced this violation."
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "warn",
+        "kill"
+      ],
+      "description": "Enforcement severity associated with the rule outcome."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Short human-readable explanation of why the rule fired."
+    },
+    "event_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]{16,}$",
+      "description": "Digest of the triggering normalized event or sequence summary."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Small structured annotations for operator inspection.",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-zA-Z0-9_.-]+$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 512
+      },
+      "maxProperties": 32
+    }
+  }
+}
