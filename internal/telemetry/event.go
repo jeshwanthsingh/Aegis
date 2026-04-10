@@ -19,6 +19,9 @@ const (
 	KindNetRuleDrop         = "net.rule.drop"
 	KindGuestProcSample     = "guest.proc.sample"
 	KindRuntimeEvent        = "runtime.event.v1"
+	KindPolicyPointDecision = "policy.point.decision"
+	KindPolicyDivergence    = "policy.divergence.v1"
+	KindPolicyEnforcement   = "policy.enforcement.v1"
 	KindRuntimeSensorStatus = "runtime.sensor.status"
 	KindExecStdout          = "exec.stdout"
 	KindExecStderr          = "exec.stderr"
@@ -26,6 +29,10 @@ const (
 	KindCleanupStart        = "cleanup.start"
 	KindCleanupDone         = "cleanup.done"
 	KindReceipt             = "containment.receipt"
+	KindCredentialRequest   = "credential.request"
+	KindCredentialAllowed   = "credential.allowed"
+	KindCredentialDenied    = "credential.denied"
+	KindCredentialError     = "credential.error"
 )
 
 type CgroupConfiguredData struct {
@@ -80,10 +87,30 @@ type ExecExitData struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+type PolicyEnforcementData struct {
+	ExecutionID string `json:"execution_id"`
+	Seq         uint64 `json:"seq"`
+	Verdict     string `json:"verdict"`
+	Action      string `json:"action"`
+	RuleID      string `json:"rule_id,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 type CleanupDoneData struct {
 	TapRemoved     bool `json:"tap_removed"`
 	CgroupRemoved  bool `json:"cgroup_removed"`
 	ScratchRemoved bool `json:"scratch_removed"`
 	SocketRemoved  bool `json:"socket_removed"`
 	AllClean       bool `json:"all_clean"`
+}
+
+
+type CredentialBrokerData struct {
+	ExecutionID  string `json:"execution_id"`
+	BindingName  string `json:"binding_name,omitempty"`
+	TargetDomain string `json:"target_domain"`
+	Method       string `json:"method"`
+	ActionType   string `json:"action_type"`
+	Outcome      string `json:"outcome"`
+	DenialReason string `json:"denial_reason,omitempty"`
 }

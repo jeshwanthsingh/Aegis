@@ -3,11 +3,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -23,6 +25,12 @@ const runtimeTraceOptions = unix.PTRACE_O_TRACESYSGOOD |
 	unix.PTRACE_O_TRACEEXEC |
 	unix.PTRACE_O_TRACEEXIT
 
+const (
+	traceCStringChunk   = 64
+	traceCStringMax     = 4096
+	traceOpenHowMinSize = 8
+)
+
 type runtimeTraceResult struct {
 	ExitCode int
 	Err      error
@@ -31,6 +39,12 @@ type runtimeTraceResult struct {
 type runtimeSockaddr struct {
 	IP   string
 	Port uint16
+}
+
+type runtimeTraceOpenCall struct {
+	Path    string
+	Flags   uint64
+	Syscall string
 }
 
 func (s *runtimeSensor) AttachTraceRoot() error {
@@ -222,6 +236,34 @@ func (s *runtimeSensor) handleTraceSyscall(pid int, ppid int, firstConnect *atom
 	if err := unix.PtraceGetRegs(pid, &regs); err != nil {
 		return err
 	}
+
+	if openCall, ok, err := readTraceOpenCall(pid, regs); err != nil {
+		return err
+	} else if ok {
+		rawPath := openCall.Path
+		resolvedPath, symlinkViolation, err := inspectTraceOpenPath(pid, openCall.Path, traceDirFD(regs))
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(resolvedPath) != "" {
+			openCall.Path = resolvedPath
+		}
+		identity := readTraceIdentity(pid)
+		metadata := map[string]string{"source": "ptrace", "phase": "enter", "syscall": openCall.Syscall}
+		if symlinkViolation {
+			metadata["raw_path"] = rawPath
+			metadata["resolved_path"] = openCall.Path
+			metadata["symlink_violation"] = "true"
+		}
+		s.enqueue(runtimeSensorEvent{TsUnixNano: time.Now().UnixNano(), Type: "file.open", PID: pid, PPID: ppid, Comm: identity.Comm, Exe: identity.Exe, Path: openCall.Path, Flags: openCall.Flags, Metadata: metadata})
+		if symlinkViolation {
+			s.sendStatus(runtimeSensorStatus{Source: "guest-runtime-trace", Detail: fmt.Sprintf("blocked-symlink-open pid=%d raw=%s resolved=%s", pid, truncateStatusDetail(rawPath), truncateStatusDetail(openCall.Path))})
+			_ = syscall.Kill(-s.rootPID, syscall.SIGKILL)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+
 	if regs.Orig_rax != uint64(unix.SYS_CONNECT) {
 		return nil
 	}
@@ -239,6 +281,167 @@ func (s *runtimeSensor) handleTraceSyscall(pid int, ppid int, firstConnect *atom
 	}
 	s.enqueue(runtimeSensorEvent{TsUnixNano: time.Now().UnixNano(), Type: "net.connect", PID: pid, PPID: ppid, Comm: identity.Comm, Exe: identity.Exe, DstIP: addr.IP, DstPort: addr.Port, Metadata: metadata})
 	return nil
+}
+
+func readTraceOpenCall(pid int, regs unix.PtraceRegs) (runtimeTraceOpenCall, bool, error) {
+	call, ok, err := parseTraceOpenCall(regs, func(addr uintptr) (string, error) {
+		return readTraceCString(pid, addr, traceCStringMax)
+	}, func(addr uintptr, size uint64) (uint64, error) {
+		return readTraceOpenHowFlags(pid, addr, size)
+	})
+	if err != nil || !ok {
+		return runtimeTraceOpenCall{}, ok, err
+	}
+	call.Path = resolveTracePath(pid, call.Path, traceDirFD(regs))
+	if strings.TrimSpace(call.Path) == "" {
+		return runtimeTraceOpenCall{}, false, nil
+	}
+	return call, true, nil
+}
+
+func parseTraceOpenCall(regs unix.PtraceRegs, readCString func(uintptr) (string, error), readOpenHow func(uintptr, uint64) (uint64, error)) (runtimeTraceOpenCall, bool, error) {
+	switch regs.Orig_rax {
+	case uint64(unix.SYS_OPEN):
+		path, err := readCString(uintptr(regs.Rdi))
+		if err != nil {
+			return runtimeTraceOpenCall{}, true, err
+		}
+		return runtimeTraceOpenCall{Path: path, Flags: uint64(regs.Rsi), Syscall: "open"}, true, nil
+	case uint64(unix.SYS_OPENAT):
+		path, err := readCString(uintptr(regs.Rsi))
+		if err != nil {
+			return runtimeTraceOpenCall{}, true, err
+		}
+		return runtimeTraceOpenCall{Path: path, Flags: uint64(regs.Rdx), Syscall: "openat"}, true, nil
+	case uint64(unix.SYS_OPENAT2):
+		path, err := readCString(uintptr(regs.Rsi))
+		if err != nil {
+			return runtimeTraceOpenCall{}, true, err
+		}
+		flags, err := readOpenHow(uintptr(regs.Rdx), uint64(regs.R10))
+		if err != nil {
+			return runtimeTraceOpenCall{}, true, err
+		}
+		return runtimeTraceOpenCall{Path: path, Flags: flags, Syscall: "openat2"}, true, nil
+	default:
+		return runtimeTraceOpenCall{}, false, nil
+	}
+}
+
+func traceDirFD(regs unix.PtraceRegs) int {
+	if regs.Orig_rax == uint64(unix.SYS_OPENAT) || regs.Orig_rax == uint64(unix.SYS_OPENAT2) {
+		return int(int64(regs.Rdi))
+	}
+	return unix.AT_FDCWD
+}
+
+func readTraceCString(pid int, addr uintptr, maxLen int) (string, error) {
+	if addr == 0 {
+		return "", errors.New("invalid string pointer")
+	}
+	if maxLen <= 0 {
+		maxLen = traceCStringMax
+	}
+	buf := make([]byte, 0, maxLen)
+	scratch := make([]byte, traceCStringChunk)
+	for len(buf) < maxLen {
+		n, err := unix.PtracePeekData(pid, addr+uintptr(len(buf)), scratch)
+		if err != nil && n == 0 {
+			return "", err
+		}
+		chunk := scratch[:n]
+		if idx := bytes.IndexByte(chunk, 0); idx >= 0 {
+			buf = append(buf, chunk[:idx]...)
+			return string(buf), nil
+		}
+		buf = append(buf, chunk...)
+		if err != nil || n < len(scratch) {
+			return string(buf), nil
+		}
+	}
+	return string(buf), nil
+}
+
+func readTraceOpenHowFlags(pid int, addr uintptr, size uint64) (uint64, error) {
+	if addr == 0 {
+		return 0, errors.New("invalid open_how pointer")
+	}
+	if size < traceOpenHowMinSize {
+		return 0, fmt.Errorf("short open_how size: %d", size)
+	}
+	buf := make([]byte, traceOpenHowMinSize)
+	if _, err := unix.PtracePeekData(pid, addr, buf); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(buf), nil
+}
+
+func resolveTracePath(pid int, rawPath string, dirfd int) string {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return ""
+	}
+	if filepath.IsAbs(rawPath) {
+		return filepath.Clean(rawPath)
+	}
+	base := traceDirPath(pid, dirfd)
+	if base == "" {
+		return rawPath
+	}
+	return filepath.Clean(filepath.Join(base, rawPath))
+}
+
+func inspectTraceOpenPath(pid int, rawPath string, dirfd int) (string, bool, error) {
+	resolved := resolveTracePath(pid, rawPath, dirfd)
+	if !tracePathUsesWritableMount(resolved) {
+		return resolved, false, nil
+	}
+	evaluated, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return resolved, false, nil
+		}
+		return resolved, false, nil
+	}
+	evaluated = filepath.Clean(evaluated)
+	if evaluated != resolved {
+		return evaluated, true, nil
+	}
+	return resolved, false, nil
+}
+
+func tracePathUsesWritableMount(path string) bool {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "/tmp" || strings.HasPrefix(path, "/tmp/") {
+		return true
+	}
+	if path == "/workspace" || strings.HasPrefix(path, "/workspace/") {
+		return true
+	}
+	return false
+}
+
+func traceDirPath(pid int, dirfd int) string {
+	switch dirfd {
+	case unix.AT_FDCWD:
+		path, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+		if err != nil {
+			return ""
+		}
+		return path
+	default:
+		if dirfd < 0 {
+			return ""
+		}
+		path, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", pid, dirfd))
+		if err != nil {
+			return ""
+		}
+		if !filepath.IsAbs(path) {
+			return ""
+		}
+		return path
+	}
 }
 
 type traceIdentity struct {

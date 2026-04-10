@@ -2,36 +2,38 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
 	"aegis/internal/executor"
+	warmpool "aegis/internal/pool"
 	"aegis/internal/store"
 )
 
-func HandleHealth(pool *executor.Pool) http.HandlerFunc {
+func HandleHealth(pool *executor.Pool, warm *warmpool.Manager) http.HandlerFunc {
 	type healthResponse struct {
 		Status               string `json:"status"`
 		WorkerSlotsAvailable int    `json:"worker_slots_available"`
 		WorkerSlotsTotal     int    `json:"worker_slots_total"`
+		WarmPool             any    `json:"warm_pool,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(healthResponse{
+		writeJSON(w, http.StatusOK, healthResponse{
 			Status:               "ok",
 			WorkerSlotsAvailable: pool.Available(),
 			WorkerSlotsTotal:     pool.Capacity(),
+			WarmPool:             warm.Status(),
 		})
 	}
 }
 
-func HandleReady(s *store.Store, pool *executor.Pool) http.HandlerFunc {
+func HandleReady(s *store.Store, pool *executor.Pool, warm *warmpool.Manager) http.HandlerFunc {
 	type readyResponse struct {
 		Status               string `json:"status"`
 		DBOK                 bool   `json:"db_ok"`
 		WorkerSlotsAvailable int    `json:"worker_slots_available"`
 		WorkerSlotsTotal     int    `json:"worker_slots_total"`
+		WarmPool             any    `json:"warm_pool,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
@@ -45,13 +47,12 @@ func HandleReady(s *store.Store, pool *executor.Pool) http.HandlerFunc {
 			statusCode = http.StatusServiceUnavailable
 			status = "not_ready"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		_ = json.NewEncoder(w).Encode(readyResponse{
+		writeJSON(w, statusCode, readyResponse{
 			Status:               status,
 			DBOK:                 dbOK,
 			WorkerSlotsAvailable: available,
 			WorkerSlotsTotal:     pool.Capacity(),
+			WarmPool:             warm.Status(),
 		})
 	}
 }

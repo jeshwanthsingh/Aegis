@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"aegis/internal/observability"
 	"aegis/internal/telemetry"
 )
 
@@ -67,9 +68,13 @@ func NewTelemetryHandler(registry *BusRegistry) http.HandlerFunc {
 				}
 				data, err := json.Marshal(event)
 				if err != nil {
+					observability.Warn("telemetry_sse_encode_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
 					continue
 				}
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+					observability.Warn("telemetry_sse_write_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
+					return
+				}
 				flusher.Flush()
 			case <-r.Context().Done():
 				return

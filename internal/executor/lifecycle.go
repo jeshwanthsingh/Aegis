@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"aegis/internal/observability"
@@ -309,7 +311,11 @@ func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
 	cleanup.SocketRemoved = fcSocketRemoved && vsockSocketRemoved
 
 	parent := DefaultCgroupParent()
-	cgPath := CgroupPath(parent, vm.UUID)
+	cgroupID := vm.CgroupID
+	if strings.TrimSpace(cgroupID) == "" {
+		cgroupID = vm.UUID
+	}
+	cgPath := CgroupPath(parent, cgroupID)
 	cgRemoved := false
 	for i := 0; i < 10; i++ {
 		time.Sleep(50 * time.Millisecond)
@@ -603,7 +609,7 @@ func serveDNS(cfg *NetworkConfig, conn net.PacketConn, bus *telemetry.Bus) {
 	for {
 		n, addr, err := conn.ReadFrom(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
 			return
@@ -639,7 +645,7 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte, bus *telemetry.Bus) ([]byt
 	}
 	for {
 		if _, err := parser.Question(); err != nil {
-			if err == dnsmessage.ErrSectionDone {
+			if errors.Is(err, dnsmessage.ErrSectionDone) {
 				break
 			}
 			return nil, err

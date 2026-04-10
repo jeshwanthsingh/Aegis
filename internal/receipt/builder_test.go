@@ -1,0 +1,292 @@
+package receipt
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"aegis/internal/models"
+	"aegis/internal/telemetry"
+)
+
+func TestBuildPredicateAndStatement(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receipt.Statement.Type != StatementType {
+		t.Fatalf("statement type = %q", receipt.Statement.Type)
+	}
+	if receipt.Statement.PredicateType != PredicateType {
+		t.Fatalf("predicate type = %q", receipt.Statement.PredicateType)
+	}
+	if receipt.Statement.Predicate.ExecutionID != input.ExecutionID {
+		t.Fatalf("execution id = %q", receipt.Statement.Predicate.ExecutionID)
+	}
+	if receipt.Statement.Predicate.PointDecisions.DenyCount != 1 {
+		t.Fatalf("unexpected point summary: %+v", receipt.Statement.Predicate.PointDecisions)
+	}
+}
+
+func TestDSSEEnvelopeGenerationAndVerify(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	statement, err := VerifySignedReceipt(receipt, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+	if statement.Predicate.SignerKeyID != signer.KeyID {
+		t.Fatalf("signer key id = %q", statement.Predicate.SignerKeyID)
+	}
+	if statement.Predicate.Trust.SigningMode != SigningModeDev {
+		t.Fatalf("unexpected signing mode: %q", statement.Predicate.Trust.SigningMode)
+	}
+	if statement.Predicate.Trust.KeySource != KeySourceDevFallback {
+		t.Fatalf("unexpected key source: %q", statement.Predicate.Trust.KeySource)
+	}
+}
+
+func TestArtifactBindingUsesSubject(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.OutputArtifacts = []Artifact{{Name: "summary.md", Digest: map[string]string{"sha256": "abc123"}, Path: "/workspace/summary.md"}}
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if len(receipt.Statement.Subject) != 1 {
+		t.Fatalf("subject count = %d", len(receipt.Statement.Subject))
+	}
+	if receipt.Statement.Subject[0].Digest["sha256"] != "abc123" {
+		t.Fatalf("unexpected subject digest: %+v", receipt.Statement.Subject[0])
+	}
+}
+
+func TestZeroArtifactCaseIsHonest(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if len(receipt.Statement.Subject) != 0 {
+		t.Fatalf("expected zero subjects, got %d", len(receipt.Statement.Subject))
+	}
+}
+
+func TestDivergenceBearingReceiptIncludesRuleIDs(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receipt.Statement.Predicate.Divergence.Verdict != models.DivergenceKillCandidate {
+		t.Fatalf("unexpected divergence verdict: %q", receipt.Statement.Predicate.Divergence.Verdict)
+	}
+	if len(receipt.Statement.Predicate.Divergence.TriggeredRuleIDs) == 0 {
+		t.Fatal("expected triggered rule ids")
+	}
+}
+
+func TestVerifyTamperedPayloadFails(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	payload, err := base64.StdEncoding.DecodeString(receipt.Envelope.Payload)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var statement Statement
+	if err := json.Unmarshal(payload, &statement); err != nil {
+		t.Fatalf("unmarshal statement: %v", err)
+	}
+	statement.Predicate.ExecutionID = "tampered"
+	bytes, err := json.Marshal(statement)
+	if err != nil {
+		t.Fatalf("marshal tampered statement: %v", err)
+	}
+	receipt.Envelope.Payload = base64.StdEncoding.EncodeToString(bytes)
+	if _, err := VerifySignedReceipt(receipt, signer.PublicKey); err == nil {
+		t.Fatal("expected tampered payload verification failure")
+	}
+}
+
+func TestVerifyWrongPayloadTypeFails(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	receipt.Envelope.PayloadType = "application/json"
+	if _, err := VerifySignedReceipt(receipt, signer.PublicKey); err == nil {
+		t.Fatal("expected payload type verification failure")
+	}
+}
+
+func TestWriteProofBundleAndVerifyFile(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.OutputArtifacts = ArtifactsFromBundleOutputs(input.ExecutionID, "report ok\n", "", false)
+	signedReceipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	root := t.TempDir()
+	paths, err := WriteProofBundle(root, input.ExecutionID, signedReceipt, signer.PublicKey, "report ok\n", "", false)
+	if err != nil {
+		t.Fatalf("WriteProofBundle: %v", err)
+	}
+	statement, err := VerifyBundlePaths(paths)
+	if err != nil {
+		t.Fatalf("VerifyBundlePaths: %v", err)
+	}
+	if len(statement.Subject) != 2 {
+		t.Fatalf("subject count = %d", len(statement.Subject))
+	}
+	if paths.ArtifactPaths["stdout.txt"] == "" {
+		t.Fatal("expected stdout artifact path")
+	}
+	if paths.ArtifactPaths["output-manifest.json"] == "" {
+		t.Fatal("expected output manifest artifact path")
+	}
+	if paths.DivergenceVerdict != string(statement.Predicate.Divergence.Verdict) {
+		t.Fatalf("divergence verdict = %q", paths.DivergenceVerdict)
+	}
+}
+
+func TestVerifyBundlePathsRejectsTamperedArtifact(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.OutputArtifacts = ArtifactsFromBundleOutputs(input.ExecutionID, "report ok\n", "", false)
+	signedReceipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	root := t.TempDir()
+	paths, err := WriteProofBundle(root, input.ExecutionID, signedReceipt, signer.PublicKey, "report ok\n", "", false)
+	if err != nil {
+		t.Fatalf("WriteProofBundle: %v", err)
+	}
+	if err := os.WriteFile(paths.ArtifactPaths["output-manifest.json"], []byte("{\"tampered\":true}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tampered manifest: %v", err)
+	}
+	if _, err := VerifyBundlePaths(paths); err == nil {
+		t.Fatal("expected tampered artifact verification failure")
+	}
+}
+
+func TestVerifyBundlePathsRejectsUnexpectedArtifact(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.OutputArtifacts = ArtifactsFromBundleOutputs(input.ExecutionID, "artifact\n", "", false)
+	signedReceipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	root := t.TempDir()
+	paths, err := WriteProofBundle(root, input.ExecutionID, signedReceipt, signer.PublicKey, "artifact\n", "", false)
+	if err != nil {
+		t.Fatalf("WriteProofBundle: %v", err)
+	}
+	extraPath := filepath.Join(paths.ProofDir, "ghost.txt")
+	if err := os.WriteFile(extraPath, []byte("ghost"), 0o644); err != nil {
+		t.Fatalf("WriteFile ghost: %v", err)
+	}
+	resolved, err := ResolveBundlePaths(root, input.ExecutionID, "")
+	if err != nil {
+		t.Fatalf("ResolveBundlePaths: %v", err)
+	}
+	if _, err := VerifyBundlePaths(resolved); err == nil {
+		t.Fatal("expected ghost artifact verification failure")
+	}
+}
+
+func TestBundleArtifactsIncludeManifestWithoutSweepingWorkspace(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.OutputArtifacts = ArtifactsFromBundleOutputs(input.ExecutionID, "artifact\n", "", false)
+	signedReceipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("ignore"), 0o644); err != nil {
+		t.Fatalf("WriteFile outside: %v", err)
+	}
+	paths, err := WriteProofBundle(root, input.ExecutionID, signedReceipt, signer.PublicKey, "artifact\n", "", false)
+	if err != nil {
+		t.Fatalf("WriteProofBundle: %v", err)
+	}
+	resolved, err := ResolveBundlePaths(root, input.ExecutionID, "")
+	if err != nil {
+		t.Fatalf("ResolveBundlePaths: %v", err)
+	}
+	if len(resolved.ArtifactPaths) != 2 {
+		t.Fatalf("artifact path count = %d", len(resolved.ArtifactPaths))
+	}
+	if resolved.ArtifactPaths["output-manifest.json"] == "" || resolved.ArtifactPaths["stdout.txt"] == "" {
+		t.Fatalf("unexpected artifact paths: %+v", resolved.ArtifactPaths)
+	}
+	if _, ok := resolved.ArtifactPaths["outside.txt"]; ok {
+		t.Fatalf("unexpected workspace file in artifact paths: %+v", resolved.ArtifactPaths)
+	}
+	if paths.ArtifactCount != 2 {
+		t.Fatalf("artifact count = %d", paths.ArtifactCount)
+	}
+}
+
+func TestFormatSummaryIncludesCoreFields(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := FormatSummary(receipt.Statement, true)
+	for _, needle := range []string{"verification=verified", "execution_id=exec_123", "signing_mode=dev", "key_source=dev_fallback", "attestation=absent", "divergence_verdict=kill_candidate", "artifact_count=0"} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q: %s", needle, summary)
+		}
+	}
+}
+
+func testReceiptInput() Input {
+	started := time.Unix(1700000000, 0).UTC()
+	finished := started.Add(2 * time.Second)
+	pointAllow, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 1, EventType: models.EventProcessExec, CedarAction: models.ActionExec, Decision: models.DecisionAllow, Reason: "allowed"})
+	pointDeny, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 2, EventType: models.EventNetConnect, CedarAction: models.ActionConnect, Decision: models.DecisionDeny, Reason: "network disabled"})
+	divergence, _ := json.Marshal(models.PolicyDivergenceResult{ExecutionID: "exec_123", Backend: models.BackendFirecracker, StartedAt: started, UpdatedAt: finished, LastSeq: 2, CurrentVerdict: models.DivergenceKillCandidate, TriggeredRules: []models.DivergenceRuleHit{{RuleID: "network.connect_disabled", Category: "network", Severity: models.DivergenceSeverityKillCandidate, Message: "connect destination=127.0.0.1 attempted while allow_network=false", EventSeq: 2}}})
+	runtimeEvent, _ := json.Marshal(models.RuntimeEvent{ExecutionID: "exec_123", Backend: models.BackendFirecracker, Seq: 1, TsUnixNano: started.UnixNano(), Type: models.EventProcessExec, PID: 10, Exe: "/usr/bin/python3", Comm: "python3"})
+	return Input{
+		ExecutionID:     "exec_123",
+		WorkflowID:      "wf_9",
+		Backend:         models.BackendFirecracker,
+		TaskClass:       "summarize_document",
+		DeclaredPurpose: "Summarize report.pdf into summary.md",
+		StartedAt:       started,
+		FinishedAt:      finished,
+		IntentRaw:       []byte(`{"version":"v1","execution_id":"exec_123"}`),
+		Outcome:         Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
+		TelemetryEvents: []telemetry.Event{{ExecID: "exec_123", Kind: telemetry.KindRuntimeEvent, Data: runtimeEvent}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointAllow}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointDeny}, {ExecID: "exec_123", Kind: telemetry.KindPolicyDivergence, Data: divergence}},
+		Attributes:      map[string]string{"mode": "test"},
+	}
+}
+
+func mustDevSigner(t *testing.T) *Signer {
+	t.Helper()
+	signer, err := NewSigner(SigningConfig{Mode: SigningModeDev})
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	return signer
+}

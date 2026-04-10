@@ -1,0 +1,465 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Aegis HTTP API",
+    "version": "v1",
+    "description": "Current local HTTP surface exposed by aegis serve. Execution endpoints use optional bearer auth when AEGIS_API_KEY is configured."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Default local Aegis server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "APIError": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": ["code", "message"]
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "error": { "$ref": "#/components/schemas/APIError" }
+        },
+        "required": ["error"]
+      },
+      "WarmPoolStatus": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "configured_size": { "type": "integer" },
+          "available": { "type": "integer" },
+          "initializing": { "type": "integer" },
+          "max_age_seconds": { "type": "integer" },
+          "warm_claims": { "type": "integer" },
+          "cold_fallbacks": { "type": "integer" },
+          "claim_errors": { "type": "integer" },
+          "recycled_expired": { "type": "integer" }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "worker_slots_available": { "type": "integer" },
+          "worker_slots_total": { "type": "integer" },
+          "warm_pool": { "$ref": "#/components/schemas/WarmPoolStatus" }
+        },
+        "required": ["status", "worker_slots_available", "worker_slots_total"]
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "db_ok": { "type": "boolean" },
+          "worker_slots_available": { "type": "integer" },
+          "worker_slots_total": { "type": "integer" },
+          "warm_pool": { "$ref": "#/components/schemas/WarmPoolStatus" }
+        },
+        "required": ["status", "db_ok", "worker_slots_available", "worker_slots_total"]
+      },
+      "ExecuteRequest": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "description": "Optional UUID. If omitted, the server generates one."
+          },
+          "lang": {
+            "type": "string",
+            "description": "Execution language."
+          },
+          "code": {
+            "type": "string",
+            "description": "Code to execute."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "Execution timeout in milliseconds. 0 means use the policy default."
+          },
+          "profile": {
+            "type": "string",
+            "description": "Optional compute profile. Defaults to the policy default."
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "Optional persistent workspace ID."
+          },
+          "intent": {
+            "description": "Optional v1 intent contract.",
+            "oneOf": [
+              { "type": "object", "additionalProperties": true },
+              { "type": "string" }
+            ]
+          }
+        },
+        "required": ["lang", "code"]
+      },
+      "ExecuteResponse": {
+        "type": "object",
+        "properties": {
+          "stdout": { "type": "string" },
+          "stderr": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "exit_reason": { "type": "string" },
+          "duration_ms": { "type": "integer" },
+          "execution_id": { "type": "string" },
+          "error": { "type": "string" },
+          "output_truncated": { "type": "boolean" },
+          "proof_dir": { "type": "string" },
+          "receipt_path": { "type": "string" },
+          "receipt_public_key_path": { "type": "string" },
+          "receipt_summary_path": { "type": "string" }
+        },
+        "required": ["duration_ms", "execution_id"]
+      },
+      "StatsResponse": {
+        "type": "object",
+        "properties": {
+          "total_executions": { "type": "integer" },
+          "total_completed": { "type": "integer" },
+          "total_contained": { "type": "integer" },
+          "dns_queries_total": { "type": "integer" },
+          "dns_queries_allowed": { "type": "integer" },
+          "dns_queries_denied": { "type": "integer" },
+          "iptables_rules_added": { "type": "integer" },
+          "clean_teardowns": { "type": "integer" },
+          "escapes": { "type": "integer" }
+        }
+      },
+      "DeleteWorkspaceResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "workspace_id": { "type": "string" }
+        },
+        "required": ["status", "workspace_id"]
+      }
+    }
+  },
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "summary": "Health check",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Server health and worker availability",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Readiness check",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Server is ready",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReadyResponse" }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is not ready",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReadyResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/execute": {
+      "post": {
+        "summary": "Execute code and return a structured result",
+        "description": "Uses optional bearer auth when AEGIS_API_KEY is configured. Runtime failures may still return 200 with an error-bearing execution result.",
+        "security": [
+          { "bearerAuth": [] },
+          {}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ExecuteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted execution result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ExecuteResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or policy validation error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required or invalid",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "409": {
+            "description": "Execution ID conflict",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many concurrent executions",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "500": {
+            "description": "Receipt generation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/execute/stream": {
+      "post": {
+        "summary": "Execute code and stream Server-Sent Events",
+        "security": [
+          { "bearerAuth": [] },
+          {}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ExecuteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream of stdout, stderr, proof, error, and done events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or policy validation error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required or invalid",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "409": {
+            "description": "Execution ID conflict",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many concurrent executions",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events/{exec_id}": {
+      "get": {
+        "summary": "Stream telemetry for an execution",
+        "parameters": [
+          {
+            "name": "exec_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Telemetry event stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid execution ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Execution not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many pending telemetry subscriptions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stats": {
+      "get": {
+        "summary": "Aggregate runtime counters derived from receipts",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Aggregate stats snapshot",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StatsResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{id}": {
+      "delete": {
+        "summary": "Delete a persistent workspace",
+        "security": [
+          { "bearerAuth": [] },
+          {}
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeleteWorkspaceResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid workspace ID",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Workspace not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "500": {
+            "description": "Workspace delete failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

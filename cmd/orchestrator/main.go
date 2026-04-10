@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"aegis/internal/api"
 	"aegis/internal/executor"
 	"aegis/internal/observability"
 	"aegis/internal/policy"
+	warmpool "aegis/internal/pool"
 	"aegis/internal/store"
 )
 
@@ -64,20 +66,36 @@ func main() {
 	observability.SetWorkerSlotsFunc(pool.Available)
 	registry := api.NewBusRegistry()
 	stats := api.NewStatsCounter()
+	defaultProfile, ok := pol.Profiles[pol.DefaultProfile]
+	if !ok {
+		observability.Fatal("startup_failed", observability.Fields{"step": "resolve_default_profile", "error": "default profile missing", "profile": pol.DefaultProfile})
+	}
+	warmPool := warmpool.New(warmpool.Config{
+		Size:        envInt("AEGIS_WARM_POOL_SIZE", 0),
+		MaxAge:      time.Duration(envInt("AEGIS_WARM_POOL_MAX_AGE", 300)) * time.Second,
+		AssetsDir:   *assetsDir,
+		RootfsPath:  *rootfsPath,
+		Policy:      pol,
+		Profile:     defaultProfile,
+		ProfileName: pol.DefaultProfile,
+	})
+	warmPool.Start()
+	defer warmPool.Close()
 	uiDir := os.Getenv("AEGIS_UI_DIR")
 	if uiDir == "" {
 		uiDir = "ui"
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", api.HandleHealth(pool))
-	mux.HandleFunc("GET /ready", api.HandleReady(s, pool))
+	mux.HandleFunc("GET /health", api.HandleHealth(pool, warmPool))
+	mux.HandleFunc("GET /v1/health", api.HandleHealth(pool, warmPool))
+	mux.HandleFunc("GET /ready", api.HandleReady(s, pool, warmPool))
 	mux.HandleFunc("GET /metrics", observability.HandleMetrics())
 	mux.HandleFunc("GET /v1/stats", api.NewStatsHandler(stats))
 	mux.HandleFunc("GET /v1/events/{exec_id}", api.NewTelemetryHandler(registry))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
-	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
-	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
+	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
+	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
 	if info, err := os.Stat(uiDir); err == nil && info.IsDir() {
 		uiFS := http.FileServer(http.Dir(uiDir))
 		mux.Handle("GET /ui/", http.StripPrefix("/ui/", uiFS))
@@ -95,6 +113,18 @@ func main() {
 	if err := http.ListenAndServe(":8080", mux); err != nil {
 		observability.Fatal("server_stopped", observability.Fields{"error": err.Error()})
 	}
+}
+
+func envInt(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 // reconcile cleans up orphaned scratch images and sockets from a previous crash.

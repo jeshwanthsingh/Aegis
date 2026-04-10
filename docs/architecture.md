@@ -1,249 +1,166 @@
-# Aegis Architecture
+# Architecture
 
-This document describes the current Aegis stack as it exists today. It is meant to help an engineer understand the real execution path quickly.
+Aegis is a local execution evidence platform. The runtime is split across a host-side control plane and a Firecracker-backed guest execution plane, with proof generation and verification kept explicit.
 
-## System Overview
+## System view
 
-```text
-Client (browser / CLI / API consumer)
-        |
-        | HTTP
-        v
-+--------------------------------------+
-| Orchestrator (Go)                    |
-| - request validation                 |
-| - worker slot pool                   |
-| - policy resolution                  |
-| - telemetry bus + SSE                |
-| - receipt + stats assembly           |
-| - audit record writes                |
-+--------------------------------------+
-        |
-        | Firecracker control API
-        v
-+--------------------------------------+
-| Firecracker microVM                  |
-| - machine config from profile        |
-| - rootfs + scratch + optional ws     |
-| - optional TAP-backed networking     |
-+--------------------------------------+
-        |
-        | Unix-socket vsock proxy
-        v
-+--------------------------------------+
-| guest-runner                         |
-| - reads execution payload            |
-| - runs python / bash / node          |
-| - emits stdout / stderr / done       |
-| - emits guest PID telemetry          |
-+--------------------------------------+
+```mermaid
+flowchart TD
+    subgraph Clients
+        CLI[Aegis CLI]
+        PY[Python SDK]
+        TS[TypeScript SDK]
+        MCPCLIENT[MCP client]
+    end
+
+    subgraph Host["Host runtime"]
+        API[HTTP API]
+        ORCH[Orchestrator]
+        POLICY[Policy evaluator]
+        DIV[Divergence evaluator]
+        BUS[Telemetry bus]
+        BROKER[Credential broker]
+        PROOF[Proof bundle writer]
+        VERIFY[Receipt verifier]
+        WARM[Warm pool v1]
+    end
+
+    subgraph VM["Firecracker microVM"]
+        GUEST[guest-runner]
+        CODE[Untrusted guest code]
+    end
+
+    CLI --> API
+    PY --> API
+    TS --> API
+    MCPCLIENT --> MCPWRAP[MCP wrapper]
+    MCPWRAP --> API
+
+    API --> ORCH
+    ORCH --> POLICY
+    ORCH --> DIV
+    ORCH --> BUS
+    ORCH --> BROKER
+    ORCH --> PROOF
+    ORCH --> WARM
+    PROOF --> VERIFY
+    ORCH -->|virtio-vsock| GUEST
+    GUEST --> CODE
+    BROKER -->|host-mediated requests| GUEST
 ```
 
-## Major Components
+## Component responsibilities
 
-### API and Orchestrator
+### Clients
 
-Source:
-- [main.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\cmd\orchestrator\main.go)
-- [handler.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\api\handler.go)
+- CLI for setup, serve, health, and receipt verification
+- Python SDK v1 and TypeScript SDK v1 for programmatic execution and verification
+- MCP wrapper v1 for agent-tool integration, including Claude Code interoperability
 
-Responsibilities:
-- validate requests
-- enforce worker-slot limits
-- resolve policy and compute profile
-- create an execution bus keyed by `execution_id`
-- boot Firecracker
-- attach host cgroups
-- connect to the guest over Firecracker's Unix-socket vsock proxy
-- aggregate guest chunks into a final result
-- emit telemetry, receipts, and stats
-- write execution records to Postgres
+### HTTP API
 
-Important public endpoints:
+The API is the stable local execution surface:
+
 - `POST /v1/execute`
 - `POST /v1/execute/stream`
+- `GET /v1/health`
 - `GET /v1/events/{exec_id}`
 - `GET /v1/stats`
-- `GET /health`
 - `GET /ready`
-- `GET /metrics`
 - `DELETE /v1/workspaces/{id}`
 
-### Worker Slots
+It is optionally guarded by `AEGIS_API_KEY`. Health remains unauthenticated for operator readiness checks.
 
-Source:
-- [pool.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\executor\pool.go)
+### Orchestrator
 
-The worker pool is a bounded concurrency gate. It prevents the orchestrator from trying to boot too many microVMs at once and returns `429` on overflow.
+The orchestrator is the host-side control loop. It:
 
-This is operationally important because:
-- Firecracker boot is not free
-- teardown has to complete cleanly
-- the proving ground should fail bounded, not melt under parallel abuse
+- validates requests
+- resolves the active policy and compute profile
+- manages worker slots and warm-pool claims
+- boots or resumes a Firecracker VM
+- connects to the guest over virtio-vsock
+- collects telemetry and emits proof material
 
-### Firecracker VM Lifecycle
+### Policy and divergence engines
 
-Source:
-- [firecracker.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\executor\firecracker.go)
-- [lifecycle.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\executor\lifecycle.go)
+Policy and divergence are separate concerns:
 
-The executor creates a per-run VM with:
-- a Firecracker machine config
-- a rootfs
-- a scratch disk path
-- a vsock device
-- optional network configuration
+- the point evaluator decides whether guest behavior matches the declared contract
+- the divergence evaluator records and classifies runtime deviations
+- enforcement outcomes are reflected in receipts and API results instead of being hidden behind generic errors
 
-The VM lifecycle is:
-1. allocate scratch and socket paths
-2. start Firecracker
-3. configure machine shape
-4. configure rootfs and vsock
-5. start the guest
-6. attach cgroups
-7. execute payload over vsock
-8. tear down TAP, cgroup, sockets, scratch, and process state
+### Credential broker
 
-Teardown is part of the product. The final receipt is emitted after cleanup state is known.
+The broker is host-mediated and policy-aware:
 
-### Guest Runner
+- guest code does not receive raw host secrets
+- allowed and denied broker requests are both visible in proof artifacts
+- upstream access happens through the broker surface, not by direct secret injection into the guest
 
-Source:
-- [main.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\guest-runner\main.go)
+### Firecracker microVM and guest-runner
 
-`guest-runner` is a separate statically built Go binary that runs inside the VM.
+The guest side is intentionally small:
 
-Responsibilities:
-- accept the execution payload
-- optionally set up guest networking
-- write the payload to a temp file
-- launch the interpreter as an unprivileged user
-- capture stdout / stderr
-- emit bounded guest chunks back to the host
-- emit guest PID telemetry for process-count demos
-- return final exit metadata
+- a Firecracker microVM provides the hardware-backed isolation boundary
+- `guest-runner` receives payloads, launches the requested interpreter, streams stdout/stderr chunks, and emits runtime telemetry
+- host-side policy and broker decisions remain outside the guest trust boundary
 
-This separation matters because:
-- the guest execution path stays distinct from the host control plane
-- guest transport and process handling can be tested independently
-- the guest binary can stay lean and self-contained
+### Proof generation and verification
 
-### Vsock Transport
+After execution, Aegis emits:
 
-Source:
-- [vsock.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\executor\vsock.go)
+- a signed receipt
+- a proof bundle directory
+- receipt summary and public-key material needed for verification
 
-The host does not dial guest `AF_VSOCK` directly. It connects through Firecracker's Unix-socket vsock proxy and then exchanges newline-delimited JSON guest chunks.
+Verification is available through:
 
-Guest chunk types include:
-- `stdout`
-- `stderr`
-- `done`
-- `telemetry`
-- `error`
+- `aegis receipt verify`
+- SDK receipt-verifier helpers
+- MCP `aegis_verify`
 
-Host-side result assembly:
-- aggregates stdout and stderr
-- tracks raw output byte counts
-- enforces `maxOutputBytes`
-- marks `output_truncated`
-- emits exit telemetry
+## Trust boundaries
 
-The host-side transport has an explicit guest message size cap. This is a hardening measure, not a convenience feature.
+### Client to orchestrator
 
-### Telemetry Bus and SSE
+Clients trust the host runtime to enforce the declared policy and to return proof artifacts that can later be verified.
 
-Source:
-- [bus_registry.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\api\bus_registry.go)
-- [telemetry_handler.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\api\telemetry_handler.go)
-- [event.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\telemetry\event.go)
+### Host to guest
 
-Each execution can have an in-memory telemetry bus keyed by `execution_id`.
+The host and guest are separated by the Firecracker microVM boundary and communicate over virtio-vsock. The guest is treated as untrusted execution space.
 
-That bus powers:
-- `GET /v1/events/{exec_id}`
-- receipt emission
-- live proving-ground updates
-- stats derivation
+### Broker to upstream
 
-The proving ground intentionally subscribes before execution starts so it can show boot and early policy decisions rather than only tail output.
+The broker runs on the host side and mediates credentialed requests to upstream systems. The guest can request broker actions, but it does not receive the raw credential material.
 
-### Receipts and Stats
+### Signer to verifier
 
-Source:
-- [types.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\models\types.go)
-- [stats.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\api\stats.go)
+Execution and verification are deliberately separate. Verification consumers should treat receipts as artifacts to validate, not as self-authenticating runtime claims.
 
-The containment receipt is the final execution summary. It includes:
-- policy version and active profile
-- network summary
-- exit state
-- cleanup result
-- final verdict
+## Warm pool v1
 
-`/v1/stats` is derived from completed receipts and is intentionally lightweight. It is useful for demos and live status, not as a historical analytics system.
+Warm pool is an optimization layer, not a separate architecture:
 
-### Storage Model
+- preboots and pauses default-profile scratch VMs
+- resumes a warm VM for one execution
+- tears it down after use
+- falls back to cold boot when the request is outside the current warm-path scope
 
-Current storage pieces:
-- rootfs image
-- per-run scratch state
-- optional named workspace images
-- Postgres audit records
+Warm coverage is intentionally limited today. See [warm_pool.md](warm_pool.md).
 
-Important truth:
-- Aegis does not use snapshots today
-- cold start is still dominated by VM boot plus current storage setup
-- workspace durability exists, but cleanup semantics still need polish
+## Design boundaries
 
-## Policy Path
+Aegis is designed to be:
 
-Source:
-- [policy.go](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\internal\policy\policy.go)
-- [allowlist-validation-policy.yaml](C:\Users\Cellardoor\Documents\Playground\.tmp\aegis-lite\configs\allowlist-validation-policy.yaml)
+- self-hosted
+- evidence-producing
+- operator-usable
+- developer-usable through SDKs and MCP
 
-Policy covers:
-- allowed languages
-- max code size
-- timeout bounds
-- network mode and allowed domains
-- cgroup resource values
-- compute profile definitions
+It is not currently designed to be:
 
-Important distinction:
-- compute profiles currently affect Firecracker machine shape
-- cgroup values are still policy-wide
-
-So profile selection changes the VM shape, but not the full host resource envelope.
-
-## Network Path
-
-Current network modes:
-- `none`
-- `allowlist`
-
-In `allowlist` mode:
-- guest DNS is intercepted per execution
-- allowlisted domains resolve
-- resolved IPs trigger outbound allow rules
-- denied domains do not install those rules
-- network decisions are surfaced in telemetry and receipts
-
-This is the strongest public demo story in the current stack.
-
-## Current Default Behavior
-
-- if the request omits `profile`, the API defaults to `nano`
-- the proving ground does not currently expose profile selection directly
-- the proving ground therefore runs on `nano` unless another client sets `profile`
-
-This is intentional enough to document, but still worth revisiting later if profile exposure becomes part of the demo story.
-
-## What the Architecture Does Not Claim
-
-- Memory Pressure is not documented as a kernel OOM-kill path
-- compute profiles are not documented as full cgroup envelopes
-- snapshot-based cold boot is not documented as implemented
-- Node is not documented as equally battle-tested with Python and bash
-
-Those distinctions matter. This repo is strongest when the docs match the measured system instead of describing the ideal one.
+- a hosted multi-tenant platform
+- an attested trust fabric
+- an HSM/KMS-backed signing system
+- a general-purpose orchestration platform for every agent use case

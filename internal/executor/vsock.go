@@ -3,6 +3,7 @@ package executor
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,12 +11,16 @@ import (
 	"time"
 
 	"aegis/internal/models"
+	policydivergence "aegis/internal/policy/divergence"
+	policyevaluator "aegis/internal/policy/evaluator"
 	"aegis/internal/telemetry"
 )
 
 const (
 	maxOutputBytes     = 65536
 	maxGuestChunkBytes = 262144
+	GuestExecPort      = 1024
+	GuestReadyPort     = 1023
 )
 
 func DialWithRetry(vsockPath string, port uint32, timeout time.Duration) (net.Conn, error) {
@@ -32,6 +37,14 @@ func DialWithRetry(vsockPath string, port uint32, timeout time.Duration) (net.Co
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func WaitForGuestReady(vsockPath string, timeout time.Duration) error {
+	conn, err := DialWithRetry(vsockPath, GuestReadyPort, timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 func dialVsockProxy(vsockPath string, port uint32) (net.Conn, error) {
@@ -63,21 +76,21 @@ func dialVsockProxy(vsockPath string, port uint32) (net.Conn, error) {
 	return conn, nil
 }
 
-func SendPayload(conn net.Conn, payload models.Payload, deadline time.Time, bus *telemetry.Bus) (models.Result, error) {
+func SendPayload(conn net.Conn, payload models.Payload, deadline time.Time, bus *telemetry.Bus, pointEvaluator *policyevaluator.Evaluator, divergenceEvaluator *policydivergence.Evaluator, enforce func(models.PolicyDivergenceResult) error) (models.Result, error) {
 	if err := conn.SetDeadline(deadline); err != nil {
 		return models.Result{}, fmt.Errorf("set deadline: %w", err)
 	}
 	if err := json.NewEncoder(conn).Encode(payload); err != nil {
 		return models.Result{}, fmt.Errorf("encode payload: %w", err)
 	}
-	result, err := ReadChunks(conn, deadline, nil, bus)
+	result, err := ReadChunks(conn, deadline, nil, bus, pointEvaluator, divergenceEvaluator, enforce)
 	if err != nil {
 		return models.Result{}, err
 	}
 	return *result, nil
 }
 
-func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk string), bus *telemetry.Bus) (*models.Result, error) {
+func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk string), bus *telemetry.Bus, pointEvaluator *policyevaluator.Evaluator, divergenceEvaluator *policydivergence.Evaluator, enforce func(models.PolicyDivergenceResult) error) (*models.Result, error) {
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("set deadline: %w", err)
 	}
@@ -87,14 +100,25 @@ func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk
 	var result models.Result
 	var runtimeNormalizer *runtimeEventNormalizer
 	if bus != nil {
-		runtimeNormalizer = newRuntimeEventNormalizer(bus.ExecID())
+		runtimeNormalizer = newRuntimeEventNormalizer(bus.ExecID(), pointEvaluator, divergenceEvaluator, enforce)
 	}
 
 	for {
 		var chunk models.GuestChunk
 		if !scanner.Scan() {
+			if runtimeNormalizer != nil {
+				if enforced, ok := runtimeNormalizer.enforcedResult(); ok {
+					emitIfBus(bus, telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: enforced.ExitCode, Reason: enforced.ExitReason})
+					enforced.Stdout = result.Stdout
+					enforced.Stderr = result.Stderr
+					enforced.StdoutBytes = result.StdoutBytes
+					enforced.StderrBytes = result.StderrBytes
+					enforced.OutputTruncated = result.OutputTruncated
+					return &enforced, nil
+				}
+			}
 			if err := scanner.Err(); err != nil {
-				if err == bufio.ErrTooLong {
+				if errors.Is(err, bufio.ErrTooLong) {
 					return nil, fmt.Errorf("decode chunk: guest message exceeds %d bytes", maxGuestChunkBytes)
 				}
 				return nil, fmt.Errorf("decode chunk: %w", err)
@@ -121,14 +145,24 @@ func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk
 			}
 			appendChunk(&result.Stderr, chunk.Chunk, &result.OutputTruncated)
 		case "done":
-			result.ExitCode = chunk.ExitCode
-			result.ExitReason = chunk.Reason
+			if runtimeNormalizer != nil {
+				if enforced, ok := runtimeNormalizer.enforcedResult(); ok {
+					result.ExitCode = enforced.ExitCode
+					result.ExitReason = enforced.ExitReason
+				} else {
+					result.ExitCode = chunk.ExitCode
+					result.ExitReason = chunk.Reason
+				}
+			} else {
+				result.ExitCode = chunk.ExitCode
+				result.ExitReason = chunk.Reason
+			}
 			result.DurationMs = chunk.DurationMs
 			reason := "completed"
-			if chunk.Reason != "" {
-				reason = chunk.Reason
+			if result.ExitReason != "" {
+				reason = result.ExitReason
 			}
-			emitIfBus(bus, telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: chunk.ExitCode, Reason: reason})
+			emitIfBus(bus, telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: result.ExitCode, Reason: reason})
 			return &result, nil
 		case "telemetry":
 			switch chunk.Name {
@@ -160,7 +194,7 @@ func ReadChunks(conn net.Conn, deadline time.Time, onChunk func(chunkType, chunk
 				runtimeNormalizer.emitStatus(status, bus)
 			}
 		case "error":
-			return nil, fmt.Errorf(chunk.Error)
+			return nil, errors.New(chunk.Error)
 		default:
 			return nil, fmt.Errorf("unknown chunk type: %s", chunk.Type)
 		}

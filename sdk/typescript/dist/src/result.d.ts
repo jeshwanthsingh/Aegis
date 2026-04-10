@@ -1,0 +1,60 @@
+import { Receipt } from "./receipt.js";
+import { ProofBundle } from "./types.js";
+import { ReceiptVerification, ReceiptVerifier } from "./verifier.js";
+export interface ExecutionResponse {
+    stdout?: string;
+    stderr?: string;
+    exit_code?: number;
+    execution_id?: string;
+    duration_ms?: number;
+    exit_reason?: string;
+    error?: string;
+    output_truncated?: boolean;
+    proof_dir?: string;
+    receipt_path?: string;
+    receipt_public_key_path?: string;
+    receipt_summary_path?: string;
+    [key: string]: unknown;
+}
+export declare class ExecutionResult {
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly exitCode: number;
+    readonly executionId: string;
+    readonly durationMs: number;
+    readonly exitReason?: string;
+    readonly executionError?: string;
+    readonly outputTruncated: boolean;
+    readonly proofDir?: string;
+    readonly receiptPath?: string;
+    readonly receiptPublicKeyPath?: string;
+    readonly receiptSummaryPath?: string;
+    readonly rawResponse: Record<string, unknown>;
+    private readonly verifier?;
+    private receiptCache?;
+    constructor(input: {
+        stdout: string;
+        stderr: string;
+        exitCode: number;
+        executionId: string;
+        durationMs: number;
+        exitReason?: string;
+        executionError?: string;
+        outputTruncated: boolean;
+        proofDir?: string;
+        receiptPath?: string;
+        receiptPublicKeyPath?: string;
+        receiptSummaryPath?: string;
+        rawResponse: Record<string, unknown>;
+        verifier?: ReceiptVerifier;
+    });
+    static fromPayload(payload: ExecutionResponse, verifier?: ReceiptVerifier): ExecutionResult;
+    get proofBundle(): ProofBundle;
+    get executionFailed(): boolean;
+    get ok(): boolean;
+    get error(): string | undefined;
+    get receipt(): Receipt | undefined;
+    requireReceipt(): Receipt;
+    verifyReceipt(): Promise<ReceiptVerification>;
+    throwIfExecutionFailed(): void;
+}

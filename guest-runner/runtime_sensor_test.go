@@ -17,7 +17,7 @@ func TestDiffProcessSnapshotsEmitsExpectedEvents(t *testing.T) {
 			PPID:  1,
 			Comm:  "python3",
 			Exe:   "/usr/bin/python3",
-			Files: map[string]struct{}{"/etc/hostname": {}},
+			Files: map[string]runtimeFileObservation{"/etc/hostname": {Flags: 0}},
 			Connections: map[string]runtimeConnection{
 				"inode-1": {DstIP: "1.1.1.1", DstPort: 80, State: "02", Inode: "inode-1"},
 			},
@@ -45,7 +45,7 @@ func TestDiffProcessSnapshotsEmitsExpectedEvents(t *testing.T) {
 			PPID:  100,
 			Comm:  "sh",
 			Exe:   "/bin/sh",
-			Files: map[string]struct{}{"/tmp/exec-demo.py": {}},
+			Files: map[string]runtimeFileObservation{"/tmp/exec-demo.py": {Flags: 0}},
 		},
 	}
 	events = diffProcessSnapshots(100, rootOnly, withChild, now)
@@ -104,10 +104,10 @@ func TestParseTraceSockaddrIPv4(t *testing.T) {
 func TestDiffFileSnapshotsOnlyEmitsNewFiles(t *testing.T) {
 	now := time.Unix(1700000001, 0)
 	prev := map[int]runtimeProcSnapshot{
-		100: {PID: 100, Files: map[string]struct{}{"/etc/hostname": {}}},
+		100: {PID: 100, Files: map[string]runtimeFileObservation{"/etc/hostname": {Flags: 0}}},
 	}
 	current := map[int]runtimeProcSnapshot{
-		100: {PID: 100, Files: map[string]struct{}{"/etc/hostname": {}, "/tmp/runtime-child.txt": {}}},
+		100: {PID: 100, Files: map[string]runtimeFileObservation{"/etc/hostname": {Flags: 0}, "/tmp/runtime-child.txt": {Flags: 0}}},
 	}
 	events := diffFileSnapshots(prev, current, now)
 	if len(events) != 1 {
@@ -115,5 +115,22 @@ func TestDiffFileSnapshotsOnlyEmitsNewFiles(t *testing.T) {
 	}
 	if events[0].Type != "file.open" || events[0].Path != "/tmp/runtime-child.txt" {
 		t.Fatalf("unexpected file event: %+v", events[0])
+	}
+}
+
+func TestDiffFileSnapshotsEmitsWriteIntentFlagChanges(t *testing.T) {
+	now := time.Unix(1700000002, 0)
+	prev := map[int]runtimeProcSnapshot{
+		100: {PID: 100, Files: map[string]runtimeFileObservation{"/workspace/out.txt": {Flags: 0}}},
+	}
+	current := map[int]runtimeProcSnapshot{
+		100: {PID: 100, Files: map[string]runtimeFileObservation{"/workspace/out.txt": {Flags: 0x241}}},
+	}
+	events := diffFileSnapshots(prev, current, now)
+	if len(events) != 1 {
+		t.Fatalf("unexpected event count: got %d want 1", len(events))
+	}
+	if events[0].Flags != 0x241 {
+		t.Fatalf("unexpected file flags: %+v", events[0])
 	}
 }

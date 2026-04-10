@@ -1,0 +1,32 @@
+{
+  "name": "@aegis/sdk",
+  "version": "0.1.0",
+  "description": "Node-first TypeScript SDK for the Aegis local secure execution runtime",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "test": "npm run build && node --test dist/tests/*.test.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.6.0",
+    "eslint": "^10.2.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.58.1"
+  }
+}

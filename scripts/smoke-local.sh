@@ -26,9 +26,13 @@ fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+have_noninteractive_sudo() {
+  command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+}
+
 as_root() {
-  if command -v sudo >/dev/null 2>&1; then
-    sudo "$@"
+  if have_noninteractive_sudo; then
+    sudo -n "$@"
   else
     "$@"
   fi
@@ -41,7 +45,7 @@ execute_json() {
 
 cleanup() {
   if [ "$A_STARTED" -eq 1 ]; then
-    sudo pkill -f "$ORCH_BIN" >/dev/null 2>&1 || true
+    as_root pkill -f "$ORCH_BIN" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -72,10 +76,16 @@ else
     fi
   fi
 
-  cmd=(sudo env "PATH=$PATH:/sbin:/usr/sbin" SUDO_USER="${SUDO_USER:-$(id -un)}" AEGIS_CGROUP_PARENT="$AEGIS_CGROUP_PARENT" "$ORCH_BIN" \
+  cmd=(env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_CGROUP_PARENT="$AEGIS_CGROUP_PARENT" "$ORCH_BIN" \
     --db "$DB_URL" \
     --policy "$POLICY_PATH" \
     --assets-dir "$ASSETS_DIR")
+  if have_noninteractive_sudo; then
+    cmd=(sudo -n env "PATH=$PATH:/sbin:/usr/sbin" SUDO_USER="${SUDO_USER:-$(id -un)}" AEGIS_CGROUP_PARENT="$AEGIS_CGROUP_PARENT" "$ORCH_BIN" \
+      --db "$DB_URL" \
+      --policy "$POLICY_PATH" \
+      --assets-dir "$ASSETS_DIR")
+  fi
   if [ -n "$ROOTFS_PATH" ]; then
     cmd+=(--rootfs-path "$ROOTFS_PATH")
   fi

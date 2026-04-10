@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 
 type VMInstance struct {
 	UUID           string
+	CgroupID       string
 	FirecrackerPID int
 	SocketPath     string
 	VsockPath      string
@@ -32,6 +35,13 @@ type VMInstance struct {
 }
 
 const scratchDir = "/tmp/aegis"
+
+func resolveFirecrackerBinary() string {
+	if bin := strings.TrimSpace(os.Getenv("AEGIS_FIRECRACKER_BIN")); bin != "" {
+		return bin
+	}
+	return "firecracker"
+}
 
 func resolveRootfsImage(baseDir string, explicit string) (string, error) {
 	if explicit != "" {
@@ -125,7 +135,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	vsockPath := fmt.Sprintf("%s/vsock-%s.sock", scratchDir, uuid)
 	kernelPath := filepath.Join(baseDir, "vmlinux")
 
-	cmd := exec.Command("firecracker", "--api-sock", socketPath)
+	cmd := exec.Command(resolveFirecrackerBinary(), "--api-sock", socketPath)
 	cmd.Env = []string{}
 	serialLogPath := fmt.Sprintf("%s/serial-%s.log", scratchDir, uuid)
 	serialLog, _ := os.OpenFile(serialLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -143,6 +153,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	vm := &VMInstance{
 		UUID:           uuid,
+		CgroupID:       uuid,
 		FirecrackerPID: pid,
 		SocketPath:     socketPath,
 		VsockPath:      vsockPath,
@@ -232,7 +243,21 @@ func (vm *VMInstance) Kill() error {
 	if err != nil {
 		return err
 	}
-	return proc.Signal(syscall.SIGKILL)
+	if err := proc.Signal(syscall.SIGKILL); err != nil {
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func PauseVM(ctx context.Context, vm *VMInstance) error {
+	return fcPatchVM(ctx, vm.SocketPath, "Paused")
+}
+
+func ResumeVM(ctx context.Context, vm *VMInstance) error {
+	return fcPatchVM(ctx, vm.SocketPath, "Resumed")
 }
 
 func unixClient(socketPath string) *http.Client {
@@ -262,6 +287,27 @@ func fcPUT(client *http.Client, url string, body any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
+	return nil
+}
+
+func fcPatchVM(ctx context.Context, socketPath string, state string) error {
+	b, err := json.Marshal(map[string]string{"state": state})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "http://localhost/vm", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := unixClient(socketPath).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d from /vm state=%s", resp.StatusCode, state)
 	}
 	return nil
 }

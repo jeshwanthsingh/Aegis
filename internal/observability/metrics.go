@@ -33,17 +33,23 @@ func (h *histogram) observe(v float64) {
 type registry struct {
 	mu                  sync.Mutex
 	executionsTotal     map[string]uint64
+	executionPathTotal  map[string]uint64
 	executionDuration   histogram
 	bootDuration        histogram
 	teardownDuration    histogram
+	vmReadyWarmDuration histogram
+	vmReadyColdDuration histogram
 	workerSlotsProvider func() int
 }
 
 var metrics = &registry{
-	executionsTotal:   map[string]uint64{},
-	executionDuration: newHistogram([]float64{0.1, 0.5, 1, 2.5, 5, 10, 25, 60}),
-	bootDuration:      newHistogram([]float64{0.1, 0.5, 1, 2.5, 5, 10, 25, 60}),
-	teardownDuration:  newHistogram([]float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}),
+	executionsTotal:     map[string]uint64{},
+	executionPathTotal:  map[string]uint64{},
+	executionDuration:   newHistogram([]float64{0.1, 0.5, 1, 2.5, 5, 10, 25, 60}),
+	bootDuration:        newHistogram([]float64{0.1, 0.5, 1, 2.5, 5, 10, 25, 60}),
+	teardownDuration:    newHistogram([]float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}),
+	vmReadyWarmDuration: newHistogram([]float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}),
+	vmReadyColdDuration: newHistogram([]float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}),
 }
 
 func SetWorkerSlotsFunc(fn func() int) {
@@ -71,10 +77,29 @@ func ObserveTeardownDuration(d time.Duration) {
 	metrics.teardownDuration.observe(d.Seconds())
 }
 
+func RecordExecutionPath(path string) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.executionPathTotal[path]++
+}
+
+func ObserveVMReadyDuration(path string, d time.Duration) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	switch path {
+	case "warm":
+		metrics.vmReadyWarmDuration.observe(d.Seconds())
+	default:
+		metrics.vmReadyColdDuration.observe(d.Seconds())
+	}
+}
+
 func HandleMetrics() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		_, _ = w.Write([]byte(renderMetrics()))
+		if _, err := w.Write([]byte(renderMetrics())); err != nil {
+			Error("metrics_write_failed", Fields{"error": err.Error()})
+		}
 	}
 }
 
@@ -93,10 +118,24 @@ func renderMetrics() string {
 	for _, status := range statuses {
 		fmt.Fprintf(&b, "aegis_executions_total{status=%q} %d\n", status, metrics.executionsTotal[status])
 	}
+	b.WriteString("# HELP aegis_execution_path_total Executions by VM path\n")
+	b.WriteString("# TYPE aegis_execution_path_total counter\n")
+	paths := make([]string, 0, len(metrics.executionPathTotal))
+	for path := range metrics.executionPathTotal {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		fmt.Fprintf(&b, "aegis_execution_path_total{path=%q} %d\n", path, metrics.executionPathTotal[path])
+	}
 
 	writeHistogram(&b, "aegis_execution_duration_seconds", "Execution duration in seconds", metrics.executionDuration)
 	writeHistogram(&b, "aegis_boot_duration_seconds", "Boot-to-vsock duration in seconds", metrics.bootDuration)
 	writeHistogram(&b, "aegis_teardown_duration_seconds", "Teardown duration in seconds", metrics.teardownDuration)
+	b.WriteString("# HELP aegis_vm_ready_duration_seconds Request-arrival to execution-channel-ready duration in seconds\n")
+	b.WriteString("# TYPE aegis_vm_ready_duration_seconds histogram\n")
+	writeLabeledHistogram(&b, "aegis_vm_ready_duration_seconds", "warm", metrics.vmReadyWarmDuration)
+	writeLabeledHistogram(&b, "aegis_vm_ready_duration_seconds", "cold", metrics.vmReadyColdDuration)
 
 	b.WriteString("# HELP aegis_worker_slots_available Available worker slots\n")
 	b.WriteString("# TYPE aegis_worker_slots_available gauge\n")
@@ -106,6 +145,15 @@ func renderMetrics() string {
 	}
 	fmt.Fprintf(&b, "aegis_worker_slots_available %d\n", workerSlots)
 	return b.String()
+}
+
+func writeLabeledHistogram(b *strings.Builder, name, path string, h histogram) {
+	for i, bucket := range h.buckets {
+		fmt.Fprintf(b, "%s_bucket{path=%q,le=%q} %d\n", name, path, formatBucket(bucket), h.counts[i])
+	}
+	fmt.Fprintf(b, "%s_bucket{path=%q,le=\"+Inf\"} %d\n", name, path, h.count)
+	fmt.Fprintf(b, "%s_sum{path=%q} %.6f\n", name, path, h.sum)
+	fmt.Fprintf(b, "%s_count{path=%q} %d\n", name, path, h.count)
 }
 
 func writeHistogram(b *strings.Builder, name, help string, h histogram) {

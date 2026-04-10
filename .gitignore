@@ -23,3 +23,6 @@ linux-6.1.80.tar.xz
 AGENTS.md
 CLAUDE.md
 .venv
+
+# Generated local setup state
+.aegis/

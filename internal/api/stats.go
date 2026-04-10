@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"sync/atomic"
 
@@ -74,8 +73,7 @@ func (s *StatsCounter) Snapshot() Stats {
 // NewStatsHandler returns an HTTP handler that serves the aggregate stats snapshot.
 func NewStatsHandler(counter *StatsCounter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		_ = json.NewEncoder(w).Encode(counter.Snapshot())
+		writeJSON(w, http.StatusOK, counter.Snapshot())
 	}
 }

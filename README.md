@@ -1,305 +1,213 @@
-[![CI](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml)
 # Aegis
 
-Firecracker-backed containment for untrusted AI-generated code.
+**Aegis is an execution evidence platform — run untrusted code in hardware-isolated sandboxes and get cryptographic proof of what happened.**
 
-Aegis is a Go-based execution plane that runs generated code inside disposable Firecracker microVMs instead of on the host. It is built for the failures that actually show up in agent systems: runaway code, accidental egress, dirty teardown, oversized output, and resource abuse that should be contained instead of trusted.
+Aegis is built for code you should not trust with your host: agent-generated tools, brokered upstream access, and execution flows that need evidence, not just logs. It combines Firecracker microVM isolation, policy-governed runtime controls, divergence handling, cryptographic receipts, proof bundles, and operator-usable local delivery through an HTTP API, SDKs, and an MCP server.
 
-Read these first:
-- [docs/proving-ground.md](docs/proving-ground.md)
-- [docs/architecture.md](docs/architecture.md)
-- [THREAT_MODEL.md](THREAT_MODEL.md)
-- [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)
-- [docs/benchmarks/current-stack.md](docs/benchmarks/current-stack.md)
+## Why Aegis exists
 
-## Why it exists
+Running untrusted code is not just a sandboxing problem.
 
-Most agent tooling still assumes generated code can be run on the host or inside light process isolation. That is enough for demos, but weak for systems that need to survive bad code, bad prompts, or hostile inputs.
+You need:
 
-Aegis exists to make the boundary real:
-- KVM-backed Firecracker microVM per execution
-- cgroups v2 for host-side CPU, memory, and PID control
-- virtio-vsock for host/guest transport
-- deterministic teardown of scratch disks, TAP state, sockets, and cgroups
-- a proving ground that shows the containment path live instead of describing it after the fact
+- a real isolation boundary between host and guest
+- explicit policy on files, network, process behavior, and delegated capabilities
+- secret-safe access to upstream systems without handing raw credentials to guest code
+- verifiable evidence of what ran, what was denied, and what the runtime observed
 
-## Current Status
+Aegis is the system for that shape of problem.
 
-### Demo-ready now
-- Firecracker/KVM execution is live.
-- The proving ground is wired to the real backend.
-- Predeclared `execution_id` plus pre-subscribe SSE is live.
-- Containment receipts and in-memory `/v1/stats` are live.
-- The strongest validated demo flows are:
-  - Allowed DNS
-  - Denied DNS
-  - Fork Bomb with `pids_limit`
-  - Huge Stdout with `output_truncated`
-  - Blocked Outbound Connect
+## 30-Second Quickstart
 
-### Implemented and real, but still intentionally conservative
-- Memory Pressure demonstrates safe failure under pressure. It should not be marketed as a kernel or cgroup OOM-kill proof.
-- Compute profiles are real, but today they change Firecracker VM shape only. They do not yet change cgroup policy.
-- Cold-start and snapshot optimization are still future work on this stack.
-
-### What remains
-- Demo assets: screenshots, GIFs, and presentation polish
-- Expanded repeated benchmark documentation
-- Decide whether compute profiles remain VM-shape-only or become full resource envelopes
-- Cold-start benchmarking expansion and snapshot investigation
-- A small amount of public-demo operational hardening and observability cleanup
-
-## What the Proving Ground Demonstrates
-
-The proving ground is the public demo surface for Aegis. It opens the event stream before execution starts, runs a real payload in a live microVM, and renders the receipt and aggregate stats after teardown.
-
-The strongest presets are:
-- `Allowed DNS`
-  - Shows DNS allowlisting plus selective outbound rule installation.
-- `Denied DNS`
-  - Shows non-allowlisted resolution being denied cleanly.
-- `Fork Bomb`
-  - Shows guest PID cap containment and exits with `pids_limit`.
-- `Huge Stdout`
-  - Shows output truncation enforcement and `output_truncated`.
-- `Blocked Outbound Connect`
-  - Shows a blocked outbound socket attempt with a crisp user-visible result.
-- `Memory Pressure`
-  - Shows safe failure under pressure without overclaiming a stronger OOM story.
-
-See [docs/proving-ground.md](docs/proving-ground.md) for the exact preset behavior, telemetry semantics, and what each preset does not prove.
-
-## Key Features
-
-- Disposable Firecracker microVM per execution
-- Go orchestrator with bounded worker slots and explicit API surface
-- cgroups v2 enforcement for memory, CPU, PID, and swap policy
-- scratch/workspace execution model with deterministic cleanup
-- virtio-vsock host/guest transport
-- DNS allow/deny telemetry and selective egress rule installation in allowlist mode
-- containment receipts with cleanup and network summaries
-- in-memory `/v1/stats` derived from completed receipts
-- proving ground UI with live SSE telemetry, execution output, receipts, and stats
-- recent hardening around workspace paths, env inheritance, SSE waiting, vsock message sizing, and installer verification
-
-## Architecture
-
-```text
-Browser / CLI / API client
-        |
-        | POST /v1/execute
-        | POST /v1/execute/stream
-        | GET  /v1/events/{exec_id}
-        | GET  /v1/stats
-        v
-+----------------------------------+
-| Aegis orchestrator (Go)          |
-| - policy validation              |
-| - worker slot pool               |
-| - receipt + stats assembly       |
-| - telemetry bus + SSE            |
-+----------------------------------+
-        |
-        | boot Firecracker VM
-        v
-+----------------------------------+
-| Firecracker microVM              |
-| - profile-driven VM shape        |
-| - host cgroup attachment         |
-| - scratch filesystem / workspace |
-| - optional TAP + DNS path        |
-+----------------------------------+
-        |
-        | virtio-vsock
-        v
-+----------------------------------+
-| guest-runner                     |
-| - exec python / bash / node      |
-| - capture stdout / stderr        |
-| - emit guest chunks + telemetry  |
-| - return exit metadata           |
-+----------------------------------+
-```
-
-Full architecture notes: [docs/architecture.md](docs/architecture.md)
-
-## Demo Scenarios
-
-| Preset | What it demonstrates | What it does not prove |
-| --- | --- | --- |
-| Allowed DNS | DNS allowlist decision plus selective outbound rule installation | General internet access or arbitrary egress |
-| Denied DNS | Non-allowlisted resolution is blocked | Broad firewall policy beyond the current allowlist path |
-| Fork Bomb | PID cap containment with `pids_limit` | General kernel stability guarantees |
-| Memory Pressure | Safe failure under memory pressure | A kernel OOM kill or stronger memory-isolation claim |
-| Blocked Outbound Connect | Blocked outbound socket attempt with visible result | A broader outbound-control guarantee beyond the demonstrated blocked-connect path |
-| Huge Stdout | Truncation enforcement with receipt evidence | Unlimited log streaming or full output preservation |
-
-## Security Model
-
-What Aegis enforces today:
-- Isolation boundary: Firecracker microVM on KVM
-- Host-side cgroups v2 for memory, CPU, PID, and swap policy
-- Per-execution scratch state and deterministic teardown
-- Default no-network or explicit allowlist network mode
-- Host/guest transport over Firecracker's Unix-socket vsock proxy
-- Containment receipts written after cleanup state is known
-
-Recent hardening already landed:
-- workspace path traversal / file clobber risk fixed
-- Firecracker environment inheritance tightened
-- SSE wait abuse reduced with waiter caps and shorter missing-execution waits
-- host-side vsock guest message size cap
-- install-time checksum verification in `scripts/install.sh`
-- guest image surface reduced by removing `npm`
-
-What should stay conservative:
-- Memory Pressure is not currently a kernel OOM-kill proof.
-- Compute profiles are not full resource envelopes yet.
-- Snapshot-based cold boot is not implemented yet.
-
-Security details and non-goals: [THREAT_MODEL.md](THREAT_MODEL.md)
-
-## Quickstart
-
-### Requirements
-- Linux with KVM available at `/dev/kvm`
-- Firecracker installed
-- PostgreSQL available
-- cgroups v2 enabled
-- rootfs and kernel assets present in `assets/`
-
-WSL2 works for development, but native Linux is the cleaner target. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
-
-### Install
+Prerequisites: Linux with KVM, Firecracker, PostgreSQL, cgroups v2, and the Aegis repo checkout. `aegis setup` will tell you exactly what is ready and what is missing.
 
 ```bash
 bash scripts/install.sh
+aegis setup
+aegis serve
 ```
 
-### Preflight
+In a second shell:
 
 ```bash
-./scripts/preflight.sh
+cd sdk/python
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e .
+python - <<'PY'
+from aegis import AegisClient
+
+client = AegisClient()
+result = client.run(language="bash", code="echo hello from aegis")
+print(result.stdout.strip())
+print(result.proof_dir)
+print(client.verify_receipt(proof_dir=result.proof_dir).verified)
+PY
 ```
 
-### Local doctor
+That path gives you:
 
-```bash
-./scripts/smoke-local.sh
+- a Firecracker-backed execution
+- a proof bundle on disk
+- a signed receipt
+- a verification result against the emitted proof
+
+For the operator path and caveats, start with [docs/quickstart.md](docs/quickstart.md).
+
+## What Aegis gives you
+
+- **Hardware-isolated execution** with Firecracker microVMs and a separate guest kernel
+- **Policy-governed runtime behavior** across file access, network, process scope, and time/resource budgets
+- **Divergence handling** with explicit receipts for allow, warn, deny, and enforcement outcomes
+- **Brokered secret-safe delegation** over vsock, including allowed and denied credential paths without raw secret exposure to guest code
+- **Cryptographic receipts and proof bundles** that can be verified after execution
+- **Operator-usable local runtime** with `aegis setup`, `aegis serve`, readiness reporting, and honest posture output
+- **Developer-facing integrations** through Python SDK v1, TypeScript SDK v1, and MCP wrapper v1
+- **Warm pool v1** for lower startup latency on the supported warm-path request shapes
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        PY[Python SDK]
+        TS[TypeScript SDK]
+        MCP[MCP client / Claude Code]
+        CLI[Aegis CLI]
+    end
+
+    PY --> API
+    TS --> API
+    CLI --> API
+    MCP --> MCPSRV
+    MCPSRV --> API
+
+    subgraph Host["Aegis host runtime"]
+        API[Aegis HTTP API]
+        ORCH[Orchestrator]
+        POL[Policy + divergence engines]
+        BROKER[Credential broker]
+        PROOF[Proof bundle writer]
+        VERIFY[Receipt verifier]
+    end
+
+    API --> ORCH
+    ORCH --> POL
+    ORCH --> BROKER
+    ORCH --> PROOF
+    PROOF --> VERIFY
+
+    subgraph VM["Firecracker microVM"]
+        GUEST[guest-runner]
+        CODE[Untrusted code]
+    end
+
+    ORCH -->|virtio-vsock| GUEST
+    GUEST --> CODE
+    BROKER -->|host-mediated delegation| GUEST
 ```
 
-### Run the proving ground locally
+Trust boundaries:
 
-```bash
-/tmp/aegis-bin \
-  --db "$DB_URL" \
-  --assets-dir "$PWD/assets" \
-  --policy "$PWD/configs/allowlist-validation-policy.yaml" \
-  --rootfs-path "$PWD/assets/alpine-base.ext4"
+- host and guest are separated by a Firecracker microVM boundary
+- secrets stay on the host side and are exposed only through the broker policy surface
+- receipts and proof bundles are produced on the host after execution telemetry is collected
+- verification is separate from execution so downstream systems can validate what happened
+
+More detail: [docs/architecture.md](docs/architecture.md)
+
+## When to use Aegis
+
+- you need an auditable path for untrusted agent or tool execution
+- you need evidence or provenance for what code did at runtime
+- you need to constrain file, process, network, and delegation behavior with explicit policy
+- you need upstream access through a broker without giving the guest raw credentials
+- you need a self-hosted local runtime that can also be reached through SDKs or MCP
+
+## When not to use Aegis
+
+- you only need a casual local dev sandbox
+- a plain container, devcontainer, or process sandbox is already sufficient
+- you are optimizing for ultra-low-latency, very high-volume execution where the current evidence-producing model is too heavy
+- you require host attestation, HSM/KMS-backed signing custody, or enterprise multi-tenant trust guarantees today
+
+## Status and maturity
+
+**Launch-quality with caveats.**
+
+Strong enough to evaluate now:
+
+- Firecracker runtime with policy enforcement, telemetry, divergence handling, and proof generation
+- brokered credential delegation with validated allowed and denied paths
+- operator flow through `aegis setup` and `aegis serve`
+- Python SDK v1, TypeScript SDK v1, and MCP wrapper v1
+- verified receipt and proof-bundle workflow
+- warm pool v1 for default-profile scratch executions
+
+Still intentionally scoped:
+
+- warm coverage is not universal across all profile and workspace shapes
+- signing is local/self-hosted, not HSM/KMS-backed
+- no host attestation
+- not positioned as a hardened hosted multi-tenant control plane
+
+Not built yet:
+
+- host attestation
+- HSM/KMS-backed receipt-signing custody
+- broader multi-tenant orchestration
+- alternate runtime backends such as gVisor
+
+## Documentation index
+
+- [docs/quickstart.md](docs/quickstart.md): operator setup, serve flow, first proof
+- [docs/architecture.md](docs/architecture.md): component model and trust boundaries
+- [docs/api.md](docs/api.md): HTTP API behavior and examples
+- [docs/openapi.json](docs/openapi.json): OpenAPI description of the current HTTP surface
+- [docs/mcp_server.md](docs/mcp_server.md): MCP server tools, schema, and client setup
+- [docs/warm_pool.md](docs/warm_pool.md): warm pool v1 behavior, observability, and caveats
+- [SECURITY.md](SECURITY.md): security model, threat model, limitations, and disclosure guidance
+- [sdk/python/README.md](sdk/python/README.md): Python SDK reference
+- [sdk/typescript/README.md](sdk/typescript/README.md): TypeScript SDK reference
+
+## Example usage
+
+### Python SDK: execute and verify
+
+```python
+from aegis import AegisClient
+
+client = AegisClient()
+result = client.run(language="bash", code="echo proof-demo")
+print(result.stdout.strip())
+
+verification = result.verify_receipt()
+print(verification.verified, verification.execution_id)
 ```
 
-Then open:
-- `GET /`
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-- `GET /v1/stats`
+### MCP: isolated execution tool
 
-### Rebuild the Alpine rootfs
+Once the MCP server is registered, clients call:
 
-```bash
-./scripts/build-alpine-rootfs.sh \
-  --output assets/alpine-base.ext4 \
-  --backup-existing assets/ubuntu-legacy.ext4
-```
+- `aegis_execute` to run code through the existing Aegis runtime
+- `aegis_verify` to validate a prior proof bundle
 
-## Proving-Ground Usage
+The MCP wrapper stays intentionally thin. It does not bypass the HTTP API or the receipt-verification path. See [docs/mcp_server.md](docs/mcp_server.md).
 
-Typical flow:
-1. Open the proving ground.
-2. Select a preset or edit the payload.
-3. The UI predeclares an `execution_id` and subscribes to `GET /v1/events/{exec_id}`.
-4. The UI submits the matching `POST /v1/execute` request.
-5. Watch the event stream, execution output, containment receipt, and `/v1/stats`.
+## Comparison
 
-Useful endpoints:
-- `POST /v1/execute`
-- `POST /v1/execute/stream`
-- `GET /v1/events/{exec_id}`
-- `GET /v1/stats`
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-- `DELETE /v1/workspaces/{id}`
+These systems are not identical categories.
 
-The proving ground does not currently expose profile selection directly. If no `profile` is supplied, the API defaults to `nano`.
+Aegis is optimized for **evidence-producing isolated execution**. Some alternatives are managed cloud sandboxes, some are local sandbox products, and some are agent orchestration platforms first.
 
-## Benchmark Notes
+| Capability | Aegis | E2B | Docker Sandboxes | Managed agents |
+| --- | --- | --- | --- | --- |
+| Primary focus | Execution evidence and isolated code execution | Managed cloud sandbox runtime | Local sandbox environments for agents and tools | Agent orchestration and hosted tool use |
+| Hardware-isolated execution | Yes, Firecracker microVMs | Varies by platform details; public docs position it as an isolated cloud sandbox | VM-backed/local sandbox environments per Docker sandbox docs | Varies; not the primary category contract |
+| Cryptographic execution receipts | Yes | Not a primary product surface | Not a primary product surface | Not a primary product surface |
+| Brokered secret-safe delegation | Yes | Varies | Varies | Varies by platform and tool model |
+| Self-hosted local runtime | Yes | No, managed cloud default | Yes | No, managed by provider |
+| MCP integration | Yes | Varies | Varies | Varies |
+| Warm-path startup optimization | Yes, warm pool v1 | Varies | Varies | Provider-managed and product-specific |
 
-Measured repeated medians on the current stack with a minimal payload:
-- `nano` -> boot `1496ms`, total `1632ms`, cleanup `290ms`
-- `standard` -> boot `1601ms`, total `1751ms`, cleanup `282ms`
-- `crunch` -> boot `1867ms`, total `2029ms`, cleanup `311ms`
-
-These are observed numbers on the current stack, not universal guarantees.
-
-Current benchmark conclusions:
-- `nano` is the fastest measured default and the recommended demo profile.
-- `standard` is real, but only modestly different under the current shared cgroup policy.
-- `crunch` is slower today and not the recommended public demo default.
-
-Benchmark details: [docs/benchmarks/current-stack.md](docs/benchmarks/current-stack.md)
-
-## Compute Profiles
-
-Profiles are defined in [internal/policy/policy.go](internal/policy/policy.go).
-
-Current built-ins:
-- `nano` -> 1 vCPU, 128 MiB
-- `standard` -> 2 vCPU, 512 MiB
-- `crunch` -> 4 vCPU, 2048 MiB
-
-Current reality:
-- profiles are applied to Firecracker machine config
-- profiles are visible in the containment receipt and proving-ground receipt summary
-- profiles do not currently change cgroup policy
-
-So profiles are real today, but they describe VM shape, not the full runtime envelope.
-
-## Limitations and Non-Goals
-
-- Memory Pressure is a conservative safe-failure demo, not a polished OOM-kill proof.
-- Compute profiles currently change VM shape only, not cgroup policy.
-- Snapshots and cold-boot optimization are future work.
-- WSL2 remains a development environment, not the cleanest performance baseline.
-- Node is supported, but Python and bash remain the stronger execution paths.
-- Persistent workspace durability cleanup is still not fully finished.
-
-See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for the current caveats.
-
-## Roadmap
-
-Near-term:
-- polish demo assets and screenshots
-- expand repeated benchmark docs
-- decide whether compute profiles remain VM-shape-only or grow into full resource envelopes
-- extend cold-start benchmarking
-- investigate snapshot/resume as a future optimization path
-
-Future work:
-- snapshot-based startup
-- profile-aware cgroup envelopes
-- more deliberate proving-ground profile exposure
-- additional public-demo operational hardening
-
-## Screenshots
-
-Suggested assets to add:
-- proving-ground idle state
-- Allowed DNS run with rule installation visible
-- Denied DNS run with clean refusal
-- Fork Bomb receipt showing `pids_limit`
-- Huge Stdout receipt showing `output_truncated`
-- Blocked Outbound Connect output
-
-These should be captured from the live proving ground rather than mocked.
+The point of comparison is not “Aegis replaces every sandbox or agent platform.” The point is that Aegis is unusually centered on **verifiable isolated execution with proof artifacts** rather than sandboxing or agent orchestration alone.

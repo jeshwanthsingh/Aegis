@@ -65,12 +65,16 @@ type runtimeConnection struct {
 	Inode   string
 }
 
+type runtimeFileObservation struct {
+	Flags uint64
+}
+
 type runtimeProcSnapshot struct {
 	PID         int
 	PPID        int
 	Comm        string
 	Exe         string
-	Files       map[string]struct{}
+	Files       map[string]runtimeFileObservation
 	Connections map[string]runtimeConnection
 }
 
@@ -97,16 +101,12 @@ func startRuntimeSensor(rootPID int, send func(GuestChunk) bool) *runtimeSensor 
 		events:  make(chan runtimeSensorEvent, runtimeSensorQueueCapacity),
 		stopCh:  make(chan struct{}),
 	}
-	detail := fmt.Sprintf("started pid=%d", rootPID)
+	detail := fmt.Sprintf("started pid=%d file_source=ptrace", rootPID)
 	if meta, err := os.ReadFile("/etc/aegis-guest-runner.json"); err == nil {
 		detail = detail + " meta=" + truncateStatusDetail(strings.TrimSpace(string(meta)))
 	}
 	s.sendStatus(runtimeSensorStatus{QueueCapacity: runtimeSensorQueueCapacity, Source: "guest-runtime-sensor", Detail: detail})
-	s.wg.Add(2)
-	go func() {
-		defer s.wg.Done()
-		s.runPoller()
-	}()
+	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		s.runSender()
@@ -124,6 +124,7 @@ func (s *runtimeSensor) Close() error {
 	}
 	s.sendStatus(runtimeSensorStatus{DroppedEvents: uint64(s.dropped.Load()), FloodDetected: s.flood.Load(), QueueCapacity: cap(s.events), Source: "guest-runtime-sensor", Detail: fmt.Sprintf("stopping pid=%d", s.rootPID)})
 	close(s.stopCh)
+	close(s.events)
 	s.wg.Wait()
 	return nil
 }
@@ -301,13 +302,13 @@ func diffProcessSnapshots(rootPID int, prev, current map[int]runtimeProcSnapshot
 	return events
 }
 
-func diffFileEvents(prev map[string]struct{}, current map[string]struct{}, snapshot runtimeProcSnapshot, now time.Time) []runtimeSensorEvent {
+func diffFileEvents(prev map[string]runtimeFileObservation, current map[string]runtimeFileObservation, snapshot runtimeProcSnapshot, now time.Time) []runtimeSensorEvent {
 	if len(current) == 0 {
 		return nil
 	}
 	paths := make([]string, 0, len(current))
-	for path := range current {
-		if _, seen := prev[path]; seen {
+	for path, obs := range current {
+		if previous, seen := prev[path]; seen && previous.Flags == obs.Flags {
 			continue
 		}
 		paths = append(paths, path)
@@ -315,7 +316,7 @@ func diffFileEvents(prev map[string]struct{}, current map[string]struct{}, snaps
 	sort.Strings(paths)
 	events := make([]runtimeSensorEvent, 0, len(paths))
 	for _, path := range paths {
-		events = append(events, runtimeSensorEvent{TsUnixNano: now.UnixNano(), Type: "file.open", PID: snapshot.PID, PPID: snapshot.PPID, Comm: snapshot.Comm, Exe: snapshot.Exe, Path: path, Metadata: map[string]string{}})
+		events = append(events, runtimeSensorEvent{TsUnixNano: now.UnixNano(), Type: "file.open", PID: snapshot.PID, PPID: snapshot.PPID, Comm: snapshot.Comm, Exe: snapshot.Exe, Path: path, Flags: current[path].Flags, Metadata: map[string]string{}})
 	}
 	return events
 }
@@ -450,14 +451,15 @@ func readRuntimeProcSnapshot(pid int, ppid int, connections map[string]runtimeCo
 	return runtimeProcSnapshot{PID: pid, PPID: ppid, Comm: strings.TrimSpace(string(commBytes)), Exe: exePath, Files: files, Connections: conns}, nil
 }
 
-func scanProcessDescriptors(pid int, connections map[string]runtimeConnection) (map[string]struct{}, map[string]runtimeConnection) {
+func scanProcessDescriptors(pid int, connections map[string]runtimeConnection) (map[string]runtimeFileObservation, map[string]runtimeConnection) {
 	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
 	if err != nil {
-		return map[string]struct{}{}, map[string]runtimeConnection{}
+		return map[string]runtimeFileObservation{}, map[string]runtimeConnection{}
 	}
-	files := make(map[string]struct{})
+	files := make(map[string]runtimeFileObservation)
 	conns := make(map[string]runtimeConnection)
 	for _, entry := range entries {
+		fd := entry.Name()
 		target, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, entry.Name()))
 		if err != nil {
 			continue
@@ -474,9 +476,33 @@ func scanProcessDescriptors(pid int, connections map[string]runtimeConnection) (
 		if strings.HasPrefix(target, "/proc/") || strings.HasPrefix(target, "/sys/") || strings.HasPrefix(target, "/dev/") {
 			continue
 		}
-		files[target] = struct{}{}
+		obs := files[target]
+		obs.Flags |= readFDFlags(pid, fd)
+		files[target] = obs
 	}
 	return files, conns
+}
+
+func readFDFlags(pid int, fd string) uint64 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/fdinfo/%s", pid, fd))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "flags:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return 0
+		}
+		value, err := strconv.ParseUint(fields[1], 8, 64)
+		if err != nil {
+			return 0
+		}
+		return value
+	}
+	return 0
 }
 
 func parseSocketInode(target string) (string, bool) {

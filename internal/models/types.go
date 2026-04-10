@@ -15,14 +15,21 @@ type Payload struct {
 }
 
 type GuestChunk struct {
-	Type       string          `json:"type"`
-	Name       string          `json:"name,omitempty"`
-	Data       json.RawMessage `json:"data,omitempty"`
-	Chunk      string          `json:"chunk,omitempty"`
-	ExitCode   int             `json:"exit_code,omitempty"`
-	Reason     string          `json:"reason,omitempty"`
-	DurationMs int64           `json:"duration_ms,omitempty"`
-	Error      string          `json:"error,omitempty"`
+	Type                 string          `json:"type"`
+	Name                 string          `json:"name,omitempty"`
+	Data                 json.RawMessage `json:"data,omitempty"`
+	Chunk                string          `json:"chunk,omitempty"`
+	ExitCode             int             `json:"exit_code,omitempty"`
+	Reason               string          `json:"reason,omitempty"`
+	DurationMs           int64           `json:"duration_ms,omitempty"`
+	Error                string          `json:"error,omitempty"`
+	ExecutionID          string          `json:"execution_id,omitempty"`
+	ProofDir             string          `json:"proof_dir,omitempty"`
+	ReceiptPath          string          `json:"receipt_path,omitempty"`
+	ReceiptPublicKeyPath string          `json:"receipt_public_key_path,omitempty"`
+	ReceiptSummaryPath   string          `json:"receipt_summary_path,omitempty"`
+	ArtifactCount        int             `json:"artifact_count,omitempty"`
+	DivergenceVerdict    string          `json:"divergence_verdict,omitempty"`
 }
 
 type Result struct {

@@ -57,6 +57,8 @@ const (
 	guestProcSampleInterval = 100 * time.Millisecond
 	guestProcSampleKind     = "guest.proc.sample"
 	guestStreamChunkBytes   = 16 * 1024
+	guestReadyPort          = 1023
+	guestExecPort           = 1024
 )
 
 var managedChildren atomic.Int32
@@ -82,7 +84,9 @@ func reapChildren() {
 }
 
 func sendError(conn net.Conn, msg string) {
-	_ = json.NewEncoder(conn).Encode(GuestChunk{Type: "error", Error: msg})
+	if err := json.NewEncoder(conn).Encode(GuestChunk{Type: "error", Error: msg}); err != nil {
+		fmt.Fprintf(os.Stderr, "sendError failed: %v\n", err)
+	}
 }
 
 func sendChunkError(chunks chan<- GuestChunk, msg string) {
@@ -91,6 +95,47 @@ func sendChunkError(chunks chan<- GuestChunk, msg string) {
 
 func emitDiag(chunks chan<- GuestChunk, msg string) {
 	chunks <- GuestChunk{Type: "stderr", Chunk: "DIAG: " + msg + "\n"}
+}
+
+func listenVsock(port uint32) (net.Listener, error) {
+	var l net.Listener
+	for i := 0; ; i++ {
+		var listenErr error
+		l, listenErr = vsock.Listen(port, nil)
+		if listenErr == nil {
+			return l, nil
+		}
+		if i >= 20 {
+			return nil, listenErr
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func serveReadiness(stop <-chan struct{}) {
+	l, err := listenVsock(guestReadyPort)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vsock readiness listen failed: %v\n", err)
+		return
+	}
+	defer l.Close()
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			select {
+			case <-stop:
+				return
+			default:
+				continue
+			}
+		}
+		if _, err := conn.Write([]byte("READY\n")); err != nil {
+			fmt.Fprintf(os.Stderr, "vsock readiness write failed: %v\n", err)
+		}
+		if err := conn.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "vsock readiness close failed: %v\n", err)
+		}
+	}
 }
 
 func nodeEnvDiag() string {
@@ -438,18 +483,13 @@ func main() {
 		}
 	}()
 
-	var l net.Listener
-	for i := 0; ; i++ {
-		var listenErr error
-		l, listenErr = vsock.Listen(1024, nil)
-		if listenErr == nil {
-			break
-		}
-		if i >= 20 {
-			fmt.Fprintf(os.Stderr, "vsock.Listen failed: %v\n", listenErr)
-			os.Exit(1)
-		}
-		time.Sleep(50 * time.Millisecond)
+	readinessStop := make(chan struct{})
+	go serveReadiness(readinessStop)
+
+	l, err := listenVsock(guestExecPort)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vsock.Listen failed: %v\n", err)
+		os.Exit(1)
 	}
 	defer l.Close()
 
@@ -459,6 +499,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer conn.Close()
+	close(readinessStop)
 
 	var p Payload
 	if err := json.NewDecoder(conn).Decode(&p); err != nil {
@@ -542,6 +583,23 @@ func main() {
 		return
 	}
 
+	// Start the host credential broker HTTP proxy on the guest loopback.
+	// User code routes HTTP through HTTP_PROXY=http://127.0.0.1:8888.
+	brokerStop := make(chan struct{})
+	defer close(brokerStop)
+	brokerReady := make(chan struct{})
+	go startBrokerProxy(brokerStop, brokerReady)
+	select {
+	case <-brokerReady:
+	case <-time.After(500 * time.Millisecond):
+		if !sendChunk(GuestChunk{Type: "error", Error: "broker proxy readiness timeout"}) {
+			return
+		}
+		close(chunks)
+		_ = <-writeErr
+		return
+	}
+
 	interpreter, ext, ok := resolveInterpreter(p.Lang)
 	if !ok {
 		if !sendChunk(GuestChunk{Type: "error", Error: "unsupported lang: " + p.Lang}) {
@@ -606,7 +664,7 @@ func main() {
 		workDir = "/workspace"
 	}
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "HOME="+workDir, "USER=nobody", "LOGNAME=nobody")
+	cmd.Env = append(os.Environ(), "HOME="+workDir, "USER=nobody", "LOGNAME=nobody", "HTTP_PROXY=http://127.0.0.1:8888", "HTTPS_PROXY=http://127.0.0.1:8888", "PYTHONHASHSEED=0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: guestExecUID, Gid: guestExecGID},
 		Setpgid:    true,

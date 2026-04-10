@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"sync"
 	"testing"
 
 	"aegis/internal/telemetry"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+var allowlistHookMu sync.Mutex
 
 func TestBuildDNSResponseAllowedEmitsAllowAndRuleAddEvents(t *testing.T) {
 	t.Parallel()
@@ -188,6 +191,8 @@ func testNetworkConfig(tapName string, allowedHosts ...string) *NetworkConfig {
 func stubAllowlistHooks(t *testing.T, ips []net.IP, lookupErr error) func() {
 	t.Helper()
 
+	allowlistHookMu.Lock()
+
 	oldLookup := lookupAllowlistIPv4
 	oldRun := runAllowlistRuleCmd
 
@@ -201,6 +206,7 @@ func stubAllowlistHooks(t *testing.T, ips []net.IP, lookupErr error) func() {
 	return func() {
 		lookupAllowlistIPv4 = oldLookup
 		runAllowlistRuleCmd = oldRun
+		allowlistHookMu.Unlock()
 	}
 }
 
