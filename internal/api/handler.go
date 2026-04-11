@@ -55,7 +55,7 @@ type ExecuteResponse struct {
 
 const startupSlack = 15 * time.Second
 const serialLogTailBytes = 8192
-const vmmOverheadMB = 50
+const vmmOverheadMB = 128
 const rawInterpreterPidsLimit = 8
 
 var (
@@ -183,6 +183,43 @@ func readSerialLogTail(path string) string {
 	return text
 }
 
+func readCgroupMemoryDetail(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return ""
+	}
+	return text
+}
+
+func readCgroupMemoryDetails(vm *executor.VMInstance) string {
+	if vm == nil {
+		return ""
+	}
+	cgroupID := strings.TrimSpace(vm.CgroupID)
+	if cgroupID == "" {
+		cgroupID = vm.UUID
+	}
+	cgPath := executor.CgroupPath(executor.DefaultCgroupParent(), cgroupID)
+	var lines []string
+	if events := readCgroupMemoryDetail(filepath.Join(cgPath, "memory.events")); events != "" {
+		lines = append(lines, "memory.events:\n"+events)
+	}
+	if current := readCgroupMemoryDetail(filepath.Join(cgPath, "memory.current")); current != "" {
+		lines = append(lines, "memory.current: "+current)
+	}
+	if max := readCgroupMemoryDetail(filepath.Join(cgPath, "memory.max")); max != "" {
+		lines = append(lines, "memory.max: "+max)
+	}
+	if peak := readCgroupMemoryDetail(filepath.Join(cgPath, "memory.peak")); peak != "" {
+		lines = append(lines, "memory.peak: "+peak)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func enrichSandboxFailure(err error, vm *executor.VMInstance) (string, string) {
 	errMsg := ""
 	if err != nil {
@@ -193,9 +230,20 @@ func enrichSandboxFailure(err error, vm *executor.VMInstance) (string, string) {
 	}
 	serialTail := readSerialLogTail(vm.SerialLogPath)
 	if serialTail == "" {
+		if cgroupDetail := readCgroupMemoryDetails(vm); cgroupDetail != "" {
+			stderrDetail := "host cgroup memory:\n" + cgroupDetail
+			if errMsg == "" {
+				return stderrDetail, stderrDetail
+			}
+			return errMsg + "\n" + stderrDetail, stderrDetail
+		}
 		return errMsg, ""
 	}
-	stderrDetail := "firecracker serial tail (" + filepath.Base(vm.SerialLogPath) + "):\n" + serialTail
+	parts := []string{"firecracker serial tail (" + filepath.Base(vm.SerialLogPath) + "):\n" + serialTail}
+	if cgroupDetail := readCgroupMemoryDetails(vm); cgroupDetail != "" {
+		parts = append(parts, "host cgroup memory:\n"+cgroupDetail)
+	}
+	stderrDetail := strings.Join(parts, "\n")
 	if errMsg == "" {
 		return stderrDetail, stderrDetail
 	}
