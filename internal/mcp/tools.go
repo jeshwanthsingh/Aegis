@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,7 @@ type ExecuteToolResult struct {
 	Receipt         map[string]any `json:"receipt,omitempty"`
 	Divergence      map[string]any `json:"divergence,omitempty"`
 	Broker          map[string]any `json:"broker,omitempty"`
+	Warm            map[string]any `json:"warm,omitempty"`
 	Error           string         `json:"error,omitempty"`
 	VerificationErr string         `json:"verification_error,omitempty"`
 	Raw             map[string]any `json:"raw,omitempty"`
@@ -90,6 +92,20 @@ type VerifyToolResult struct {
 type InvalidParamsError struct {
 	Message string
 	Details map[string]any
+}
+
+type healthResponse struct {
+	Status   string          `json:"status"`
+	WarmPool *healthWarmPool `json:"warm_pool,omitempty"`
+}
+
+type healthWarmPool struct {
+	Enabled        bool   `json:"enabled"`
+	ConfiguredSize int    `json:"configured_size"`
+	Available      int    `json:"available"`
+	Initializing   int    `json:"initializing"`
+	WarmClaims     uint64 `json:"warm_claims"`
+	ColdFallbacks  uint64 `json:"cold_fallbacks"`
 }
 
 func (e *InvalidParamsError) Error() string {
@@ -190,17 +206,24 @@ func (h *ToolHandler) Execute(ctx context.Context, args ExecuteArgs) (ExecuteToo
 	if err != nil {
 		return ExecuteToolResult{}, fmt.Errorf("marshal intent: %w", err)
 	}
+	workspaceID := ""
+	if workspaceRequired(args.AllowWritePaths) {
+		workspaceID = mcpWorkspaceID(executionID)
+	}
 	reqBody := api.ExecuteRequest{
 		ExecutionID: executionID,
 		Lang:        language,
 		Code:        args.Code,
 		TimeoutMs:   int(math.Ceil(timeoutSec * 1000)),
+		WorkspaceID: workspaceID,
 		Intent:      intentJSON,
 	}
+	beforeWarm, _ := h.readWarmPoolStatus(ctx)
 	resp, raw, err := h.executeHTTP(ctx, reqBody)
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}
+	afterWarm, _ := h.readWarmPoolStatus(ctx)
 	result := ExecuteToolResult{
 		ExecutionID: resp.ExecutionID,
 		OK:          resp.Error == "" && resp.ExitCode == 0 && (resp.ExitReason == "" || resp.ExitReason == "completed"),
@@ -213,6 +236,7 @@ func (h *ToolHandler) Execute(ctx context.Context, args ExecuteArgs) (ExecuteToo
 		ReceiptPath: resp.ReceiptPath,
 		Error:       resp.Error,
 		Raw:         raw,
+		Warm:        warmDiagnostics(beforeWarm, afterWarm, reqBody),
 	}
 	verifyResult, verifyErr := h.Verify(VerifyArgs{ExecutionID: resp.ExecutionID, ProofDir: resp.ProofDir})
 	if verifyErr == nil {
@@ -295,7 +319,23 @@ func enrichVerifyResult(result *VerifyToolResult, statement receipt.Statement) {
 		},
 	}
 	if statement.Predicate.BrokerSummary != nil {
+		brokerEvents := []string{"credential.request"}
+		outcome := "requested"
+		if statement.Predicate.BrokerSummary.AllowedCount > 0 {
+			brokerEvents = append(brokerEvents, "credential.allowed")
+			outcome = "allowed"
+		}
+		if statement.Predicate.BrokerSummary.DeniedCount > 0 {
+			brokerEvents = append(brokerEvents, "credential.denied")
+			if outcome == "allowed" {
+				outcome = "mixed"
+			} else {
+				outcome = "denied"
+			}
+		}
 		result.Diagnostics["broker"] = map[string]any{
+			"events":          brokerEvents,
+			"outcome":         outcome,
 			"request_count":   statement.Predicate.BrokerSummary.RequestCount,
 			"allowed_count":   statement.Predicate.BrokerSummary.AllowedCount,
 			"denied_count":    statement.Predicate.BrokerSummary.DeniedCount,
@@ -366,14 +406,39 @@ func BuildDefaultIntent(executionID string, language string, timeoutSec float64,
 		}
 	}
 	allowedDelegations := make([]string, 0, len(delegations))
+	brokerDomains := make([]string, 0, len(delegations))
 	for _, delegation := range delegations {
 		name := strings.TrimSpace(delegation.Name)
 		if name == "" {
 			return policycontract.IntentContract{}, &InvalidParamsError{Message: "broker_delegations entries require name"}
 		}
+		resource := strings.TrimSpace(delegation.Resource)
+		if resource == "" {
+			return policycontract.IntentContract{}, &InvalidParamsError{Message: "broker_delegations entries require resource", Details: map[string]any{"name": name}}
+		}
+		domain, err := delegationDomain(resource)
+		if err != nil {
+			return policycontract.IntentContract{}, &InvalidParamsError{Message: "broker_delegations resource must be a hostname or URL", Details: map[string]any{"name": name, "resource": resource, "cause": err.Error()}}
+		}
 		if !slices.Contains(allowedDelegations, name) {
 			allowedDelegations = append(allowedDelegations, name)
 		}
+		if !slices.Contains(brokerDomains, domain) {
+			brokerDomains = append(brokerDomains, domain)
+		}
+	}
+	allowNetwork := len(allowedDomains) > 0 || len(brokerDomains) > 0
+	allowedIPs := []string{}
+	maxOutboundConns := len(allowedDomains)
+	if len(brokerDomains) > 0 {
+		allowedIPs = append(allowedIPs, "127.0.0.1")
+		if maxOutboundConns < 1 {
+			maxOutboundConns = 1
+		}
+	}
+	brokerActionTypes := []string{}
+	if len(brokerDomains) > 0 {
+		brokerActionTypes = append(brokerActionTypes, "http_request")
 	}
 	intent := policycontract.IntentContract{
 		Version:         "v1",
@@ -384,17 +449,17 @@ func BuildDefaultIntent(executionID string, language string, timeoutSec float64,
 		Language:        language,
 		ResourceScope: policycontract.ResourceScope{
 			WorkspaceRoot:    defaultWorkspace,
-			ReadPaths:        []string{defaultWorkspace},
+			ReadPaths:        runtimeReadPaths(language),
 			WritePaths:       writeList,
 			DenyPaths:        []string{},
 			MaxDistinctFiles: maxDistinctFiles(language, writeList),
 		},
 		NetworkScope: policycontract.NetworkScope{
-			AllowNetwork:     len(allowedDomains) > 0,
+			AllowNetwork:     allowNetwork,
 			AllowedDomains:   allowedDomains,
-			AllowedIPs:       []string{},
+			AllowedIPs:       allowedIPs,
 			MaxDNSQueries:    len(allowedDomains),
-			MaxOutboundConns: len(allowedDomains),
+			MaxOutboundConns: maxOutboundConns,
 		},
 		ProcessScope: policycontract.ProcessScope{
 			AllowedBinaries:     []string{defaultBinaryFor(language)},
@@ -404,6 +469,8 @@ func BuildDefaultIntent(executionID string, language string, timeoutSec float64,
 		},
 		BrokerScope: policycontract.BrokerScope{
 			AllowedDelegations: allowedDelegations,
+			AllowedDomains:     brokerDomains,
+			AllowedActionTypes: brokerActionTypes,
 			RequireHostConsent: false,
 		},
 		Budgets: policycontract.BudgetLimits{
@@ -516,6 +583,87 @@ func validateTimeout(timeout *float64) (float64, error) {
 	return *timeout, nil
 }
 
+func mcpWorkspaceID(executionID string) string {
+	return "mcp_" + strings.ReplaceAll(executionID, "-", "")
+}
+
+func delegationDomain(resource string) (string, error) {
+	trimmed := strings.TrimSpace(resource)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty resource")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err == nil && parsed.Hostname() != "" {
+		return strings.ToLower(parsed.Hostname()), nil
+	}
+	if !strings.Contains(trimmed, "://") {
+		parsed, err := url.Parse("https://" + trimmed)
+		if err == nil && parsed.Hostname() != "" {
+			return strings.ToLower(parsed.Hostname()), nil
+		}
+	}
+	return "", fmt.Errorf("resource %q has no hostname", trimmed)
+}
+
+func (h *ToolHandler) readWarmPoolStatus(ctx context.Context) (*healthWarmPool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.baseURL+"/v1/health", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build health request: %w", err)
+	}
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call Aegis health endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("aegis health returned HTTP %d", resp.StatusCode)
+	}
+	var decoded healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("decode health response: %w", err)
+	}
+	return decoded.WarmPool, nil
+}
+
+func warmDiagnostics(before *healthWarmPool, after *healthWarmPool, payload api.ExecuteRequest) map[string]any {
+	eligible := payload.WorkspaceID == ""
+	result := map[string]any{"eligible": eligible}
+	if before == nil && after == nil {
+		result["dispatch_path"] = "unknown"
+		return result
+	}
+	poolEnabled := false
+	if after != nil {
+		poolEnabled = after.Enabled
+	} else if before != nil {
+		poolEnabled = before.Enabled
+	}
+	result["pool_enabled"] = poolEnabled
+	if before != nil {
+		result["warm_claims_before"] = before.WarmClaims
+		result["cold_fallbacks_before"] = before.ColdFallbacks
+		result["available_before"] = before.Available
+	}
+	if after != nil {
+		result["warm_claims_after"] = after.WarmClaims
+		result["cold_fallbacks_after"] = after.ColdFallbacks
+		result["available_after"] = after.Available
+	}
+	path := "unknown"
+	if !poolEnabled {
+		path = "disabled"
+	} else if before != nil && after != nil {
+		switch {
+		case after.WarmClaims > before.WarmClaims:
+			path = "warm"
+		case after.ColdFallbacks > before.ColdFallbacks:
+			path = "cold"
+		}
+	}
+	result["dispatch_path"] = path
+	return result
+}
+
 func cleanStringList(values []string, requireAbs bool) ([]string, error) {
 	cleaned := make([]string, 0, len(values))
 	for _, value := range values {
@@ -581,11 +729,30 @@ func maxDistinctFiles(language string, writePaths []string) int {
 	return base
 }
 
+func workspaceRequired(writePaths []string) bool {
+	for _, path := range writePaths {
+		clean := filepath.Clean(strings.TrimSpace(path))
+		if clean == defaultWorkspace || strings.HasPrefix(clean, defaultWorkspace+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func runtimeWritePaths(language string) []string {
 	if language == "bash" {
 		return []string{"/dev/tty"}
 	}
 	return nil
+}
+
+func runtimeReadPaths(language string) []string {
+	readPaths := []string{defaultWorkspace}
+	switch language {
+	case "python", "node":
+		readPaths = append(readPaths, "/tmp")
+	}
+	return readPaths
 }
 
 func firstNonEmpty(values ...string) string {
@@ -627,6 +794,8 @@ func intentWire(intent policycontract.IntentContract) map[string]any {
 		},
 		"broker_scope": map[string]any{
 			"allowed_delegations":  intent.BrokerScope.AllowedDelegations,
+			"allowed_domains":      intent.BrokerScope.AllowedDomains,
+			"allowed_action_types": intent.BrokerScope.AllowedActionTypes,
 			"require_host_consent": intent.BrokerScope.RequireHostConsent,
 		},
 		"budgets": map[string]any{

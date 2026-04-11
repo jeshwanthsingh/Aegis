@@ -84,6 +84,20 @@ func buildPointEvaluator(req ExecuteRequest) (*policyevaluator.Evaluator, *polic
 	return eval, &intent, nil
 }
 
+func guestPidsLimit(lang string, intent *policycontract.IntentContract, defaultLimit int) int {
+	if defaultLimit <= 0 {
+		return 0
+	}
+	if intent == nil || intent.ProcessScope.AllowShell {
+		return defaultLimit
+	}
+	switch strings.TrimSpace(lang) {
+	case "python", "node":
+		return 0
+	default:
+		return defaultLimit
+	}
+}
 func requestedExecutionID(req ExecuteRequest, intent *policycontract.IntentContract) string {
 	if req.ExecutionID != "" {
 		return req.ExecutionID
@@ -386,7 +400,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 
 		observability.Info("vsock_connected", observability.Fields{"execution_id": execID, "remaining_ms": time.Until(deadline).Milliseconds()})
 
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: pol.Resources.PidsMax, WorkspaceRequested: req.WorkspaceID != ""}
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: guestPidsLimit(req.Lang, intent, pol.Resources.PidsMax), WorkspaceRequested: req.WorkspaceID != ""}
 		if vm.Network != nil {
 			payload.NetworkRequested = true
 			payload.GuestIP = vm.Network.GuestIP
@@ -662,7 +676,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: pol.Resources.PidsMax, WorkspaceRequested: req.WorkspaceID != ""}
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: guestPidsLimit(req.Lang, intent, pol.Resources.PidsMax), WorkspaceRequested: req.WorkspaceID != ""}
 		if vm.Network != nil {
 			payload.NetworkRequested = true
 			payload.GuestIP = vm.Network.GuestIP

@@ -180,6 +180,23 @@ func TestPolicyAndCleanupHelpers(t *testing.T) {
 	}
 }
 
+func TestGuestPidsLimit(t *testing.T) {
+	intent := &policycontract.IntentContract{ProcessScope: policycontract.ProcessScope{AllowShell: false}}
+	if got := guestPidsLimit("python", intent, 32); got != 0 {
+		t.Fatalf("guestPidsLimit(python) = %d, want 0", got)
+	}
+	if got := guestPidsLimit("node", intent, 32); got != 0 {
+		t.Fatalf("guestPidsLimit(node) = %d, want 0", got)
+	}
+	if got := guestPidsLimit("bash", intent, 32); got != 32 {
+		t.Fatalf("guestPidsLimit(bash) = %d, want 32", got)
+	}
+	intent.ProcessScope.AllowShell = true
+	if got := guestPidsLimit("python", intent, 32); got != 32 {
+		t.Fatalf("guestPidsLimit(allowShell) = %d, want 32", got)
+	}
+}
+
 func TestChooseExecutionIDAndClaimExecutionBus(t *testing.T) {
 	if _, err := chooseExecutionID(" bad "); err == nil {
 		t.Fatal("expected invalid execution_id error")

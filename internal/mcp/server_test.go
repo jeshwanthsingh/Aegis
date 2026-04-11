@@ -98,3 +98,33 @@ func TestServerInvalidParams(t *testing.T) {
 		t.Fatalf("unexpected error response: %+v", resp.Error)
 	}
 }
+
+func TestServerToolsListAcceptsOmittedEmptyAndCursorParams(t *testing.T) {
+	server := NewServer(stubHandler{}, nil)
+	var stdout bytes.Buffer
+	input := strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\",\"params\":{\"cursor\":\"next-page\"}}\n")
+	if err := server.Serve(context.Background(), input, &stdout); err != nil {
+		t.Fatalf("Serve() error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 responses, got %d", len(lines))
+	}
+	for i, line := range lines {
+		var resp rpcResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Fatalf("unmarshal response %d: %v", i, err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("response %d returned error: %+v", i, resp.Error)
+		}
+		var tools ToolsListResult
+		toolsJSON, _ := json.Marshal(resp.Result)
+		if err := json.Unmarshal(toolsJSON, &tools); err != nil {
+			t.Fatalf("decode tools result %d: %v", i, err)
+		}
+		if len(tools.Tools) != 1 || tools.Tools[0].Name != "aegis_execute" {
+			t.Fatalf("unexpected tools payload for response %d: %+v", i, tools.Tools)
+		}
+	}
+}

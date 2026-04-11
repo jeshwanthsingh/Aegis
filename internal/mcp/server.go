@@ -89,6 +89,10 @@ type ToolsListResult struct {
 	Tools []Tool `json:"tools"`
 }
 
+type toolsListParams struct {
+	Cursor string `json:"cursor,omitempty"`
+}
+
 type Tool struct {
 	Name        string         `json:"name"`
 	Title       string         `json:"title,omitempty"`
@@ -185,8 +189,9 @@ func (s *Server) handleLine(ctx context.Context, line []byte) (rpcResponse, bool
 	case methodPing:
 		return rpcResponse{JSONRPC: jsonRPCVersion, ID: req.ID, Result: map[string]any{}}, true
 	case methodToolsList:
-		if len(req.Params) != 0 && string(req.Params) != "null" && string(req.Params) != "{}" {
-			return s.errorResponse(req.ID, errInvalidParams, "tools/list does not accept parameters", nil), true
+		var params toolsListParams
+		if err := decodeLooseParams(req.Params, &params); err != nil {
+			return s.errorResponse(req.ID, errInvalidParams, "invalid tools/list params", err.Error()), true
 		}
 		result, err := s.handler.ListTools(ctx)
 		if err != nil {

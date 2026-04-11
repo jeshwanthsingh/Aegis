@@ -169,7 +169,7 @@ func TestEvaluateFileReadAllowsNarrowRuntimeBaseline(t *testing.T) {
 		ProcessScope:    contract.ProcessScope{AllowedBinaries: []string{"python3"}, MaxChildProcesses: 1},
 		Budgets:         contract.BudgetLimits{TimeoutSec: 20, MemoryMB: 256, CPUQuota: 100, StdoutBytes: 4096},
 	}
-	got := New(intent).Evaluate(models.RuntimeEvent{ExecutionID: "exec_123", Seq: 11, Type: models.EventFileOpen, Path: "/tmp/launcher-abcd.sh"})
+	got := New(intent).Evaluate(models.RuntimeEvent{ExecutionID: "exec_123", Seq: 11, Type: models.EventFileOpen, Path: "/tmp/exec-abcd.py"})
 	if got.Decision != models.DecisionAllow {
 		t.Fatalf("Decision = %q, want allow", got.Decision)
 	}
@@ -178,6 +178,27 @@ func TestEvaluateFileReadAllowsNarrowRuntimeBaseline(t *testing.T) {
 	}
 	if got.Metadata["baseline"] != "runtime_launcher" {
 		t.Fatalf("baseline metadata = %q", got.Metadata["baseline"])
+	}
+}
+
+func TestEvaluateFileReadAllowsPythonRuntimeMetadataBaseline(t *testing.T) {
+	intent := contract.IntentContract{
+		Version:         "v1",
+		ExecutionID:     "exec_123",
+		WorkflowID:      "wf_9",
+		TaskClass:       "clean_run",
+		DeclaredPurpose: "run python cleanly",
+		Language:        "python",
+		ResourceScope:   contract.ResourceScope{WorkspaceRoot: "/workspace", ReadPaths: []string{"/workspace"}, WritePaths: []string{"/workspace/out"}, DenyPaths: []string{}, MaxDistinctFiles: 5},
+		ProcessScope:    contract.ProcessScope{AllowedBinaries: []string{"python3"}, MaxChildProcesses: 1},
+		Budgets:         contract.BudgetLimits{TimeoutSec: 20, MemoryMB: 256, CPUQuota: 100, StdoutBytes: 4096},
+	}
+	got := New(intent).Evaluate(models.RuntimeEvent{ExecutionID: "exec_123", Seq: 12, Type: models.EventFileOpen, Path: "/usr/bin/pyvenv.cfg"})
+	if got.Decision != models.DecisionAllow {
+		t.Fatalf("Decision = %q, want allow", got.Decision)
+	}
+	if got.Reason != "allowed by runtime baseline" {
+		t.Fatalf("Reason = %q", got.Reason)
 	}
 }
 

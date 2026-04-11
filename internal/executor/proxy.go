@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -66,15 +67,7 @@ func StartBrokerListener(ctx context.Context, vsockPath string, b *broker.Broker
 func handleBrokerConn(conn net.Conn, b *broker.Broker, divEval *policydivergence.Evaluator) {
 	defer conn.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(conn, 1<<20))
-	if err != nil {
-		observability.Warn("broker_request_read_failed", observability.Fields{"error": err.Error()})
-		if encodeErr := broker.EncodeBrokerResponse(conn, broker.BrokerResponse{Error: "read request: " + err.Error()}); encodeErr != nil {
-			observability.Warn("broker_response_encode_failed", observability.Fields{"error": encodeErr.Error()})
-		}
-		return
-	}
-	req, err := broker.DecodeBrokerRequestJSON(raw)
+	req, err := decodeBrokerRequest(conn)
 	if err != nil {
 		observability.Warn("broker_request_decode_failed", observability.Fields{"error": err.Error()})
 		if encodeErr := broker.EncodeBrokerResponse(conn, broker.BrokerResponse{Error: err.Error()}); encodeErr != nil {
@@ -93,6 +86,17 @@ func handleBrokerConn(conn net.Conn, b *broker.Broker, divEval *policydivergence
 	if err := broker.EncodeBrokerResponse(conn, resp); err != nil {
 		observability.Warn("broker_response_encode_failed", observability.Fields{"error": err.Error()})
 	}
+}
+
+func decodeBrokerRequest(conn net.Conn) (broker.BrokerRequest, error) {
+	limited := io.LimitReader(conn, 1<<20)
+	decoder := json.NewDecoder(limited)
+	decoder.DisallowUnknownFields()
+	var req broker.BrokerRequest
+	if err := decoder.Decode(&req); err != nil {
+		return broker.BrokerRequest{}, err
+	}
+	return req, nil
 }
 
 func extractDomainFromURL(rawURL string) (string, error) {

@@ -228,12 +228,16 @@ func cleanPath(path string) string {
 
 func runtimeBaselineRead(path string) (string, bool) {
 	exact := map[string]string{
-		"/etc/ld.so.cache":   "runtime_loader",
-		"/etc/localtime":     "runtime_loader",
-		"/etc/host.conf":     "runtime_network",
-		"/etc/hosts":         "runtime_network",
-		"/etc/nsswitch.conf": "runtime_network",
-		"/etc/resolv.conf":   "runtime_network",
+		"/etc/ld.so.cache":               "runtime_loader",
+		"/etc/localtime":                 "runtime_loader",
+		"/etc/host.conf":                 "runtime_network",
+		"/etc/hosts":                     "runtime_network",
+		"/etc/nsswitch.conf":             "runtime_network",
+		"/etc/resolv.conf":               "runtime_network",
+		"/usr/share/locale/locale.alias": "runtime_loader",
+		"/usr/bin/pyvenv.cfg":            "runtime_loader",
+		"/usr/pyvenv.cfg":                "runtime_loader",
+		"/usr/bin/pybuilddir.txt":        "runtime_loader",
 	}
 	if baseline, ok := exact[path]; ok {
 		return baseline, true
@@ -243,6 +247,7 @@ func runtimeBaselineRead(path string) (string, bool) {
 		"/usr/lib/":       "runtime_loader",
 		"/usr/local/lib/": "runtime_loader",
 		"/tmp/launcher-":  "runtime_launcher",
+		"/tmp/exec-":      "runtime_launcher",
 	}
 	for prefix, baseline := range prefixes {
 		if strings.HasPrefix(path, prefix) {

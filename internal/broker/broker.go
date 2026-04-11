@@ -71,6 +71,9 @@ func (b *Broker) Handle(req BrokerRequest) BrokerResponse {
 
 	// Find the first loaded credential binding from allowed delegations.
 	binding, bindingName := b.resolveBinding()
+	if len(b.scope.AllowedDelegations) > 0 && !binding.IsLoaded() {
+		return b.deny(domain, "", "broker.binding_unavailable", "no configured host credential matched broker_scope.allowed_delegations")
+	}
 
 	// Perform the outbound HTTP request with credential injection.
 	resp, err := b.execute(req, binding)

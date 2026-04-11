@@ -256,7 +256,7 @@ func FormatSummary(statement Statement, verified bool) string {
 	if verified {
 		verification = "verified"
 	}
-	return strings.Join([]string{
+	lines := []string{
 		"verification=" + verification,
 		"execution_id=" + statement.Predicate.ExecutionID,
 		"backend=" + string(statement.Predicate.Backend),
@@ -271,7 +271,32 @@ func FormatSummary(statement Statement, verified bool) string {
 		"rule_hits=" + strings.Join(ruleIDs, ","),
 		fmt.Sprintf("artifact_count=%d", len(statement.Subject)),
 		"artifacts=" + strings.Join(subjects, "; "),
-	}, "\n") + "\n"
+	}
+	if statement.Predicate.BrokerSummary != nil {
+		brokerEvents := []string{"credential.request"}
+		if statement.Predicate.BrokerSummary.AllowedCount > 0 {
+			brokerEvents = append(brokerEvents, "credential.allowed")
+		}
+		if statement.Predicate.BrokerSummary.DeniedCount > 0 {
+			brokerEvents = append(brokerEvents, "credential.denied")
+		}
+		lines = append(lines,
+			"broker_events="+strings.Join(brokerEvents, ","),
+			fmt.Sprintf("broker_request_count=%d", statement.Predicate.BrokerSummary.RequestCount),
+			fmt.Sprintf("broker_allowed_count=%d", statement.Predicate.BrokerSummary.AllowedCount),
+			fmt.Sprintf("broker_denied_count=%d", statement.Predicate.BrokerSummary.DeniedCount),
+		)
+		if len(statement.Predicate.BrokerSummary.DomainsAllowed) > 0 {
+			lines = append(lines, "broker_domains_allowed="+strings.Join(statement.Predicate.BrokerSummary.DomainsAllowed, ","))
+		}
+		if len(statement.Predicate.BrokerSummary.DomainsDenied) > 0 {
+			lines = append(lines, "broker_domains_denied="+strings.Join(statement.Predicate.BrokerSummary.DomainsDenied, ","))
+		}
+		if len(statement.Predicate.BrokerSummary.BindingsUsed) > 0 {
+			lines = append(lines, "broker_bindings_used="+strings.Join(statement.Predicate.BrokerSummary.BindingsUsed, ","))
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func hydrateArtifactPaths(paths *BundlePaths) error {
