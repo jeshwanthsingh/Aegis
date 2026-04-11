@@ -91,9 +91,12 @@ func guestPidsLimit(lang string, intent *policycontract.IntentContract, defaultL
 	if defaultLimit <= 0 {
 		return 0
 	}
+	if intent == nil {
+		return defaultLimit
+	}
 	switch strings.TrimSpace(lang) {
 	case "python", "node":
-		if intent != nil && intent.ProcessScope.AllowShell {
+		if intent.ProcessScope.AllowShell {
 			return defaultLimit
 		}
 		return 0

@@ -88,11 +88,11 @@ PY
   fi
 }
 
-check_contained_nonzero "fork bomb (bash)" '{"lang":"bash","code":"for i in $(seq 1 256); do bash -c \"sleep 30\" & done\nwait","timeout_ms":12000}'
+check_contained_nonzero "fork bomb (bash)" '{"lang":"bash","code":"for i in $(seq 1 256); do bash -c \"sleep 30\" & done\nwait","timeout_ms":10000}'
 check_contained_nonzero "infinite loop" '{"lang":"python","code":"while True: pass","timeout_ms":3000}'
-check_contained_nonzero "memory bomb" '{"lang":"python","code":"x = b\"x\" * 10**9\nprint(len(x))","timeout_ms":12000}'
+check_contained_nonzero "memory bomb" '{"lang":"python","code":"x = b\"x\" * 10**9\nprint(len(x))","timeout_ms":10000}'
 check_truncated_output "huge stdout" '{"lang":"python","code":"import sys\nsys.stdout.write(\"A\" * 70000)","timeout_ms":10000}'
-check_contained_nonzero "process explosion" '{"lang":"python","code":"import os, sys, time\nchildren = []\nwhile True:\n    try:\n        pid = os.fork()\n    except OSError:\n        sys.exit(1)\n    if pid == 0:\n        time.sleep(30)\n        os._exit(0)\n    children.append(pid)","timeout_ms":12000}'
+check_contained_nonzero "process explosion" '{"lang":"python","code":"import os, sys, time\nchildren = []\nwhile True:\n    try:\n        pid = os.fork()\n    except OSError:\n        sys.exit(1)\n    if pid == 0:\n        time.sleep(30)\n        os._exit(0)\n    children.append(pid)","timeout_ms":10000}'
 check_health_after_abuse
 
 if [ "$FAILURES" -ne 0 ]; then

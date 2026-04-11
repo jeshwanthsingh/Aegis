@@ -182,11 +182,11 @@ func TestPolicyAndCleanupHelpers(t *testing.T) {
 
 func TestGuestPidsLimit(t *testing.T) {
 	intent := &policycontract.IntentContract{ProcessScope: policycontract.ProcessScope{AllowShell: false}}
-	if got := guestPidsLimit("python", nil, 32); got != 0 {
-		t.Fatalf("guestPidsLimit(python,nil) = %d, want 0", got)
+	if got := guestPidsLimit("python", nil, 32); got != 32 {
+		t.Fatalf("guestPidsLimit(python,nil) = %d, want 32", got)
 	}
-	if got := guestPidsLimit("node", nil, 32); got != 0 {
-		t.Fatalf("guestPidsLimit(node,nil) = %d, want 0", got)
+	if got := guestPidsLimit("node", nil, 32); got != 32 {
+		t.Fatalf("guestPidsLimit(node,nil) = %d, want 32", got)
 	}
 	if got := guestPidsLimit("python", intent, 32); got != 0 {
 		t.Fatalf("guestPidsLimit(python) = %d, want 0", got)
