@@ -56,7 +56,7 @@ type ExecuteResponse struct {
 const startupSlack = 15 * time.Second
 const serialLogTailBytes = 8192
 const vmmOverheadMB = 50
-const rawInterpreterPidsLimit = 32
+const rawInterpreterPidsLimit = 8
 
 var (
 	acquireExecutionVMFunc  = acquireExecutionVM
