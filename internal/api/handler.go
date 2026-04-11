@@ -56,6 +56,7 @@ type ExecuteResponse struct {
 const startupSlack = 15 * time.Second
 const serialLogTailBytes = 8192
 const vmmOverheadMB = 50
+const rawInterpreterPidsLimit = 32
 
 var (
 	acquireExecutionVMFunc  = acquireExecutionVM
@@ -92,6 +93,12 @@ func guestPidsLimit(lang string, intent *policycontract.IntentContract, defaultL
 		return 0
 	}
 	if intent == nil {
+		switch strings.TrimSpace(lang) {
+		case "python", "node":
+			if defaultLimit > rawInterpreterPidsLimit {
+				return rawInterpreterPidsLimit
+			}
+		}
 		return defaultLimit
 	}
 	switch strings.TrimSpace(lang) {

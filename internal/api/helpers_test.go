@@ -201,6 +201,15 @@ func TestGuestPidsLimit(t *testing.T) {
 	if got := guestPidsLimit("python", intent, 32); got != 32 {
 		t.Fatalf("guestPidsLimit(allowShell) = %d, want 32", got)
 	}
+	if got := guestPidsLimit("python", nil, 100); got != 32 {
+		t.Fatalf("guestPidsLimit(python,nil,100) = %d, want 32", got)
+	}
+	if got := guestPidsLimit("node", nil, 100); got != 32 {
+		t.Fatalf("guestPidsLimit(node,nil,100) = %d, want 32", got)
+	}
+	if got := guestPidsLimit("bash", nil, 100); got != 100 {
+		t.Fatalf("guestPidsLimit(bash,nil,100) = %d, want 100", got)
+	}
 }
 
 func TestChooseExecutionIDAndClaimExecutionBus(t *testing.T) {
