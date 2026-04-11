@@ -215,4 +215,74 @@ etwork.connect_disabled; real Claude Code validation after registering the serve
 ## 2026-04-10 Documentation & Launch Materials
 - Implemented: rewrote the root `README.md` as a product-grade OSS landing page centered on execution evidence; added `docs/quickstart.md`, `docs/architecture.md`, `docs/api.md`, and `docs/openapi.json`; added `SECURITY.md`; rewrote `docs/mcp_server.md` and `docs/warm_pool.md`; added `sdk/python/README.md`; rewrote `sdk/typescript/README.md`; added a careful category-based comparison section for Aegis, E2B, Docker Sandboxes, and managed-agent offerings
 - Verified: `py -3 -m json.tool docs/openapi.json`; route validation against `cmd/orchestrator/main.go`; MCP tool/schema validation against `internal/mcp/tools.go`; CLI command validation against `cmd/aegis-cli/main.go`; `cmd /c "cd /d C:\Users\Cellardoor\aegis\sdk\typescript && npm run build"`; `cd ~/aegis && GOTOOLCHAIN=go1.25.9 /home/cellardoor/local/go/bin/go test ./cmd/aegis-cli ./cmd/orchestrator ./internal/mcp ./internal/api`; `cd ~/aegis/sdk/python && .venv/bin/python -m unittest tests.test_sdk`; direct WSL import check for `from aegis import AegisClient, ExecutionRequest, Receipt`
-- Skipped: no generated docs site, no docs framework adoption, and no roadmap claims beyond explicit “not built yet” boundaries; comparison entries stayed cautious where competitor products are not directly equivalent to Aegis’s execution-evidence model
+- Skipped: no generated docs site, no docs framework adoption, and no roadmap claims beyond explicit not built yet boundaries; comparison entries stayed cautious where competitor products are not directly equivalent to Aegiss execution-evidence model
+
+## 2026-04-10 MCP tools/list compatibility fix
+- Implemented: relaxed `internal/mcp/server.go` so `tools/list` accepts omitted params, `{}`, and optional cursor-style params via a loose `toolsListParams` decoder; ignored cursor when pagination is not implemented; added compatibility coverage in `internal/mcp/server_test.go`
+- Verified: `cd ~/aegis && /home/cellardoor/local/go/bin/gofmt -w internal/mcp/server.go internal/mcp/server_test.go`; `cd ~/aegis && /home/cellardoor/local/go/bin/go test ./internal/mcp ./cmd/aegis-mcp`; `cd ~/aegis && /home/cellardoor/local/go/bin/go build -buildvcs=false -o ./bin/aegis-mcp ./cmd/aegis-mcp`; live stdio check against `./bin/aegis-mcp` returned successful `tools/list` responses for omitted params, `{}`, and `{ "cursor": "next" }`
+- Skipped: Codex desktop restart and `/mcp` UI confirmation were not performed from this shell, so compatibility was validated at the MCP protocol/binary level only
+## 2026-04-10 TypeScript broker path regression fix
+- Implemented:
+  - fixed host broker listener deadlock by decoding broker requests directly from the live vsock connection instead of reading until EOF first
+  - added executor regression test proving broker responses return before the client closes its side of the connection
+- Verified:
+  - `/home/cellardoor/local/go/bin/go test ./internal/executor -run TestHandleBrokerConnRespondsWithoutClientClosing -count=1` passed
+  - `curl -fsS http://127.0.0.1:8080/v1/health` passed in WSL after restart
+  - `node dist/examples/broker_allowed.js` against `http://172.30.137.226:8080` passed with marker `PASS_auth_present_true_no_raw_token`, `receiptVerified=true`, `upstreamRequests=1`, telemetry `credential.request,credential.allowed`
+  - `node dist/examples/broker_denied.js` against `http://172.30.137.226:8080` passed with marker `PASS_denied_no_raw_token`, `receiptVerified=true`, `upstreamRequests=0`, telemetry `credential.request,credential.denied`
+  - proof bundle scan for both executions confirmed no raw broker token leak in stdout, stderr, or proof files
+- Skipped:
+  - Windows Node validation on `http://127.0.0.1:8080`; this desktop thread still cannot reach the WSL server on localhost even though WSL-local health and the reachable WSL IP path both work
+
+## 2026-04-10 MCP integration hardening
+- Implemented:
+  - fixed MCP Python/Node default contract to avoid the shell-launcher `process.shell_disallowed` path by zeroing guest PID launcher limits for non-shell languages
+  - surfaced broker evidence through MCP execute/verify results and receipt summaries
+  - surfaced warm-pool diagnostics in MCP results and forwarded warm-pool env vars through `start-local-orchestrator.sh`
+  - hardened MCP broker delegation contract with required broker resources, allowed domains/action types, localhost proxy allowance, and explicit binding-miss denial
+  - expanded MCP Python runtime baseline reads to include `/tmp` so guest transient script/current-dir reads no longer fail the contract
+  - added targeted tests for MCP intent construction, broker result shaping, warm diagnostics, Python PID handling, broker binding denial, and Python runtime baseline reads
+- Verified:
+  - `gofmt -w internal/api/handler.go internal/api/helpers_test.go internal/mcp/tools.go internal/mcp/tools_test.go internal/broker/broker.go internal/broker/broker_test.go internal/policy/evaluator/evaluator.go internal/policy/evaluator/evaluator_test.go internal/receipt/bundle.go guest-runner/main.go guest-runner/main_test.go`
+  - `go test ./internal/api ./internal/mcp ./internal/broker ./internal/policy/evaluator ./internal/receipt ./guest-runner/...`
+  - rebuilt `bin/aegis-mcp`, `bin/orchestrator`, and rebaked `guest-runner` into the rootfs
+  - live MCP validation proved:
+    - simple Python execution now succeeds without `process.shell_disallowed`
+    - broker allowed path surfaces `credential.request,credential.allowed`, verifies receipts, shows one upstream authenticated request, and leaks no raw token
+    - broker denied path surfaces `credential.request,credential.denied`, verifies receipts, shows zero upstream authenticated requests, and leaks no raw token
+    - warm-pool diagnostics now show real warm-vs-cold dispatch evidence instead of relying on end-to-end duration
+    - Python `json.dumps(...)` now succeeds through MCP after admitting `/tmp` as a baseline read path
+- Skipped:
+  - full clean-vs-malicious Python workflow closeout, because Python file-write/workspace workflows still time out under `allow` with verified receipts and no divergence rule hits
+
+## 2026-04-10 MCP Python workspace runtime investigation
+- Implemented:
+  - narrowed the remaining MCP blocker from ?Python touching `/workspace` hangs? to ?any workspace-backed Python MCP execution hangs, even `print(...)` with `allow_write_paths` set`
+  - reverted the attempted Python/Node `/workspace` guest working-directory change after proving it makes workspace-backed Python fail even without file I/O
+  - added and kept a safer post-open fd symlink inspection path in `guest-runner/runtime_trace.go` with matching tests; it preserves the writable-mount symlink guard but did not resolve the workspace-backed Python hang
+- Verified:
+  - `cd ~/aegis/guest-runner && /home/cellardoor/local/go/bin/gofmt -w main.go main_test.go runtime_trace.go runtime_trace_test.go && /home/cellardoor/local/go/bin/go test ./...`
+  - `cd ~/aegis && /home/cellardoor/local/go/bin/go test ./internal/mcp ./cmd/aegis-mcp`
+  - `cd ~/aegis && ./scripts/rebake-guest-runner.sh`
+  - live MCP execution `53217efb-7011-4b59-9168-d0fe67cd9633` proved minimal Python `open('/workspace/out.txt','w')` still timed out with verified receipt and `divergence_verdict=allow`
+  - live MCP execution `30bf865b-d4f6-4197-81d0-7a5dab59ec29` proved even `print('workspace-mounted-ok')` times out when `allow_write_paths` triggers a workspace-backed context
+  - after reverting Python/Node guest cwd back to `/tmp`, live MCP execution `b18c1596-a401-4513-85f4-11d614ec8243` still failed in a workspace-backed context with verified receipt and `divergence_verdict=allow`
+  - simple non-workspace Python MCP execution still works: `59bf65d8-7b73-497f-b1ec-9a2301a4c77b` returned `mcp-python-ok` with verified receipt
+- Skipped:
+  - final clean-vs-malicious Python workflow closeout, because the deeper workspace-backed Python runtime hang is still unresolved and I am not going to relabel that as a passing phase
+
+
+## 2026-04-10 MCP Python runtime hang follow-up
+- Implemented:
+  - added timeout diagnostics in `guest-runner/main.go` so timed-out Python executions report `/proc/<pid>` state, `wchan`, and `syscall`
+  - proved the current failure is no longer MCP-shaping-specific by reproducing timeouts in WSL-local MCP runs for simple no-workspace Python
+  - reverted the post-open `/proc/<pid>/fd` tracer inspection experiment and reverted the temporary Python `-I -B` startup flags after they failed to restore correct execution
+- Verified:
+  - `cd ~/aegis/guest-runner && /home/cellardoor/local/go/bin/go test ./...`
+  - rebaked the guest-runner into `assets/alpine-base.ext4` and restarted the local orchestrator repeatedly during diagnosis
+  - WSL-local MCP execution `07c63f3a-8105-45ed-9987-1f38fd95caeb` timed out with `State=D`, `wchan=__lock_page_or_retry`
+  - WSL-local MCP execution `cd0e0fe5-d3f6-41cd-aada-aa075407f38b` timed out with `State=t`, `wchan=bh_submit_read`, `syscall=262`
+  - after reverting the tracer fd-inspection path, WSL-local MCP execution `6bc45573-5fe4-42d5-8ecf-b946e171742b` still timed out, now with `State=R`, `syscall=running`
+  - after reverting the temporary Python startup flags, WSL-local MCP execution `0eb3a8eb-dbce-4e5e-85ce-2d660faae437` still timed out with `State=D`, `wchan=__wait_on_buffer`, `syscall=217`
+- Skipped:
+  - final acceptance validation for clean `/tmp` write/read and malicious `os.system("curl ...")`, because the runtime still cannot complete the baseline no-workspace Python MCP execution reliably on the current guest-runner branch

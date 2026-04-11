@@ -1,16 +1,15 @@
-## Handoff: 2026-04-10 Documentation & Launch Materials
-## Status: COMPLETE
+## Handoff: 2026-04-10 MCP Python runtime hang follow-up
+## Status: BLOCKED
 ## What shipped:
-- root `README.md` is now a real OSS landing page centered on Aegis as an execution evidence platform, with quickstart, architecture, use/not-use guidance, status, docs index, and careful comparison framing
-- new operator/reference docs landed in `docs/quickstart.md`, `docs/architecture.md`, `docs/api.md`, and `docs/openapi.json`
-- a dedicated `SECURITY.md` now captures the actual threat model, trust boundaries, operator caveats, and disclosure guidance
-- `docs/mcp_server.md`, `docs/warm_pool.md`, `sdk/python/README.md`, and `sdk/typescript/README.md` now read like product documentation instead of phase artifacts
+- added timeout diagnostics in `guest-runner/main.go` so timed-out Python runs expose `/proc` state, `wchan`, and `syscall`
+- proved the remaining blocker is deeper than MCP request shaping: current WSL-local MCP Python can still time out before user code, even with no workspace writes
+- reverted two unsuccessful debugging experiments: post-open tracer fd inspection and temporary Python `-I -B` startup flags
 ## Decisions forced (write to DECISION_LOG.md if significant):
-- keep the comparison section category-level and explicitly non-isomorphic, because Aegis is an execution-evidence platform and the comparison set spans managed cloud sandboxes, local sandbox products, and managed-agent offerings
-- document receipt verification as CLI/SDK/MCP behavior, not as an HTTP endpoint, because the current server does not expose a receipt-verify API
+- none
 ## Remaining in phase:
-- none
+- isolate why guest Python startup still stalls under the current guest-runner branch before it reaches the user script
+- then rerun the required MCP matrix for clean print, `/tmp` write/read, forbidden `/etc` write, and malicious `os.system("curl ...")`
 ## Blockers:
-- none
+- WSL-local MCP Python execution still times out under `divergence_verdict=allow`; observed timeout states now vary between disk-wait, ptrace-stop, and running, so the root cause is still unresolved in guest runtime startup
 ## Next prompt for Claude:
-Documentation is now launch-grade and aligned with the current product surface: README, quickstart, architecture, API/OpenAPI, security model, MCP docs, warm-pool docs, and both SDK references were rewritten. If you want a follow-up phase, the best next move is external-facing packaging polish: screenshots/demo assets, GitHub repo metadata, and release/versioning materials around the now-clean docs set.
+The MCP layer is no longer the lead suspect. I added timeout diagnostics and proved current guest Python still times out before user code even on a no-workspace MCP run. Next investigate the guest Python startup/runtime path itself on the current branch, using the execution ids and `wchan/syscall` evidence in `ai/EXECUTION_LOG.md` rather than reopening MCP, broker, or warm-pool work.
