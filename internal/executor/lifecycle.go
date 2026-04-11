@@ -120,6 +120,15 @@ func CgroupPath(parent string, uuid string) string {
 	return filepath.Join(parent, uuid)
 }
 
+func resolveCgroupMemoryMaxMB(defaultMB int) int {
+	if raw := strings.TrimSpace(os.Getenv("AEGIS_VM_MEMORY_MB")); raw != "" {
+		if memoryMB, err := strconv.Atoi(raw); err == nil && memoryMB > 0 {
+			return memoryMB
+		}
+	}
+	return defaultMB
+}
+
 type NetworkConfig struct {
 	TapName      string
 	SubnetCIDR   string
@@ -147,12 +156,17 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *tel
 		return fmt.Errorf("create cgroup dir: %w", err)
 	}
 
+	memoryMaxMB := resolveCgroupMemoryMaxMB(resources.MemoryMaxMB)
+	if memoryMaxMB != resources.MemoryMaxMB {
+		observability.Info("cgroup_memory_override", observability.Fields{"execution_id": uuid, "policy_memory_mb": resources.MemoryMaxMB, "effective_memory_mb": memoryMaxMB})
+	}
+
 	limits := []struct {
 		file  string
 		value string
 	}{
-		{"memory.max", fmt.Sprintf("%dM", resources.MemoryMaxMB)},
-		{"memory.high", fmt.Sprintf("%dM", resources.MemoryMaxMB/2)},
+		{"memory.max", fmt.Sprintf("%dM", memoryMaxMB)},
+		{"memory.high", fmt.Sprintf("%dM", memoryMaxMB/2)},
 		{"pids.max", strconv.Itoa(resources.PidsMax)},
 		{"cpu.max", fmt.Sprintf("%d 100000", resources.CPUPercent*1000)},
 		{"memory.swap.max", "0"},

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +54,8 @@ type ExecuteResponse struct {
 }
 
 const startupSlack = 15 * time.Second
+const serialLogTailBytes = 8192
+const vmmOverheadMB = 50
 
 var (
 	acquireExecutionVMFunc  = acquireExecutionVM
@@ -116,6 +119,77 @@ func warmEligible(req ExecuteRequest, warm *warmpool.Manager, pol *policy.Policy
 		return false
 	}
 	return req.Profile == pol.DefaultProfile
+}
+
+func resolveRequestedProfile(req ExecuteRequest, pol *policy.Policy) string {
+	if strings.TrimSpace(req.Profile) != "" {
+		return req.Profile
+	}
+	if pol == nil {
+		return ""
+	}
+	lang := strings.TrimSpace(req.Lang)
+	switch lang {
+	case "bash":
+		if _, ok := pol.Profiles["nano"]; ok {
+			return "nano"
+		}
+	case "python", "node", "":
+		if _, ok := pol.Profiles["standard"]; ok {
+			return "standard"
+		}
+	default:
+		if _, ok := pol.Profiles["standard"]; ok {
+			return "standard"
+		}
+	}
+	return pol.DefaultProfile
+}
+
+func resourcesForProfile(base policy.ResourcePolicy, profile policy.ComputeProfile) policy.ResourcePolicy {
+	resolved := base
+	if profile.MemoryMB > 0 {
+		resolved.MemoryMaxMB = profile.MemoryMB + vmmOverheadMB
+	}
+	return resolved
+}
+
+func readSerialLogTail(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(raw) > serialLogTailBytes {
+		raw = raw[len(raw)-serialLogTailBytes:]
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return ""
+	}
+	return text
+}
+
+func enrichSandboxFailure(err error, vm *executor.VMInstance) (string, string) {
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+	if vm == nil {
+		return errMsg, ""
+	}
+	serialTail := readSerialLogTail(vm.SerialLogPath)
+	if serialTail == "" {
+		return errMsg, ""
+	}
+	stderrDetail := "firecracker serial tail (" + filepath.Base(vm.SerialLogPath) + "):\n" + serialTail
+	if errMsg == "" {
+		return stderrDetail, stderrDetail
+	}
+	return errMsg + "\n" + stderrDetail, stderrDetail
 }
 
 func acquireExecutionVM(ctx context.Context, warm *warmpool.Manager, execID string, req ExecuteRequest, pol *policy.Policy, computeProfile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*executor.VMInstance, string, error) {
@@ -260,9 +334,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
 		}
-		if req.Profile == "" {
-			req.Profile = pol.DefaultProfile
-		}
+		req.Profile = resolveRequestedProfile(req, pol)
 		computeProfile, ok := pol.Profiles[req.Profile]
 		if !ok {
 			execStatus = "invalid_profile"
@@ -345,13 +417,16 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		}()
 		vm.CgroupID = execID
 
-		if err := setupCgroupFunc(execID, vm.FirecrackerPID, pol.Resources, bus); err != nil {
+		resolvedResources := resourcesForProfile(pol.Resources, computeProfile)
+		if err := setupCgroupFunc(execID, vm.FirecrackerPID, resolvedResources, bus); err != nil {
 			recordBoot()
 			execStatus = "sandbox_error"
 			exitCode = -1
 			exitReason = "sandbox_error"
+			errMsg, stderrDetail := enrichSandboxFailure(err, vm)
+			stderrData = stderrDetail
 			recordStats = true
-			respond(ExecuteResponse{ExecutionID: execID, Error: err.Error()}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: err.Error()})
+			respond(ExecuteResponse{ExecutionID: execID, Error: errMsg, Stderr: stderrDetail}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: "sandbox_error", ErrorMsg: errMsg})
 			return
 		}
 
@@ -379,6 +454,8 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			execStatus = "sandbox_error"
 			exitCode = -1
 			exitReason = "sandbox_error"
+			errMsg, stderrDetail := enrichSandboxFailure(err, vm)
+			stderrData = stderrDetail
 			if ctx.Err() == context.DeadlineExceeded {
 				outcome, status = "timeout", "timed_out"
 				execStatus = "timeout"
@@ -386,7 +463,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			}
 			recordStats = true
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			respond(ExecuteResponse{ExecutionID: execID, Error: outcome}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
+			respond(ExecuteResponse{ExecutionID: execID, Error: outcome, Stderr: stderrDetail}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
 			return
 		}
 		defer conn.Close()
@@ -415,6 +492,8 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			execStatus = "sandbox_error"
 			exitCode = -1
 			exitReason = "sandbox_error"
+			errMsg, stderrDetail := enrichSandboxFailure(err, vm)
+			stderrData = stderrDetail
 			if ctx.Err() == context.DeadlineExceeded {
 				outcome, status = "timeout", "timed_out"
 				execStatus = "timeout"
@@ -422,7 +501,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			}
 			recordStats = true
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			respond(ExecuteResponse{ExecutionID: execID, Error: outcome}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
+			respond(ExecuteResponse{ExecutionID: execID, Error: outcome, Stderr: stderrDetail}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
 			return
 		}
 
@@ -521,9 +600,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
 		}
-		if req.Profile == "" {
-			req.Profile = pol.DefaultProfile
-		}
+		req.Profile = resolveRequestedProfile(req, pol)
 		computeProfile, ok := pol.Profiles[req.Profile]
 		if !ok {
 			execStatus = "invalid_profile"
@@ -615,7 +692,8 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		}()
 		vm.CgroupID = execID
 
-		if err := setupCgroupFunc(execID, vm.FirecrackerPID, pol.Resources, bus); err != nil {
+		resolvedResources := resourcesForProfile(pol.Resources, computeProfile)
+		if err := setupCgroupFunc(execID, vm.FirecrackerPID, resolvedResources, bus); err != nil {
 			recordBoot()
 			execStatus = "sandbox_error"
 			exitCode = -1

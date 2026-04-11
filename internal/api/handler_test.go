@@ -108,6 +108,44 @@ func TestWarmEligibleRequiresDefaultScratchProfile(t *testing.T) {
 	}
 }
 
+func TestResolveRequestedProfile(t *testing.T) {
+	t.Parallel()
+
+	pol := policy.Default()
+
+	if got := resolveRequestedProfile(ExecuteRequest{Profile: "crunch", Lang: "python"}, pol); got != "crunch" {
+		t.Fatalf("explicit profile should win, got %q", got)
+	}
+	if got := resolveRequestedProfile(ExecuteRequest{Lang: "bash"}, pol); got != "nano" {
+		t.Fatalf("bash should prefer nano, got %q", got)
+	}
+	if got := resolveRequestedProfile(ExecuteRequest{Lang: "python"}, pol); got != "standard" {
+		t.Fatalf("python should prefer standard, got %q", got)
+	}
+	if got := resolveRequestedProfile(ExecuteRequest{Lang: "ruby"}, pol); got != "standard" {
+		t.Fatalf("unknown language should prefer standard, got %q", got)
+	}
+	if got := resolveRequestedProfile(ExecuteRequest{}, pol); got != "standard" {
+		t.Fatalf("empty language should prefer standard, got %q", got)
+	}
+}
+
+func TestResourcesForProfileUsesProfileMemoryPlusOverhead(t *testing.T) {
+	t.Parallel()
+
+	base := policy.ResourcePolicy{MemoryMaxMB: 128, CPUPercent: 50, PidsMax: 100, TimeoutMs: 10000}
+	profile := policy.ComputeProfile{VCPUCount: 2, MemoryMB: 512}
+
+	got := resourcesForProfile(base, profile)
+
+	if got.MemoryMaxMB != 562 {
+		t.Fatalf("unexpected memory max: got %d want 562", got.MemoryMaxMB)
+	}
+	if got.CPUPercent != base.CPUPercent || got.PidsMax != base.PidsMax || got.TimeoutMs != base.TimeoutMs {
+		t.Fatalf("non-memory resources changed unexpectedly: %+v", got)
+	}
+}
+
 func TestClassifyExecutionResultSecurityDenied(t *testing.T) {
 	t.Parallel()
 

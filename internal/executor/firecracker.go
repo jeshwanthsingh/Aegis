@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ type VMInstance struct {
 	SocketPath     string
 	VsockPath      string
 	ScratchPath    string
+	SerialLogPath  string
 	GuestCID       uint32
 	IsPersistent   bool
 	Network        *NetworkConfig
@@ -88,6 +90,15 @@ func emitIfBus(bus *telemetry.Bus, kind string, data interface{}) {
 	if bus != nil {
 		bus.Emit(kind, data)
 	}
+}
+
+func resolveMemoryMB(profile policy.ComputeProfile) int {
+	if raw := strings.TrimSpace(os.Getenv("AEGIS_VM_MEMORY_MB")); raw != "" {
+		if memoryMB, err := strconv.Atoi(raw); err == nil && memoryMB > 0 {
+			return memoryMB
+		}
+	}
+	return profile.MemoryMB
 }
 
 func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*VMInstance, error) {
@@ -158,8 +169,14 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 		SocketPath:     socketPath,
 		VsockPath:      vsockPath,
 		ScratchPath:    scratchPath,
+		SerialLogPath:  serialLogPath,
 		IsPersistent:   isPersistent,
 		Network:        networkCfg,
+	}
+
+	memoryMB := resolveMemoryMB(profile)
+	if memoryMB != profile.MemoryMB {
+		observability.Info("vm_memory_override", observability.Fields{"execution_id": uuid, "profile_memory_mb": profile.MemoryMB, "effective_memory_mb": memoryMB})
 	}
 
 	client := unixClient(socketPath)
@@ -175,7 +192,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	if err := fcPUT(client, "http://localhost/machine-config", map[string]any{
 		"vcpu_count":   profile.VCPUCount,
-		"mem_size_mib": profile.MemoryMB,
+		"mem_size_mib": memoryMB,
 	}); err != nil {
 		return nil, fmt.Errorf("machine-config: %w", err)
 	}
