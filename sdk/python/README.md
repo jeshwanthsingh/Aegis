@@ -31,9 +31,23 @@ python examples/run_code.py
 
 ### Installed-package mode
 
-Separate concern.
+Separate concern from the source checkout.
 
-Once the package is built or published for your environment, import `aegis` in your own project and point it at a running `aegis serve` instance. That is not the primary onboarding path for this repo.
+Local installed-package path from this repo:
+
+```bash
+python3 -m venv /tmp/aegis-sdk-venv
+. /tmp/aegis-sdk-venv/bin/activate
+pip install /path/to/Aegis/sdk/python
+python - <<'PY'
+from aegis import AegisClient
+
+client = AegisClient(base_url="http://localhost:8080")
+print(client.health().status)
+PY
+```
+
+That path should not depend on `PYTHONPATH`, editable install, or the repo checkout being your current working directory.
 
 Python requirement:
 
@@ -162,6 +176,8 @@ python3 ../../scripts/run_canonical_demo.py --serve
 ```
 
 That is not the first-run onboarding path.
+
+Installed-package usage is also not the first-run onboarding path. It is the package-consumption path once the runtime is already understood.
 
 ## Error model
 

@@ -9,7 +9,7 @@ Package name:
 
 Runtime target:
 
-- Node.js 20+
+- Node.js 18+
 
 This SDK is the Node-first client for the current `aegis serve` HTTP API.
 
@@ -35,9 +35,25 @@ The package exports from `dist/src/index.js` after build.
 
 ### Installed-package mode
 
-Separate concern.
+Separate concern from the source checkout.
 
-Once the package is built or published for your environment, consume `@aegis/sdk` in your own project and point it at a running `aegis serve` instance. That is not the primary onboarding path for this repo.
+Local installed-package path from this repo:
+
+```bash
+mkdir -p /tmp/aegis-ts-consumer
+cd /tmp/aegis-ts-consumer
+npm init -y
+npm install /path/to/Aegis/sdk/typescript
+node --input-type=module - <<'EOF'
+import { AegisClient } from "@aegis/sdk";
+
+const client = new AegisClient({ baseUrl: "http://localhost:8080" });
+const health = await client.health();
+console.log(health.status);
+EOF
+```
+
+That path should consume the package through its declared entrypoint instead of importing repo source files directly.
 
 ## Client initialization
 
@@ -174,6 +190,8 @@ python3 ../../scripts/run_canonical_demo.py --serve
 ```
 
 That is not the first-run onboarding path.
+
+Installed-package usage is also not the first-run onboarding path. It is the package-consumption path once the runtime is already understood.
 
 ## Error model
 

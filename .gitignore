@@ -26,3 +26,10 @@ CLAUDE.md
 
 # Generated local setup state
 .aegis/
+
+# Python SDK package/build residue
+sdk/python/.coverage
+sdk/python/**/*.egg-info/
+sdk/python/**/*.egg-info/*
+sdk/python/**/__pycache__/
+sdk/python/**/__pycache__/*

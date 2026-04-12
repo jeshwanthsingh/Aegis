@@ -8,9 +8,11 @@ version = "0.1.0"
 description = "Python SDK for the Aegis local secure execution runtime"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 authors = [
   { name = "Aegis" }
 ]
+keywords = ["sandbox", "firecracker", "receipts", "provenance", "aegis"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -18,12 +20,18 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jeshwanthsingh/Aegis"
+Repository = "https://github.com/jeshwanthsingh/Aegis"
+Issues = "https://github.com/jeshwanthsingh/Aegis/issues"
+
 [tool.setuptools]
 package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["aegis*"]
+exclude = ["tests*", "examples*", "*.egg-info*"]
 
 [tool.ruff]
 line-length = 120

@@ -15,12 +15,14 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ./node_modules/typescript/bin/tsc -p tsconfig.json",
     "lint": "eslint . --max-warnings 0",
-    "test": "npm run build && node --test dist/tests/*.test.js"
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
