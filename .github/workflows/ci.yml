@@ -1,4 +1,4 @@
-name: CI
+name: Tier 1 CI
 
 on:
   push:
@@ -10,26 +10,14 @@ defaults:
   run:
     shell: bash
 
-env:
-  DB_URL: postgres://postgres:postgres@localhost/aegis?sslmode=disable
+permissions:
+  contents: read
 
 jobs:
-  build-and-boot:
+  fast-confidence:
+    name: Fast PR Confidence
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: aegis
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,219 +25,22 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: "1.22"
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl jq iptables iproute2 postgresql-client
-          psql "$DB_URL" -f db/schema.sql
-
-      - name: Install Firecracker
-        run: |
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/firecracker -o /tmp/firecracker
-          sudo mv /tmp/firecracker /usr/local/bin/firecracker
-          sudo chmod +x /usr/local/bin/firecracker
-
-      - name: Download assets
-        run: |
-          mkdir -p assets
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4 -o assets/alpine-base.ext4
-
-      - name: Build and bake guest runner
-        run: |
-          go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
-          pushd guest-runner
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -a -o guest-runner .
-          popd
-          sudo mkdir -p /mnt/rootfs
-          sudo mount "$GITHUB_WORKSPACE/assets/alpine-base.ext4" /mnt/rootfs
-          sudo cp "$GITHUB_WORKSPACE/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
-          sudo mkdir -p /mnt/rootfs/workspace
-          sudo umount /mnt/rootfs
-
-      - name: Start Aegis
-        run: |
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
-            --db "$DB_URL" \
-            --policy configs/default-policy.yaml \
-            --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-ci.log 2>&1 &
-          sleep 3
-          cat /tmp/aegis-ci.log || true
-
-      - name: Verify build and boot
-        run: |
-          BASE_URL=http://localhost:8080 ASSETS_DIR="$GITHUB_WORKSPACE/assets" tests/smoke/build_boot.sh
-
-  validation:
-    runs-on: ubuntu-latest
-    needs: build-and-boot
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: aegis
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          go-version: '1.22'
+          python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl jq iptables iproute2 postgresql-client
-          psql "$DB_URL" -f db/schema.sql
+      - name: Main module unit tests
+        run: go test ./cmd/... ./internal/...
 
-      - name: Install Firecracker
-        run: |
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/firecracker -o /tmp/firecracker
-          sudo mv /tmp/firecracker /usr/local/bin/firecracker
-          sudo chmod +x /usr/local/bin/firecracker
+      - name: Guest runner unit tests
+        working-directory: guest-runner
+        run: go test ./...
 
-      - name: Download assets
-        run: |
-          mkdir -p assets
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4 -o assets/alpine-base.ext4
+      - name: Harness syntax checks
+        run: python3 -m py_compile scripts/run_canonical_demo.py scripts/run_red_team_fault_matrix.py
 
-      - name: Build and bake guest runner
-        run: |
-          go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
-          pushd guest-runner
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -a -o guest-runner .
-          popd
-          sudo mkdir -p /mnt/rootfs
-          sudo mount "$GITHUB_WORKSPACE/assets/alpine-base.ext4" /mnt/rootfs
-          sudo cp "$GITHUB_WORKSPACE/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
-          sudo mkdir -p /mnt/rootfs/workspace
-          sudo umount /mnt/rootfs
-
-      - name: Create CI policy
-        run: |
-          cat >/tmp/aegis-ci-policy.yaml <<'EOF'
-          allowed_languages: [python, bash, node]
-          max_code_bytes: 65536
-          max_output_bytes: 65536
-          default_timeout_ms: 25000
-          max_timeout_ms: 25000
-          profiles:
-            nano:
-              vcpu_count: 1
-              memory_mb: 128
-            standard:
-              vcpu_count: 2
-              memory_mb: 512
-            crunch:
-              vcpu_count: 4
-              memory_mb: 2048
-          default_profile: nano
-          network:
-            mode: allowlist
-            presets: [pypi]
-          resources:
-            memory_max_mb: 128
-            cpu_percent: 50
-            pids_max: 100
-            timeout_ms: 25000
-          EOF
-
-      - name: Start Aegis with validation policy
-        run: |
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
-            --db "$DB_URL" \
-            --policy /tmp/aegis-ci-policy.yaml \
-            --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-validation.log 2>&1 &
-          sleep 3
-          cat /tmp/aegis-validation.log || true
-
-      - name: Run smoke validation
-        run: |
-          BASE_URL=http://localhost:8080 tests/integration/smoke.sh
-
-      - name: Run abuse validation
-        run: |
-          BASE_URL=http://localhost:8080 tests/integration/abuse.sh
-
-  isolation-checks:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: aegis
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl jq iptables iproute2 postgresql-client
-          psql "$DB_URL" -f db/schema.sql
-
-      - name: Install Firecracker
-        run: |
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/firecracker -o /tmp/firecracker
-          sudo mv /tmp/firecracker /usr/local/bin/firecracker
-          sudo chmod +x /usr/local/bin/firecracker
-
-      - name: Download assets
-        run: |
-          mkdir -p assets
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/vmlinux -o assets/vmlinux
-          curl -L https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0/alpine-base.ext4 -o assets/alpine-base.ext4
-
-      - name: Build and bake guest runner
-        run: |
-          go build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
-          pushd guest-runner
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -a -o guest-runner .
-          popd
-          sudo mkdir -p /mnt/rootfs
-          sudo mount "$GITHUB_WORKSPACE/assets/alpine-base.ext4" /mnt/rootfs
-          sudo cp "$GITHUB_WORKSPACE/guest-runner/guest-runner" /mnt/rootfs/usr/local/bin/guest-runner
-          sudo mkdir -p /mnt/rootfs/workspace
-          sudo umount /mnt/rootfs
-
-      - name: Start Aegis in isolated mode
-        run: |
-          sed -i 's/mode: none/mode: isolated/' configs/default-policy.yaml || true
-          sudo env "PATH=$PATH:/sbin:/usr/sbin" AEGIS_API_KEY="" /tmp/aegis-bin \
-            --db "$DB_URL" \
-            --policy configs/default-policy.yaml \
-            --assets-dir "$GITHUB_WORKSPACE/assets" >/tmp/aegis-isolated.log 2>&1 &
-          sleep 5
-          cat /tmp/aegis-isolated.log || true
-          BASE_URL=http://localhost:8080 tests/smoke/health.sh
-
-      - name: Verify host firewall rules
-        run: tests/isolation/firewall_rules.sh
+      - name: Shell syntax checks
+        run: bash -n scripts/preflight.sh scripts/run-proof-demo.sh scripts/start-local-orchestrator.sh

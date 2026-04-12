@@ -1,0 +1,64 @@
+# Proof Pipeline v1
+
+Proof is split into two tiers because hosted CI and real KVM containment are not the same thing.
+
+## Tier 1: Fast PR Confidence
+
+Workflow: `.github/workflows/ci.yml`
+
+Runs on generic hosted `ubuntu-latest`.
+
+What it proves:
+
+- main-module Go unit tests still pass
+- `guest-runner` unit tests still pass
+- the canonical demo and red-team harness scripts still parse
+- key shell entrypoints still parse
+
+What it does not prove:
+
+- Firecracker or `/dev/kvm` availability
+- real governed execution
+- warm-path behavior
+- daemon-kill reconciliation
+- live proof bundles from the full runtime
+
+## Tier 2: Self-Hosted Live Proof
+
+Workflow: `.github/workflows/proof.yml`
+
+Runs on a self-hosted runner labeled `self-hosted`, `linux`, `x64`, `aegis-kvm`.
+
+Trigger:
+
+- manual `workflow_dispatch` only for now
+- add automation later only after the self-hosted lane proves stable in real runs
+
+Runner assumptions:
+
+- Ubuntu with working `/dev/kvm`
+- `systemd-run` available for delegated user scope
+- `debugfs` available
+- PostgreSQL 16 binaries at `/usr/lib/postgresql/16/bin`
+- repository checkout has the normal Aegis assets/config layout
+
+What it runs:
+
+- `python3 scripts/run_canonical_demo.py --serve`
+- `python3 scripts/run_red_team_fault_matrix.py`
+
+What it proves:
+
+- canonical product story still works end to end
+- governed allow/deny receipts still verify
+- workspace continuity still works
+- warm path is still live
+- daemon-kill reconciliation still emits honest evidence
+- warm orphan cleanup still happens on restart
+- abnormal receipt verification still fails honestly
+
+What it must not be confused with:
+
+- Tier 1 is fast confidence only
+- Tier 2 is the real proof lane
+- hosted CI is not allowed to claim Tier 2 coverage
