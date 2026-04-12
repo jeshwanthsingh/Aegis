@@ -17,32 +17,43 @@ You need:
 
 Aegis is the system for that shape of problem.
 
-## 30-Second Quickstart
+## Source Checkout Quickstart
 
-Prerequisites: Linux with KVM, Firecracker, PostgreSQL, cgroups v2, and the Aegis repo checkout. `aegis setup` will tell you exactly what is ready and what is missing.
+For a source checkout, the primary onboarding path is:
+
+1. install host prerequisites
+2. `aegis setup`
+3. `aegis doctor`
+4. `aegis serve`
+5. run one SDK example
+6. `aegis receipt verify`
+
+The shortest honest version is:
 
 ```bash
+# optional automation only; not the primary truth surface
 bash scripts/install.sh
+
 aegis setup
+aegis doctor
 aegis serve
 ```
 
-In a second shell:
+In a second shell, source-tree Python mode:
 
 ```bash
 cd sdk/python
+# Debian/Ubuntu: install python3-venv and python3-pip first if needed
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
-python - <<'PY'
-from aegis import AegisClient
+python examples/run_code.py
+```
 
-client = AegisClient()
-result = client.run(language="bash", code="echo hello from aegis")
-print(result.stdout.strip())
-print(result.proof_dir)
-print(client.verify_receipt(proof_dir=result.proof_dir).verified)
-PY
+Then verify the proof bundle printed by the example:
+
+```bash
+aegis receipt verify --proof-dir /path/to/proof-dir
 ```
 
 That path gives you:
@@ -52,7 +63,7 @@ That path gives you:
 - a signed receipt
 - a verification result against the emitted proof
 
-For the operator path and caveats, start with [docs/quickstart.md](docs/quickstart.md).
+For the full source-checkout path, caveats, and TypeScript source-tree mode, start with [docs/quickstart.md](docs/quickstart.md).
 
 ## What Aegis gives you
 
@@ -160,7 +171,7 @@ Not built yet:
 
 ## Documentation index
 
-- [docs/quickstart.md](docs/quickstart.md): operator setup, serve flow, first proof
+- [docs/quickstart.md](docs/quickstart.md): canonical source-checkout onboarding path
 - [docs/architecture.md](docs/architecture.md): component model and trust boundaries
 - [docs/api.md](docs/api.md): HTTP API behavior and examples
 - [docs/openapi.json](docs/openapi.json): OpenAPI description of the current HTTP surface
@@ -184,6 +195,14 @@ print(result.stdout.strip())
 verification = result.verify_receipt()
 print(verification.verified, verification.execution_id)
 ```
+
+For a stronger second-step proof after first success, run:
+
+```bash
+python3 scripts/run_canonical_demo.py --serve
+```
+
+That is the proof harness path, not the first-run onboarding path.
 
 ### MCP: isolated execution tool
 

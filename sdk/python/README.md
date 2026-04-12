@@ -11,14 +11,29 @@ This SDK is for the current self-hosted HTTP API exposed by `aegis serve`.
 
 ## Install
 
-Repo-local editable install:
+### Source checkout mode
+
+This is the primary mode for this repo.
 
 ```bash
 cd sdk/python
+# Debian/Ubuntu: install python3-venv and python3-pip first if needed
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
 ```
+
+Run source-tree examples from the repo checkout:
+
+```bash
+python examples/run_code.py
+```
+
+### Installed-package mode
+
+Separate concern.
+
+Once the package is built or published for your environment, import `aegis` in your own project and point it at a running `aegis serve` instance. That is not the primary onboarding path for this repo.
 
 Python requirement:
 
@@ -64,6 +79,12 @@ result = client.run(language="bash", code="echo hello from python sdk", timeout_
 
 print(result.stdout.strip())
 print(result.ok, result.exit_code, result.execution_id)
+```
+
+For the canonical source-checkout onboarding path, prefer:
+
+```bash
+python examples/run_code.py
 ```
 
 ### Reusable request object
@@ -133,6 +154,14 @@ Reference examples:
 - `examples/broker_denied.py`
 
 These are local examples against a running orchestrator. They require the host broker credential environment to be present when `aegis serve` starts.
+
+The stronger product proof path after first success is:
+
+```bash
+python3 ../../scripts/run_canonical_demo.py --serve
+```
+
+That is not the first-run onboarding path.
 
 ## Error model
 

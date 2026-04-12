@@ -5,3 +5,4 @@ process.stdout.write(result.stdout);
 console.log(`ok=${String(result.ok)}`);
 console.log(`exitCode=${result.exitCode}`);
 console.log(`executionId=${result.executionId}`);
+console.log(`proofDir=${result.proofDir ?? ""}`);

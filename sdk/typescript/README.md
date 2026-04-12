@@ -15,7 +15,9 @@ This SDK is the Node-first client for the current `aegis serve` HTTP API.
 
 ## Install
 
-Repo-local package workflow:
+### Source checkout mode
+
+This is the primary mode for this repo.
 
 ```bash
 cd sdk/typescript
@@ -23,7 +25,19 @@ npm install
 npm run build
 ```
 
+The repo-local examples run from built output:
+
+```bash
+node dist/examples/run_code.js
+```
+
 The package exports from `dist/src/index.js` after build.
+
+### Installed-package mode
+
+Separate concern.
+
+Once the package is built or published for your environment, consume `@aegis/sdk` in your own project and point it at a running `aegis serve` instance. That is not the primary onboarding path for this repo.
 
 ## Client initialization
 
@@ -69,6 +83,12 @@ const result = await client.run({
 
 console.log(result.stdout.trim());
 console.log(result.ok, result.exitCode, result.executionId);
+```
+
+For the canonical source-checkout onboarding path, prefer:
+
+```bash
+node dist/examples/run_code.js
 ```
 
 ### Reusable request object
@@ -146,6 +166,14 @@ Reference examples:
 - `examples/broker_denied.ts`
 
 These are local examples against a running orchestrator. They require the host broker credential environment to be present when `aegis serve` starts.
+
+The stronger product proof path after first success is:
+
+```bash
+python3 ../../scripts/run_canonical_demo.py --serve
+```
+
+That is not the first-run onboarding path.
 
 ## Error model
 

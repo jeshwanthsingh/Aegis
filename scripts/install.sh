@@ -66,6 +66,8 @@ safe_umount_rootfs() {
 trap safe_umount_rootfs EXIT
 
 echo "=== Aegis Installer ==="
+echo "This script is optional source-checkout automation."
+echo "Primary onboarding truth surfaces remain: aegis setup, aegis doctor, aegis serve."
 
 [ "$(uname -s)" = "Linux" ] || { echo "Aegis install requires Linux" >&2; exit 1; }
 [ -e /dev/kvm ] || { echo "Missing prerequisite: /dev/kvm" >&2; exit 1; }
@@ -179,6 +181,12 @@ echo "Schema applied."
 
 echo ""
 echo "=== Aegis installed successfully ==="
+echo ""
+echo "This installer is optional automation, not the primary readiness gate."
+echo "Use these next:"
+echo "  aegis setup"
+echo "  aegis doctor"
+echo "  aegis serve"
 echo ""
 echo "Run preflight with:"
 echo "  ./scripts/preflight.sh"
