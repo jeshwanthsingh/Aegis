@@ -40,7 +40,8 @@ Runner assumptions:
 - `systemd-run` available for delegated user scope
 - `debugfs` available
 - PostgreSQL 16 binaries at `/usr/lib/postgresql/16/bin`
-- repository checkout has the normal Aegis assets/config layout
+- host asset cache present at `$HOME/aegis/assets` with `vmlinux` and `alpine-base.ext4`
+- workflow materializes those cached assets into the checked-out proof workspace before the live harness runs
 
 What it runs:
 
