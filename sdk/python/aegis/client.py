@@ -5,6 +5,7 @@ from collections.abc import Iterator, Mapping
 from typing import Any
 
 from ._http import HTTPTransport
+from .capabilities import CapabilitiesRequest
 from .errors import AegisConfigurationError
 from .events import StreamEvent, parse_stream_event
 from .intent import IntentContract
@@ -59,6 +60,7 @@ class AegisClient:
         code: str | None = None,
         timeout_ms: int | None = None,
         intent: IntentContract | Mapping[str, Any] | None = None,
+        capabilities: CapabilitiesRequest | Mapping[str, Any] | None = None,
         profile: str | None = None,
         workspace_id: str | None = None,
         execution_id: str | None = None,
@@ -69,6 +71,7 @@ class AegisClient:
             code=code,
             timeout_ms=timeout_ms,
             intent=intent,
+            capabilities=capabilities,
             profile=profile,
             workspace_id=workspace_id,
             execution_id=execution_id,
@@ -83,6 +86,7 @@ class AegisClient:
         code: str,
         timeout_ms: int | None = None,
         intent: IntentContract | Mapping[str, Any] | None = None,
+        capabilities: CapabilitiesRequest | Mapping[str, Any] | None = None,
         profile: str | None = None,
         workspace_id: str | None = None,
         execution_id: str | None = None,
@@ -92,6 +96,7 @@ class AegisClient:
             code=code,
             timeout_ms=timeout_ms,
             intent=intent,
+            capabilities=capabilities,
             profile=profile,
             workspace_id=workspace_id,
             execution_id=execution_id,
@@ -105,6 +110,7 @@ class AegisClient:
         code: str | None = None,
         timeout_ms: int | None = None,
         intent: IntentContract | Mapping[str, Any] | None = None,
+        capabilities: CapabilitiesRequest | Mapping[str, Any] | None = None,
         profile: str | None = None,
         workspace_id: str | None = None,
         execution_id: str | None = None,
@@ -115,6 +121,7 @@ class AegisClient:
             code=code,
             timeout_ms=timeout_ms,
             intent=intent,
+            capabilities=capabilities,
             profile=profile,
             workspace_id=workspace_id,
             execution_id=execution_id,
@@ -129,6 +136,7 @@ class AegisClient:
         code: str,
         timeout_ms: int | None = None,
         intent: IntentContract | Mapping[str, Any] | None = None,
+        capabilities: CapabilitiesRequest | Mapping[str, Any] | None = None,
         profile: str | None = None,
         workspace_id: str | None = None,
         execution_id: str | None = None,
@@ -138,6 +146,7 @@ class AegisClient:
             code=code,
             timeout_ms=timeout_ms,
             intent=intent,
+            capabilities=capabilities,
             profile=profile,
             workspace_id=workspace_id,
             execution_id=execution_id,
@@ -166,6 +175,7 @@ def _coerce_execution_request(
     code: str | None,
     timeout_ms: int | None,
     intent: IntentContract | Mapping[str, Any] | None,
+    capabilities: CapabilitiesRequest | Mapping[str, Any] | None,
     profile: str | None,
     workspace_id: str | None,
     execution_id: str | None,
@@ -176,6 +186,7 @@ def _coerce_execution_request(
             code,
             timeout_ms,
             intent,
+            capabilities,
             profile,
             workspace_id,
             execution_id,
@@ -194,6 +205,7 @@ def _coerce_execution_request(
         code=code,
         timeout_ms=timeout_ms,
         intent=intent,
+        capabilities=capabilities,
         profile=profile,
         workspace_id=workspace_id,
         execution_id=execution_id,

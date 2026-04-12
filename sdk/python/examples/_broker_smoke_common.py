@@ -9,12 +9,9 @@ from pathlib import Path
 
 from aegis import (
     AegisClient,
-    BrokerScope,
-    Budgets,
-    IntentContract,
-    NetworkScope,
-    ProcessScope,
-    ResourceScope,
+    BrokerCapabilities,
+    BrokerDelegation,
+    CapabilitiesRequest,
 )
 
 DEFAULT_LOG_PATH = "/tmp/aegis-local-orchestrator.log"
@@ -87,18 +84,15 @@ def run_allowed_case() -> None:
     _assert_health(client)
     with ProbeContext() as probe:
         execution_id = str(uuid.uuid4())
-        intent = _broker_intent(
-            execution_id=execution_id,
-            allowed_domains=["127.0.0.1"],
-            allowed_delegations=["github"],
-            task_class="sdk_broker_allowed",
-            declared_purpose="Validate brokered allowed path through the Python SDK",
+        capabilities = _broker_capabilities(
+            resource=f"http://127.0.0.1:{probe.port}/probe",
+            allow_http_requests=True,
         )
         result = client.run(
             language="bash",
             code=_allowed_guest_code(probe.port),
             timeout_ms=10000,
-            intent=intent,
+            capabilities=capabilities,
         )
         _assert_stdout_marker(result.stdout, ALLOWED_MARKER)
         _assert_result_artifacts(result)
@@ -124,18 +118,15 @@ def run_denied_case() -> None:
     _assert_health(client)
     with ProbeContext() as probe:
         execution_id = str(uuid.uuid4())
-        intent = _broker_intent(
-            execution_id=execution_id,
-            allowed_domains=["example.invalid"],
-            allowed_delegations=["github"],
-            task_class="sdk_broker_denied",
-            declared_purpose="Validate brokered denied path through the Python SDK",
+        capabilities = _broker_capabilities(
+            resource="https://example.invalid/probe",
+            allow_http_requests=True,
         )
         result = client.run(
             language="bash",
             code=_denied_guest_code(probe.port),
             timeout_ms=10000,
-            intent=intent,
+            capabilities=capabilities,
         )
         _assert_stdout_marker(result.stdout, DENIED_MARKER)
         _assert_result_artifacts(result)
@@ -281,48 +272,12 @@ def _scan_directory_for_secret(root: Path, secret: str) -> list[str]:
     return findings
 
 
-def _broker_intent(
-    *,
-    execution_id: str,
-    allowed_domains: list[str],
-    allowed_delegations: list[str],
-    task_class: str,
-    declared_purpose: str,
-) -> IntentContract:
-    return IntentContract(
-        version="v1",
-        execution_id=execution_id,
-        workflow_id="wf_python_sdk_broker_smoke",
-        task_class=task_class,
-        declared_purpose=declared_purpose,
-        language="bash",
-        resource_scope=ResourceScope(
-            workspace_root="/workspace",
-            read_paths=["/workspace", "/etc", "/usr/share/locale", "/dev"],
-            write_paths=["/workspace", "/dev/tty"],
-            deny_paths=[],
-            max_distinct_files=64,
-        ),
-        network_scope=NetworkScope(
-            allow_network=True,
-            allowed_domains=[],
-            allowed_ips=["127.0.0.1"],
-            max_dns_queries=0,
-            max_outbound_conns=1,
-        ),
-        process_scope=ProcessScope(
-            allowed_binaries=["bash"],
-            allow_shell=True,
-            allow_package_install=False,
-            max_child_processes=6,
-        ),
-        broker_scope=BrokerScope(
-            allowed_delegations=allowed_delegations,
-            allowed_domains=allowed_domains,
-            allowed_action_types=[],
-            require_host_consent=False,
-        ),
-        budgets=Budgets(timeout_sec=10, memory_mb=128, cpu_quota=100, stdout_bytes=4096),
+def _broker_capabilities(*, resource: str, allow_http_requests: bool) -> CapabilitiesRequest:
+    return CapabilitiesRequest(
+        broker=BrokerCapabilities(
+            delegations=[BrokerDelegation(name="github", resource=resource)],
+            http_requests=allow_http_requests,
+        )
     )
 
 

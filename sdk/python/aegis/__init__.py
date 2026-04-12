@@ -1,4 +1,5 @@
 from .client import AegisClient
+from .capabilities import BrokerCapabilities, BrokerDelegation, CapabilitiesRequest
 from .errors import (
     AegisAPIError,
     AegisAuthError,
@@ -36,8 +37,11 @@ __all__ = [
     "AegisStreamError",
     "AegisValidationError",
     "AegisVerificationError",
+    "BrokerCapabilities",
+    "BrokerDelegation",
     "BrokerScope",
     "Budgets",
+    "CapabilitiesRequest",
     "ConnectionPosture",
     "DoneEvent",
     "ErrorEvent",

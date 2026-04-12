@@ -1,4 +1,12 @@
 export { AegisClient, type AegisClientOptions } from "./client.js";
+export {
+  BrokerCapabilities,
+  BrokerDelegation,
+  CapabilitiesRequest,
+  type BrokerCapabilitiesInit,
+  type BrokerDelegationInit,
+  type CapabilitiesRequestInit,
+} from "./capabilities.js";
 export { ExecutionRequest, type ExecutionRequestInit } from "./request.js";
 export { ExecutionResult, type ExecutionResponse } from "./result.js";
 export { Receipt } from "./receipt.js";

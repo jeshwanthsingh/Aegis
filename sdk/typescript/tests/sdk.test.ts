@@ -11,8 +11,11 @@ import {
   AegisConfigurationError,
   AegisExecutionError,
   AegisValidationError,
+  BrokerCapabilities,
+  BrokerDelegation,
   BrokerScope,
   Budgets,
+  CapabilitiesRequest,
   DoneEvent,
   ExecutionRequest,
   IntentContract,
@@ -136,6 +139,72 @@ test("run serializes request and auth", async () => {
   } finally {
     await server.stop();
   }
+});
+
+test("run serializes capabilities request", async () => {
+  const server = new TestServer(new Map([
+    ["POST /v1/execute", { status: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      stdout: "ok\n", stderr: "", exit_code: 0, exit_reason: "completed", duration_ms: 12, execution_id: "exec-cap-1",
+    }) }],
+  ]));
+  const baseUrl = await server.start();
+  try {
+    const client = new AegisClient({ baseUrl, apiKey: "token" });
+    const request = new ExecutionRequest({
+      language: "bash",
+      code: "echo hi",
+      capabilities: new CapabilitiesRequest({
+        networkDomains: ["api.github.com"],
+        writePaths: ["/workspace/out.txt"],
+        broker: new BrokerCapabilities({
+          delegations: [new BrokerDelegation({ name: "github", resource: "https://api.github.com/repos/openai/openai-node" })],
+          httpRequests: true,
+        }),
+      }),
+    });
+    const result = await client.run(request);
+    assert.equal(result.ok, true);
+    const payload = JSON.parse(server.requests[0]?.body ?? "{}");
+    assert.equal(payload.intent, undefined);
+    assert.deepEqual(payload.capabilities.network_domains, ["api.github.com"]);
+    assert.deepEqual(payload.capabilities.write_paths, ["/workspace/out.txt"]);
+    assert.equal(payload.capabilities.broker.http_requests, true);
+    assert.equal(payload.capabilities.broker.delegations[0].name, "github");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("run rejects mixed intent and capabilities locally", async () => {
+  const intent = new IntentContract({
+    version: "v1",
+    executionId: "11111111-1111-4111-8111-111111111111",
+    workflowId: "wf_1",
+    taskClass: "demo",
+    declaredPurpose: "test",
+    language: "bash",
+    resourceScope: new ResourceScope("/workspace", ["/workspace"], ["/workspace/out"], [], 3),
+    networkScope: new NetworkScope(false, [], [], 0, 0),
+    processScope: new ProcessScope(["bash"], true, false, 1),
+    brokerScope: new BrokerScope([], [], [], false),
+    budgets: new Budgets(10, 128, 100, 4096),
+  });
+  const client = new AegisClient({ baseUrl: "http://127.0.0.1:1" });
+  await assert.rejects(
+    () =>
+      client.run({
+        language: "bash",
+        code: "echo hi",
+        intent,
+        capabilities: new CapabilitiesRequest({
+          broker: new BrokerCapabilities({
+            delegations: [new BrokerDelegation({ name: "github", resource: "https://api.github.com/repos/openai/openai-node" })],
+            httpRequests: true,
+          }),
+        }),
+      }),
+    AegisConfigurationError,
+  );
 });
 
 test("validation and auth errors map cleanly", async () => {

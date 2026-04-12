@@ -1,4 +1,5 @@
 export { AegisClient } from "./client.js";
+export { BrokerCapabilities, BrokerDelegation, CapabilitiesRequest, } from "./capabilities.js";
 export { ExecutionRequest } from "./request.js";
 export { ExecutionResult } from "./result.js";
 export { Receipt } from "./receipt.js";

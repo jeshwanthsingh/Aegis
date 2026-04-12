@@ -16,8 +16,11 @@ from aegis import (
     AegisConfigurationError,
     AegisExecutionError,
     AegisValidationError,
+    BrokerCapabilities,
+    BrokerDelegation,
     BrokerScope,
     Budgets,
+    CapabilitiesRequest,
     DoneEvent,
     ExecutionRequest,
     IntentContract,
@@ -180,6 +183,69 @@ class AegisSDKTests(unittest.TestCase):
         client = AegisClient(base_url="http://localhost:8080")
         with self.assertRaises(AegisConfigurationError):
             client.run(ExecutionRequest(language="bash", code="echo hi"), language="bash")
+
+    def test_run_serializes_capabilities_request(self):
+        response_body = json.dumps(
+            {
+                "stdout": "ok\n",
+                "stderr": "",
+                "exit_code": 0,
+                "exit_reason": "completed",
+                "duration_ms": 12,
+                "execution_id": "exec-cap-1",
+            }
+        ).encode("utf-8")
+        server = run_server({
+            ("POST", "/v1/execute"): (200, {"Content-Type": "application/json"}, response_body),
+        })
+        try:
+            client = AegisClient(base_url=server_url(server), api_key="token")
+            request = ExecutionRequest(
+                language="bash",
+                code="echo hi",
+                capabilities=CapabilitiesRequest(
+                    network_domains=["api.github.com"],
+                    write_paths=["/workspace/out.txt"],
+                    broker=BrokerCapabilities(
+                        delegations=[BrokerDelegation(name="github", resource="https://api.github.com/repos/openai/openai-python")],
+                        http_requests=True,
+                    ),
+                ),
+            )
+            result = client.run(request)
+            self.assertTrue(result.ok)
+            payload = json.loads(server.requests[0][3])
+            self.assertNotIn("intent", payload)
+            self.assertEqual(payload["capabilities"]["network_domains"], ["api.github.com"])
+            self.assertEqual(payload["capabilities"]["write_paths"], ["/workspace/out.txt"])
+            self.assertTrue(payload["capabilities"]["broker"]["http_requests"])
+            self.assertEqual(payload["capabilities"]["broker"]["delegations"][0]["name"], "github")
+        finally:
+            stop_server(server)
+
+    def test_run_rejects_mixed_intent_and_capabilities_locally(self):
+        client = AegisClient(base_url="http://127.0.0.1:1")
+        intent = IntentContract(
+            version="v1",
+            execution_id="11111111-1111-4111-8111-111111111111",
+            workflow_id="wf_1",
+            task_class="demo",
+            declared_purpose="test",
+            language="bash",
+            resource_scope=ResourceScope("/workspace", ["/workspace"], ["/workspace/out"], [], 3),
+            network_scope=NetworkScope(False, [], [], 0, 0),
+            process_scope=ProcessScope(["bash"], True, False, 1),
+            broker_scope=BrokerScope([], [], [], False),
+            budgets=Budgets(10, 128, 100, 4096),
+        )
+        capabilities = CapabilitiesRequest(
+            broker=BrokerCapabilities(
+                delegations=[BrokerDelegation(name="github", resource="https://api.github.com/repos/openai/openai-python")],
+                http_requests=True,
+            )
+        )
+        with self.assertRaises(AegisConfigurationError):
+            client.run(language="bash", code="echo hi", intent=intent, capabilities=capabilities)
 
     def test_non_2xx_maps_to_sdk_error(self):
         server = run_server({

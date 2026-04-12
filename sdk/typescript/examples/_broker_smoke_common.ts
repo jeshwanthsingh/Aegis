@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { AegisClient, BrokerScope, Budgets, IntentContract, NetworkScope, ProcessScope, ResourceScope } from "@aegis/sdk";
+import { AegisClient, BrokerCapabilities, BrokerDelegation, CapabilitiesRequest } from "@aegis/sdk";
 
 const DEFAULT_LOG_PATH = "/tmp/aegis-local-orchestrator.log";
 const ALLOWED_MARKER = "PASS_auth_present_true_no_raw_token";
@@ -99,18 +99,11 @@ export async function runAllowedCase(): Promise<void> {
   const port = await probe.start();
   try {
     const executionId = randomUUID();
-    const intent = brokerIntent({
-      executionId,
-      allowedDomains: ["127.0.0.1"],
-      allowedDelegations: ["github"],
-      taskClass: "ts_sdk_broker_allowed",
-      declaredPurpose: "Validate brokered allowed path through the TypeScript SDK",
-    });
     const result = await client.run({
       language: "bash",
       code: allowedGuestCode(port),
       timeoutMs: 10_000,
-      intent,
+      capabilities: brokerCapabilities({ resource: `http://127.0.0.1:${port}/probe`, allowHttpRequests: true }),
     });
     assertStdoutMarker(result.stdout, ALLOWED_MARKER);
     await assertResultArtifacts(result);
@@ -141,18 +134,11 @@ export async function runDeniedCase(): Promise<void> {
   const port = await probe.start();
   try {
     const executionId = randomUUID();
-    const intent = brokerIntent({
-      executionId,
-      allowedDomains: ["example.invalid"],
-      allowedDelegations: ["github"],
-      taskClass: "ts_sdk_broker_denied",
-      declaredPurpose: "Validate brokered denied path through the TypeScript SDK",
-    });
     const result = await client.run({
       language: "bash",
       code: deniedGuestCode(port),
       timeoutMs: 10_000,
-      intent,
+      capabilities: brokerCapabilities({ resource: "https://example.invalid/probe", allowHttpRequests: true }),
     });
     assertStdoutMarker(result.stdout, DENIED_MARKER);
     await assertResultArtifacts(result);
@@ -274,19 +260,12 @@ function telemetryEventsPresent(executionId: string, expectedKinds: string[]): b
   return expectedKinds.every((kind) => lines.some((line) => line.includes(executionId) && line.includes(kind)));
 }
 
-function brokerIntent(input: { executionId: string; allowedDomains: string[]; allowedDelegations: string[]; taskClass: string; declaredPurpose: string }): IntentContract {
-  return new IntentContract({
-    version: "v1",
-    executionId: input.executionId,
-    workflowId: "wf_typescript_sdk_broker_smoke",
-    taskClass: input.taskClass,
-    declaredPurpose: input.declaredPurpose,
-    language: "bash",
-    resourceScope: new ResourceScope("/workspace", ["/workspace", "/etc", "/usr/share/locale", "/dev"], ["/workspace", "/dev/tty"], [], 64),
-    networkScope: new NetworkScope(true, [], ["127.0.0.1"], 0, 1),
-    processScope: new ProcessScope(["bash"], true, false, 6),
-    brokerScope: new BrokerScope(input.allowedDelegations, input.allowedDomains, [], false),
-    budgets: new Budgets(10, 128, 100, 4096),
+function brokerCapabilities(input: { resource: string; allowHttpRequests: boolean }): CapabilitiesRequest {
+  return new CapabilitiesRequest({
+    broker: new BrokerCapabilities({
+      delegations: [new BrokerDelegation({ name: "github", resource: input.resource })],
+      httpRequests: input.allowHttpRequests,
+    }),
   });
 }
 
