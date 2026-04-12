@@ -93,6 +93,7 @@ func main() {
 	mux.HandleFunc("GET /metrics", observability.HandleMetrics())
 	mux.HandleFunc("GET /v1/stats", api.NewStatsHandler(stats))
 	mux.HandleFunc("GET /v1/events/{exec_id}", api.NewTelemetryHandler(registry))
+	mux.HandleFunc("POST /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleCreateWorkspace()))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
 	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
 	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))

@@ -116,7 +116,7 @@ func TestReceiptAndExecutionHelpers(t *testing.T) {
 	if workflowID(nil) != "" || taskClass(nil) != "" || declaredPurpose(nil) != "" {
 		t.Fatal("expected nil intent helpers to return empty strings")
 	}
-	attrs := receiptAttributes(intent)
+	attrs := receiptAttributes(ExecuteRequest{}, intent)
 	attrs["mode"] = "changed"
 	if intent.Attributes["mode"] != "strict" {
 		t.Fatalf("receiptAttributes should copy input map: %+v", intent.Attributes)

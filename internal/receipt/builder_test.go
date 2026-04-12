@@ -260,6 +260,20 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 	}
 }
 
+func TestFormatSummaryIncludesWorkspaceID(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.WorkspaceID = "ws-demo"
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := FormatSummary(receipt.Statement, true)
+	if !strings.Contains(summary, "workspace_id=ws-demo") {
+		t.Fatalf("summary missing workspace_id: %s", summary)
+	}
+}
+
 func TestFormatSummaryIncludesGovernedActionEvidence(t *testing.T) {
 	signer := mustDevSigner(t)
 	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)

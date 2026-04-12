@@ -21,6 +21,7 @@ type Input struct {
 	Backend         models.RuntimeBackend
 	TaskClass       string
 	DeclaredPurpose string
+	WorkspaceID     string
 	StartedAt       time.Time
 	FinishedAt      time.Time
 	IntentRaw       []byte
@@ -72,6 +73,7 @@ type ExecutionReceiptPredicate struct {
 	Backend            models.RuntimeBackend  `json:"backend"`
 	TaskClass          string                 `json:"task_class,omitempty"`
 	DeclaredPurpose    string                 `json:"declared_purpose,omitempty"`
+	WorkspaceID        string                 `json:"workspace_id,omitempty"`
 	IntentDigest       string                 `json:"intent_digest,omitempty"`
 	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
 	EvidenceDigest     string                 `json:"evidence_digest"`

@@ -318,6 +318,28 @@ func HandleDeleteWorkspace() http.HandlerFunc {
 	}
 }
 
+func HandleCreateWorkspace() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "workspace ID is required", errorDetails("path_param", "id"))
+			return
+		}
+		if _, err := executor.CreateWorkspace(id, executor.DefaultWorkspaceSizeMB); err != nil {
+			switch {
+			case errors.Is(err, executor.ErrInvalidWorkspaceID):
+				writeAPIError(w, http.StatusBadRequest, "invalid_workspace_id", err.Error(), errorDetails("workspace_id", id))
+			case errors.Is(err, executor.ErrWorkspaceExists):
+				writeAPIError(w, http.StatusConflict, "workspace_exists", err.Error(), errorDetails("workspace_id", id))
+			default:
+				writeAPIError(w, http.StatusInternalServerError, "workspace_create_failed", err.Error(), errorDetails("workspace_id", id))
+			}
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"status": "created", "workspace_id": id})
+	}
+}
+
 func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol *policy.Policy, assetsDir string, rootfsPath string, registry *BusRegistry, stats *StatsCounter, policyVersion string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -453,6 +475,12 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			if errors.Is(err, executor.ErrInvalidWorkspaceID) {
 				execStatus = "validation_error"
 				msg := err.Error()
+				respond(ExecuteResponse{ExecutionID: execID, Error: msg}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg})
+				return
+			}
+			if req.WorkspaceID != "" && errors.Is(err, os.ErrNotExist) {
+				execStatus = "validation_error"
+				msg := "workspace_not_found: " + req.WorkspaceID
 				respond(ExecuteResponse{ExecutionID: execID, Error: msg}, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", ErrorMsg: msg})
 				return
 			}
@@ -731,6 +759,11 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 				return
 			}
+			if req.WorkspaceID != "" && errors.Is(err, os.ErrNotExist) {
+				execStatus = "validation_error"
+				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "workspace_not_found: " + req.WorkspaceID})
+				return
+			}
 			execStatus = "sandbox_error"
 			exitCode = -1
 			exitReason = "sandbox_error"
@@ -937,6 +970,7 @@ func emitSignedReceipt(execID string, startedAt time.Time, finishedAt time.Time,
 		Backend:         models.BackendFirecracker,
 		TaskClass:       taskClass(intent),
 		DeclaredPurpose: declaredPurpose(intent),
+		WorkspaceID:     req.WorkspaceID,
 		StartedAt:       startedAt,
 		FinishedAt:      finishedAt,
 		IntentRaw:       cloneRawJSON(req.Intent),
@@ -948,7 +982,7 @@ func emitSignedReceipt(execID string, startedAt time.Time, finishedAt time.Time,
 		},
 		TelemetryEvents: events,
 		OutputArtifacts: artifacts,
-		Attributes:      receiptAttributes(intent),
+		Attributes:      receiptAttributes(req, intent),
 	}, signer)
 	if buildErr != nil {
 		observability.Error("receipt_build_failed", observability.Fields{"execution_id": execID, "error": buildErr.Error()})
@@ -987,13 +1021,25 @@ func declaredPurpose(intent *policycontract.IntentContract) string {
 	return intent.DeclaredPurpose
 }
 
-func receiptAttributes(intent *policycontract.IntentContract) map[string]string {
-	if intent == nil || len(intent.Attributes) == 0 {
+func receiptAttributes(req ExecuteRequest, intent *policycontract.IntentContract) map[string]string {
+	size := 0
+	if intent != nil {
+		size = len(intent.Attributes)
+	}
+	if req.WorkspaceID != "" {
+		size++
+	}
+	if size == 0 {
 		return map[string]string{}
 	}
-	attrs := make(map[string]string, len(intent.Attributes))
-	for key, value := range intent.Attributes {
-		attrs[key] = value
+	attrs := make(map[string]string, size)
+	if intent != nil {
+		for key, value := range intent.Attributes {
+			attrs[key] = value
+		}
+	}
+	if req.WorkspaceID != "" {
+		attrs["workspace_id"] = req.WorkspaceID
 	}
 	return attrs
 }

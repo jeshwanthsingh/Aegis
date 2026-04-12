@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -138,8 +139,9 @@ func TestResourcesForProfileUsesProfileMemoryPlusOverhead(t *testing.T) {
 
 	got := resourcesForProfile(base, profile)
 
-	if got.MemoryMaxMB != 562 {
-		t.Fatalf("unexpected memory max: got %d want 562", got.MemoryMaxMB)
+	want := profile.MemoryMB + vmmOverheadMB
+	if got.MemoryMaxMB != want {
+		t.Fatalf("unexpected memory max: got %d want %d", got.MemoryMaxMB, want)
 	}
 	if got.CPUPercent != base.CPUPercent || got.PidsMax != base.PidsMax || got.TimeoutMs != base.TimeoutMs {
 		t.Fatalf("non-memory resources changed unexpectedly: %+v", got)
@@ -217,6 +219,23 @@ func TestDeleteWorkspaceRejectsInvalidWorkspaceID(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	HandleDeleteWorkspace().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rr.Body.String(), executor.ErrInvalidWorkspaceID.Error()) {
+		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestCreateWorkspaceRejectsInvalidWorkspaceID(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/../escape", nil)
+	req.SetPathValue("id", "../escape")
+	rr := httptest.NewRecorder()
+
+	HandleCreateWorkspace().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusBadRequest)
@@ -777,6 +796,23 @@ func TestExecuteHandlerWorkspaceValidationError(t *testing.T) {
 	}
 }
 
+func TestExecuteHandlerWorkspaceNotFound(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
+		return nil, "", os.ErrNotExist
+	}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"workspace_id":"ws-demo"}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `workspace_not_found: ws-demo`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestExecuteHandlerAcquireSandboxFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
 	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
@@ -1013,6 +1049,22 @@ func TestStreamHandlerWorkspaceValidationError(t *testing.T) {
 	}
 }
 
+func TestStreamHandlerWorkspaceNotFound(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
+		return nil, "", os.ErrNotExist
+	}
+
+	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute/stream", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"workspace_id":"ws-demo"}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `workspace_not_found: ws-demo`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
 func TestStreamHandlerAcquireSandboxFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
 	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {

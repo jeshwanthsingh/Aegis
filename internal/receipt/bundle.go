@@ -272,6 +272,9 @@ func FormatSummary(statement Statement, verified bool) string {
 		fmt.Sprintf("artifact_count=%d", len(statement.Subject)),
 		"artifacts=" + strings.Join(subjects, "; "),
 	}
+	if statement.Predicate.WorkspaceID != "" {
+		lines = append(lines, "workspace_id="+statement.Predicate.WorkspaceID)
+	}
 	if statement.Predicate.BrokerSummary != nil {
 		brokerEvents := []string{"credential.request"}
 		if statement.Predicate.BrokerSummary.AllowedCount > 0 {

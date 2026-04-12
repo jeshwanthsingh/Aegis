@@ -122,7 +122,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	isPersistent := false
 	var scratchPath string
 	if workspaceID != "" {
-		scratchPath, err = GetOrCreateWorkspace(workspaceID, 256)
+		scratchPath, err = GetWorkspace(workspaceID)
 		if err != nil {
 			return nil, fmt.Errorf("get workspace disk: %w", err)
 		}

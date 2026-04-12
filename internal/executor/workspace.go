@@ -10,9 +10,11 @@ import (
 )
 
 const WorkspacesDir = "/tmp/aegis/workspaces"
+const DefaultWorkspaceSizeMB = 256
 
 var (
 	ErrInvalidWorkspaceID = errors.New("invalid workspace ID")
+	ErrWorkspaceExists    = errors.New("workspace already exists")
 	workspaceDir          = WorkspacesDir
 	workspaceIDPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	runMkfsExt4Cmd        = func(path string) ([]byte, error) {
@@ -56,6 +58,37 @@ func GetOrCreateWorkspace(workspaceID string, sizeMB int) (string, error) {
 			return "", fmt.Errorf("stat workspace disk after create: %w", raceErr)
 		}
 		return "", err
+	}
+	return path, nil
+}
+
+func CreateWorkspace(workspaceID string, sizeMB int) (string, error) {
+	path, err := workspaceDiskPath(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return "", fmt.Errorf("%w: %s", ErrWorkspaceExists, workspaceID)
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat workspace disk: %w", err)
+	}
+	if err := createExt4Disk(path, sizeMB); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func GetWorkspace(workspaceID string) (string, error) {
+	path, err := workspaceDiskPath(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("workspace disk is not a regular file")
 	}
 	return path, nil
 }

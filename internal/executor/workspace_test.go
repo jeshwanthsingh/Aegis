@@ -48,6 +48,57 @@ func TestGetOrCreateWorkspaceCreatesRegularDisk(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceThenGetWorkspace(t *testing.T) {
+	origDir := workspaceDir
+	origMkfs := runMkfsExt4Cmd
+	workspaceDir = t.TempDir()
+	runMkfsExt4Cmd = func(path string) ([]byte, error) { return nil, nil }
+	t.Cleanup(func() {
+		workspaceDir = origDir
+		runMkfsExt4Cmd = origMkfs
+	})
+
+	created, err := CreateWorkspace("demo-workspace", 1)
+	if err != nil {
+		t.Fatalf("CreateWorkspace returned error: %v", err)
+	}
+	got, err := GetWorkspace("demo-workspace")
+	if err != nil {
+		t.Fatalf("GetWorkspace returned error: %v", err)
+	}
+	if got != created {
+		t.Fatalf("workspace path = %q, want %q", got, created)
+	}
+}
+
+func TestGetWorkspaceMissing(t *testing.T) {
+	origDir := workspaceDir
+	workspaceDir = t.TempDir()
+	t.Cleanup(func() { workspaceDir = origDir })
+
+	if _, err := GetWorkspace("missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("GetWorkspace err = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestCreateWorkspaceDuplicate(t *testing.T) {
+	origDir := workspaceDir
+	origMkfs := runMkfsExt4Cmd
+	workspaceDir = t.TempDir()
+	runMkfsExt4Cmd = func(path string) ([]byte, error) { return nil, nil }
+	t.Cleanup(func() {
+		workspaceDir = origDir
+		runMkfsExt4Cmd = origMkfs
+	})
+
+	if _, err := CreateWorkspace("demo-workspace", 1); err != nil {
+		t.Fatalf("CreateWorkspace returned error: %v", err)
+	}
+	if _, err := CreateWorkspace("demo-workspace", 1); !errors.Is(err, ErrWorkspaceExists) {
+		t.Fatalf("CreateWorkspace duplicate err = %v, want ErrWorkspaceExists", err)
+	}
+}
+
 func TestGetOrCreateWorkspaceRejectsExistingSymlink(t *testing.T) {
 	origDir := workspaceDir
 	origMkfs := runMkfsExt4Cmd
