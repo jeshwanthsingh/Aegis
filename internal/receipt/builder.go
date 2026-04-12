@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"aegis/internal/models"
@@ -49,6 +50,7 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 	if err != nil {
 		return ExecutionReceiptPredicate{}, 0, err
 	}
+	resultClass, denial := classifyResult(input, pointSummary, governedSummary)
 	limitations := []string{"host attestation deferred"}
 	if input.Outcome.OutputTruncated {
 		limitations = append(limitations, "captured standard stream artifacts may be truncated")
@@ -66,6 +68,9 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		DeclaredPurpose:    input.DeclaredPurpose,
 		WorkspaceID:        input.WorkspaceID,
 		ExecutionStatus:    input.ExecutionStatus,
+		SemanticsMode:      SemanticsModeExplicitV1,
+		ResultClass:        resultClass,
+		Denial:             denial,
 		IntentDigest:       intentDigest,
 		IntentDigestAlgo:   intentAlgo,
 		EvidenceDigest:     evidenceDigest,
@@ -150,6 +155,7 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 				Resource:            action.Resource,
 				Method:              action.Method,
 				Decision:            action.Decision,
+				Outcome:             action.Outcome,
 				Reason:              action.Reason,
 				RuleID:              action.RuleID,
 				PolicyDigest:        action.PolicyDigest,
@@ -160,6 +166,7 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 				ResponseDigestAlgo:  action.ResponseDigestAlgo,
 				DenialMarker:        action.DenialMarker,
 				AuditPayload:        cloneStringMap(action.AuditPayload),
+				Error:               action.Error,
 			})
 		case telemetry.KindCredentialAllowed:
 			var bd telemetry.CredentialBrokerData
@@ -202,9 +209,156 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 	}
 	var gs *GovernedActionSummary
 	if len(governedActions) > 0 {
-		gs = &GovernedActionSummary{Count: len(governedActions), Actions: governedActions}
+		gs = &GovernedActionSummary{
+			Count:      len(governedActions),
+			Actions:    governedActions,
+			Normalized: normalizeGovernedActions(governedActions),
+		}
 	}
 	return hex.EncodeToString(digest[:]), runtimeEventCount, pointSummary, divergenceSummary, bs, gs, nil
+}
+
+func classifyResult(input Input, pointSummary PointDecisionSummary, governedSummary *GovernedActionSummary) (ResultClass, *DenialSummary) {
+	if strings.EqualFold(strings.TrimSpace(input.ExecutionStatus), "reconciled") || strings.TrimSpace(input.Outcome.Reason) == "recovered_on_boot" {
+		return ResultClassReconciled, nil
+	}
+	if denial := deriveGovernedDenial(governedSummary); denial != nil {
+		return ResultClassDenied, denial
+	}
+	if denial := derivePolicyDenial(input.ExecutionStatus, input.Outcome.Reason, pointSummary); denial != nil {
+		return ResultClassDenied, denial
+	}
+	if isAbnormalTermination(input.ExecutionStatus, input.Outcome.Reason) {
+		return ResultClassAbnormal, nil
+	}
+	return ResultClassCompleted, nil
+}
+
+func derivePolicyDenial(executionStatus string, outcomeReason string, pointSummary PointDecisionSummary) *DenialSummary {
+	status := strings.TrimSpace(executionStatus)
+	reason := strings.TrimSpace(outcomeReason)
+	if strings.HasPrefix(status, "security_denied") || strings.HasPrefix(reason, "security_denied") {
+		return &DenialSummary{Class: DenialClassPolicy}
+	}
+	if pointSummary.DenyCount > 0 && (strings.HasPrefix(status, "policy_denied") || strings.HasPrefix(reason, "policy_denied")) {
+		return &DenialSummary{Class: DenialClassPolicy}
+	}
+	return nil
+}
+
+func deriveGovernedDenial(governedSummary *GovernedActionSummary) *DenialSummary {
+	if governedSummary == nil {
+		return nil
+	}
+	for _, action := range governedSummary.Actions {
+		if !strings.EqualFold(strings.TrimSpace(action.Decision), "deny") {
+			continue
+		}
+		return &DenialSummary{
+			Class:  DenialClassGovernedAction,
+			RuleID: strings.TrimSpace(action.RuleID),
+			Marker: strings.TrimSpace(action.DenialMarker),
+		}
+	}
+	return nil
+}
+
+func isAbnormalTermination(executionStatus string, outcomeReason string) bool {
+	status := strings.TrimSpace(executionStatus)
+	if status != "" && status != "completed" && status != "reconciled" {
+		return true
+	}
+	reason := strings.TrimSpace(outcomeReason)
+	switch reason {
+	case "", "completed", "recovered_on_boot":
+		return false
+	case "sandbox_error", "timed_out", "teardown_failed":
+		return true
+	}
+	return strings.HasPrefix(reason, "sandbox_")
+}
+
+func normalizeGovernedActions(actions []GovernedActionRecord) []NormalizedGovernedActionEntry {
+	type aggregate struct {
+		entry NormalizedGovernedActionEntry
+		key   string
+	}
+	grouped := map[string]*aggregate{}
+	for _, action := range actions {
+		entry := normalizedGovernedAction(action)
+		key := governedActionSortKey(entry)
+		if existing, ok := grouped[key]; ok {
+			existing.entry.Count++
+			continue
+		}
+		grouped[key] = &aggregate{entry: entry, key: key}
+	}
+	aggregates := make([]aggregate, 0, len(grouped))
+	for _, entry := range grouped {
+		aggregates = append(aggregates, *entry)
+	}
+	sort.Slice(aggregates, func(i, j int) bool { return aggregates[i].key < aggregates[j].key })
+	normalized := make([]NormalizedGovernedActionEntry, 0, len(aggregates))
+	for _, entry := range aggregates {
+		normalized = append(normalized, entry.entry)
+	}
+	return normalized
+}
+
+func normalizedGovernedAction(action GovernedActionRecord) NormalizedGovernedActionEntry {
+	return NormalizedGovernedActionEntry{
+		Count:               1,
+		ActionType:          strings.TrimSpace(action.ActionType),
+		Target:              strings.TrimSpace(action.Target),
+		Resource:            strings.TrimSpace(action.Resource),
+		Method:              strings.TrimSpace(action.Method),
+		Decision:            strings.TrimSpace(action.Decision),
+		Outcome:             strings.TrimSpace(action.Outcome),
+		Reason:              strings.TrimSpace(action.Reason),
+		RuleID:              strings.TrimSpace(action.RuleID),
+		PolicyDigest:        strings.TrimSpace(action.PolicyDigest),
+		Brokered:            action.Brokered,
+		BrokeredCredentials: action.BrokeredCredentials,
+		BindingName:         strings.TrimSpace(action.BindingName),
+		ResponseDigest:      strings.TrimSpace(action.ResponseDigest),
+		ResponseDigestAlgo:  strings.TrimSpace(action.ResponseDigestAlgo),
+		DenialMarker:        strings.TrimSpace(action.DenialMarker),
+		AuditPayload:        cloneStringMap(action.AuditPayload),
+		Error:               strings.TrimSpace(action.Error),
+	}
+}
+
+func governedActionSortKey(action NormalizedGovernedActionEntry) string {
+	parts := []string{
+		action.ActionType,
+		action.Target,
+		action.Method,
+		action.Decision,
+		action.Resource,
+		action.RuleID,
+		action.BindingName,
+		action.DenialMarker,
+		strconv.FormatBool(action.Brokered),
+		strconv.FormatBool(action.BrokeredCredentials),
+		action.PolicyDigest,
+		action.ResponseDigestAlgo,
+		action.ResponseDigest,
+		action.Outcome,
+		action.Reason,
+		action.Error,
+	}
+	if len(action.AuditPayload) == 0 {
+		return strings.Join(parts, "\x00")
+	}
+	keys := make([]string, 0, len(action.AuditPayload))
+	for key := range action.AuditPayload {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		parts = append(parts, key+"="+action.AuditPayload[key])
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func hasReadOnlyFileSemantics(events []telemetry.Event) bool {

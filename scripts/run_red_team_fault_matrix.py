@@ -329,10 +329,13 @@ def extract_workspace_id(summary: str) -> str:
 
 def list_warm_orphan_paths() -> list[Path]:
     root = Path("/tmp/aegis")
-    patterns = ("scratch-*.ext4", "fc-*.sock", "vsock-*.sock")
     found: list[Path] = []
-    for pattern in patterns:
-        found.extend(sorted(root.glob(pattern)))
+    for scratch in sorted(root.glob("scratch-*.ext4")):
+        found.append(scratch)
+        uuid = scratch.name.removeprefix("scratch-").removesuffix(".ext4")
+        for sibling in (root / f"fc-{uuid}.sock", root / f"vsock-{uuid}.sock"):
+            if sibling.exists():
+                found.append(sibling)
     return found
 
 

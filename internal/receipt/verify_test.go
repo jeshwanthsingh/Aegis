@@ -114,6 +114,34 @@ func TestVerifySignedReceiptRejectsMalformedEnvelopeAndStatement(t *testing.T) {
 			wantErr: "statement trust attestation field is required",
 		},
 		{
+			name: "unexpected result class",
+			mutate: func(sr *SignedReceipt) {
+				sr.Statement.Predicate.ResultClass = "bogus"
+				reSignStatement(t, sr, signer)
+			},
+			wantErr: "unexpected result class",
+		},
+		{
+			name: "denied missing denial evidence",
+			mutate: func(sr *SignedReceipt) {
+				sr.Statement.Predicate.ResultClass = ResultClassDenied
+				sr.Statement.Predicate.Denial = nil
+				reSignStatement(t, sr, signer)
+			},
+			wantErr: "denied receipts must include denial evidence",
+		},
+		{
+			name: "reconciled status mismatch",
+			mutate: func(sr *SignedReceipt) {
+				sr.Statement.Predicate.ResultClass = ResultClassReconciled
+				sr.Statement.Predicate.Denial = nil
+				sr.Statement.Predicate.ExecutionStatus = "completed"
+				sr.Statement.Predicate.Outcome.Reason = "recovered_on_boot"
+				reSignStatement(t, sr, signer)
+			},
+			wantErr: "reconciled receipts must use execution_status=reconciled",
+		},
+		{
 			name: "missing subject name",
 			mutate: func(sr *SignedReceipt) {
 				sr.Statement.Subject = []StatementSubject{{Name: "", Digest: map[string]string{"sha256": "abc"}}}
@@ -190,6 +218,41 @@ func TestVerifyReceiptFileRejectsBadPublicKeyAndReceiptFiles(t *testing.T) {
 	}
 	if _, err := VerifyReceiptFile(paths.ReceiptPath, paths.PublicKeyPath); err == nil {
 		t.Fatal("expected verification failure with wrong public key")
+	}
+}
+
+func TestVerifySignedReceiptSupportsLegacyDerivedSemantics(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.SemanticsMode = ""
+	signed.Statement.Predicate.ResultClass = ""
+	signed.Statement.Predicate.Denial = nil
+	if signed.Statement.Predicate.GovernedActions != nil {
+		signed.Statement.Predicate.GovernedActions.Normalized = nil
+	}
+	reSignStatement(t, &signed, signer)
+
+	statement, err := VerifySignedReceipt(signed, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt(legacy): %v", err)
+	}
+	if statement.Predicate.SemanticsMode != SemanticsModeLegacyDerived {
+		t.Fatalf("semantics_mode = %q want %q", statement.Predicate.SemanticsMode, SemanticsModeLegacyDerived)
+	}
+	if statement.Predicate.ResultClass != ResultClassDenied {
+		t.Fatalf("result_class = %q want denied", statement.Predicate.ResultClass)
+	}
+	if statement.Predicate.Denial == nil || statement.Predicate.Denial.Class != DenialClassGovernedAction {
+		t.Fatalf("unexpected denial: %+v", statement.Predicate.Denial)
+	}
+	if statement.Predicate.GovernedActions == nil || len(statement.Predicate.GovernedActions.Normalized) != 1 {
+		t.Fatalf("expected derived normalized governed actions: %+v", statement.Predicate.GovernedActions)
+	}
+	if !strings.Contains(strings.Join(statement.Predicate.Limitations, ","), "legacy_semantics_derived") {
+		t.Fatalf("expected legacy semantics limitation, got %+v", statement.Predicate.Limitations)
 	}
 }
 

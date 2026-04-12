@@ -4,59 +4,273 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 )
+
+type VerificationFailureClass string
+
+const (
+	FailureClassSignatureInvalid  VerificationFailureClass = "signature_invalid"
+	FailureClassBundleIncomplete  VerificationFailureClass = "bundle_incomplete"
+	FailureClassArtifactIntegrity VerificationFailureClass = "artifact_integrity_failed"
+	FailureClassSemanticReceipt   VerificationFailureClass = "semantic_receipt_invalid"
+)
+
+type VerificationError struct {
+	Class   VerificationFailureClass
+	Message string
+	Cause   error
+}
+
+type VerificationReport struct {
+	Verified      bool
+	FailureClass  VerificationFailureClass
+	FailureDetail string
+	Statement     Statement
+}
+
+func (e *VerificationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return string(e.Class)
+}
+
+func (e *VerificationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func verificationError(class VerificationFailureClass, format string, args ...any) error {
+	return &VerificationError{Class: class, Message: fmt.Sprintf(format, args...)}
+}
+
+func verificationErrorWrap(class VerificationFailureClass, err error, format string, args ...any) error {
+	return &VerificationError{Class: class, Message: fmt.Sprintf(format, args...), Cause: err}
+}
+
+func VerificationFailure(err error) (VerificationFailureClass, bool) {
+	var typed *VerificationError
+	if typed == nil && err == nil {
+		return "", false
+	}
+	if !errors.As(err, &typed) {
+		return "", false
+	}
+	return typed.Class, true
+}
 
 func VerifySignedReceipt(receipt SignedReceipt, publicKey ed25519.PublicKey) (Statement, error) {
 	if receipt.Envelope.PayloadType != PayloadType {
-		return Statement{}, fmt.Errorf("unexpected payload type: %s", receipt.Envelope.PayloadType)
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "unexpected payload type: %s", receipt.Envelope.PayloadType)
 	}
 	if len(receipt.Envelope.Signatures) == 0 {
-		return Statement{}, fmt.Errorf("dsse envelope has no signatures")
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "dsse envelope has no signatures")
 	}
 	payload, err := base64.StdEncoding.DecodeString(receipt.Envelope.Payload)
 	if err != nil {
-		return Statement{}, fmt.Errorf("decode dsse payload: %w", err)
+		return Statement{}, verificationErrorWrap(FailureClassSignatureInvalid, err, "decode dsse payload: %v", err)
 	}
 	sig, err := base64.StdEncoding.DecodeString(receipt.Envelope.Signatures[0].Sig)
 	if err != nil {
-		return Statement{}, fmt.Errorf("decode dsse signature: %w", err)
+		return Statement{}, verificationErrorWrap(FailureClassSignatureInvalid, err, "decode dsse signature: %v", err)
 	}
 	if !ed25519.Verify(publicKey, pae(receipt.Envelope.PayloadType, payload), sig) {
-		return Statement{}, fmt.Errorf("dsse signature verification failed")
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "dsse signature verification failed")
 	}
 	var statement Statement
 	if err := json.Unmarshal(payload, &statement); err != nil {
-		return Statement{}, fmt.Errorf("decode receipt statement: %w", err)
+		return Statement{}, verificationErrorWrap(FailureClassSignatureInvalid, err, "decode receipt statement: %v", err)
 	}
 	if statement.Type != StatementType {
-		return Statement{}, fmt.Errorf("unexpected statement type: %s", statement.Type)
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "unexpected statement type: %s", statement.Type)
 	}
 	if statement.PredicateType != PredicateType {
-		return Statement{}, fmt.Errorf("unexpected predicate type: %s", statement.PredicateType)
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "unexpected predicate type: %s", statement.PredicateType)
 	}
 	if statement.Predicate.SignerKeyID == "" {
-		return Statement{}, fmt.Errorf("statement signer key id is required")
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "statement signer key id is required")
 	}
 	if statement.Predicate.SignerKeyID != receipt.Envelope.Signatures[0].KeyID {
-		return Statement{}, fmt.Errorf("statement signer key id does not match DSSE key id")
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "statement signer key id does not match DSSE key id")
 	}
 	if statement.Predicate.Trust.SigningMode != SigningModeDev && statement.Predicate.Trust.SigningMode != SigningModeStrict {
-		return Statement{}, fmt.Errorf("unexpected signing mode: %s", statement.Predicate.Trust.SigningMode)
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "unexpected signing mode: %s", statement.Predicate.Trust.SigningMode)
 	}
 	if statement.Predicate.Trust.KeySource != KeySourceConfiguredSeed && statement.Predicate.Trust.KeySource != KeySourceDevFallback {
-		return Statement{}, fmt.Errorf("unexpected key source: %s", statement.Predicate.Trust.KeySource)
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "unexpected key source: %s", statement.Predicate.Trust.KeySource)
 	}
 	if statement.Predicate.Trust.Attestation == "" {
-		return Statement{}, fmt.Errorf("statement trust attestation field is required")
+		return Statement{}, verificationError(FailureClassSignatureInvalid, "statement trust attestation field is required")
 	}
 	for _, subject := range statement.Subject {
 		if subject.Name == "" {
-			return Statement{}, fmt.Errorf("statement subject name is required")
+			return Statement{}, verificationError(FailureClassSignatureInvalid, "statement subject name is required")
 		}
 		if subject.Digest == nil || subject.Digest["sha256"] == "" {
-			return Statement{}, fmt.Errorf("statement subject sha256 digest is required")
+			return Statement{}, verificationError(FailureClassSignatureInvalid, "statement subject sha256 digest is required")
 		}
 	}
+	applyLegacySemantics(&statement)
+	if err := validateSemanticReceipt(statement); err != nil {
+		return Statement{}, err
+	}
 	return statement, nil
+}
+
+func validateSemanticReceipt(statement Statement) error {
+	predicate := statement.Predicate
+	switch predicate.SemanticsMode {
+	case "", SemanticsModeExplicitV1, SemanticsModeLegacyDerived:
+	default:
+		return verificationError(FailureClassSemanticReceipt, "unexpected semantics mode: %s", predicate.SemanticsMode)
+	}
+	switch predicate.ResultClass {
+	case ResultClassCompleted, ResultClassDenied, ResultClassAbnormal, ResultClassReconciled:
+	default:
+		return verificationError(FailureClassSemanticReceipt, "unexpected result class: %s", predicate.ResultClass)
+	}
+	if strings.TrimSpace(predicate.Outcome.Reason) == "" {
+		return verificationError(FailureClassSemanticReceipt, "statement outcome reason is required")
+	}
+	switch predicate.ResultClass {
+	case ResultClassDenied:
+		if predicate.Denial == nil {
+			return verificationError(FailureClassSemanticReceipt, "denied receipts must include denial evidence")
+		}
+		switch predicate.Denial.Class {
+		case DenialClassGovernedAction, DenialClassPolicy:
+		default:
+			return verificationError(FailureClassSemanticReceipt, "unexpected denial class: %s", predicate.Denial.Class)
+		}
+		if predicate.Denial.Class == DenialClassGovernedAction && !hasGovernedActionDeny(predicate.GovernedActions) {
+			return verificationError(FailureClassSemanticReceipt, "governed-action denial receipts must include a denied governed action")
+		}
+		if predicate.Denial.Class == DenialClassPolicy && !hasPolicyDenial(predicate) {
+			return verificationError(FailureClassSemanticReceipt, "policy denial receipts must include explicit policy-denied terminal evidence")
+		}
+	default:
+		if predicate.Denial != nil {
+			return verificationError(FailureClassSemanticReceipt, "only denied receipts may include denial evidence")
+		}
+	}
+	if predicate.ResultClass == ResultClassReconciled {
+		if strings.TrimSpace(predicate.ExecutionStatus) != "reconciled" {
+			return verificationError(FailureClassSemanticReceipt, "reconciled receipts must use execution_status=reconciled")
+		}
+		if strings.TrimSpace(predicate.Outcome.Reason) != "recovered_on_boot" {
+			return verificationError(FailureClassSemanticReceipt, "reconciled receipts must use outcome reason recovered_on_boot")
+		}
+	}
+	if predicate.ResultClass != ResultClassReconciled && strings.TrimSpace(predicate.ExecutionStatus) == "reconciled" {
+		return verificationError(FailureClassSemanticReceipt, "only reconciled receipts may use execution_status=reconciled")
+	}
+	if predicate.GovernedActions != nil {
+		if predicate.GovernedActions.Count != len(predicate.GovernedActions.Actions) {
+			return verificationError(FailureClassSemanticReceipt, "governed action raw count mismatch: count=%d actions=%d", predicate.GovernedActions.Count, len(predicate.GovernedActions.Actions))
+		}
+		if len(predicate.GovernedActions.Normalized) > 0 {
+			total := 0
+			lastKey := ""
+			for idx, action := range predicate.GovernedActions.Normalized {
+				if action.Count <= 0 {
+					return verificationError(FailureClassSemanticReceipt, "normalized governed action %d has invalid count %d", idx+1, action.Count)
+				}
+				key := normalizedGovernedActionSortKey(action)
+				if idx > 0 && key < lastKey {
+					return verificationError(FailureClassSemanticReceipt, "normalized governed actions are not in canonical order")
+				}
+				lastKey = key
+				total += action.Count
+			}
+			if total != predicate.GovernedActions.Count {
+				return verificationError(FailureClassSemanticReceipt, "normalized governed action count mismatch: normalized=%d raw=%d", total, predicate.GovernedActions.Count)
+			}
+		}
+	}
+	return nil
+}
+
+func applyLegacySemantics(statement *Statement) {
+	if statement == nil {
+		return
+	}
+	predicate := &statement.Predicate
+	if predicate.GovernedActions != nil {
+		if predicate.GovernedActions.Count == 0 && len(predicate.GovernedActions.Actions) > 0 {
+			predicate.GovernedActions.Count = len(predicate.GovernedActions.Actions)
+		}
+		if len(predicate.GovernedActions.Normalized) == 0 && len(predicate.GovernedActions.Actions) > 0 {
+			predicate.GovernedActions.Normalized = normalizeGovernedActions(predicate.GovernedActions.Actions)
+		}
+	}
+	if predicate.ResultClass != "" {
+		if predicate.SemanticsMode == "" {
+			predicate.SemanticsMode = SemanticsModeExplicitV1
+		}
+		return
+	}
+	predicate.SemanticsMode = SemanticsModeLegacyDerived
+	predicate.ResultClass, predicate.Denial = deriveLegacyResult(*predicate)
+	predicate.Limitations = appendUnique(predicate.Limitations, "legacy_semantics_derived")
+}
+
+func deriveLegacyResult(predicate ExecutionReceiptPredicate) (ResultClass, *DenialSummary) {
+	if strings.TrimSpace(predicate.ExecutionStatus) == "reconciled" || strings.TrimSpace(predicate.Outcome.Reason) == "recovered_on_boot" {
+		return ResultClassReconciled, nil
+	}
+	if denial := deriveGovernedDenial(predicate.GovernedActions); denial != nil {
+		return ResultClassDenied, denial
+	}
+	if denial := derivePolicyDenial(predicate.ExecutionStatus, predicate.Outcome.Reason, predicate.PointDecisions); denial != nil {
+		return ResultClassDenied, denial
+	}
+	if isAbnormalTermination(predicate.ExecutionStatus, predicate.Outcome.Reason) {
+		return ResultClassAbnormal, nil
+	}
+	return ResultClassCompleted, nil
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func hasGovernedActionDeny(summary *GovernedActionSummary) bool {
+	if summary == nil {
+		return false
+	}
+	for _, action := range summary.Actions {
+		if strings.EqualFold(strings.TrimSpace(action.Decision), "deny") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPolicyDenial(predicate ExecutionReceiptPredicate) bool {
+	status := strings.TrimSpace(predicate.ExecutionStatus)
+	reason := strings.TrimSpace(predicate.Outcome.Reason)
+	if strings.HasPrefix(status, "security_denied") || strings.HasPrefix(reason, "security_denied") {
+		return true
+	}
+	return predicate.PointDecisions.DenyCount > 0 && (strings.HasPrefix(status, "policy_denied") || strings.HasPrefix(reason, "policy_denied"))
+}
+
+func normalizedGovernedActionSortKey(action NormalizedGovernedActionEntry) string {
+	return governedActionSortKey(action)
 }

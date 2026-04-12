@@ -41,7 +41,7 @@ func TestReceiptVerifyCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("receiptVerify exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, needle := range []string{"verification=verified", "execution_id=exec_cli", "signing_mode=dev", "key_source=dev_fallback", "artifact_count=2", "output-manifest.json"} {
+	for _, needle := range []string{"verification=verified", "execution_id=exec_cli", "semantics_mode=explicit_v1", "result_class=completed", "signing_mode=dev", "key_source=dev_fallback", "artifact_count=2", "output-manifest.json"} {
 		if !strings.Contains(stdout.String(), needle) {
 			t.Fatalf("stdout missing %q: %s", needle, stdout.String())
 		}
@@ -73,6 +73,9 @@ func TestReceiptVerifyCommandFailsForTamperedReceipt(t *testing.T) {
 	if !strings.Contains(stderr.String(), "receipt verification failed") {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "verification_failure_class=signature_invalid") {
+		t.Fatalf("stderr missing failure class: %s", stderr.String())
+	}
 }
 
 func TestReceiptShowCommandByExecutionID(t *testing.T) {
@@ -101,7 +104,7 @@ func TestReceiptShowCommandByExecutionID(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("receiptShow exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, needle := range []string{"[proof bundle", "[artifact output-manifest.json", "verification=verified", "execution_id=exec_show", "signing_mode=dev"} {
+	for _, needle := range []string{"[verification]", "status=verified", "[execution]", "result_class=completed", "[governed_actions]", "[artifacts]", "execution_id=exec_show"} {
 		if !strings.Contains(stdout.String(), needle) {
 			t.Fatalf("stdout missing %q: %s", needle, stdout.String())
 		}

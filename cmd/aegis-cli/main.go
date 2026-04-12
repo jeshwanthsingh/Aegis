@@ -571,6 +571,9 @@ func receiptVerify(stdout io.Writer, stderr io.Writer, args []string) int {
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "receipt verification failed: %v\n", err)
+		if class, ok := receipt.VerificationFailure(err); ok {
+			fmt.Fprintf(stderr, "verification_failure_class=%s\n", class)
+		}
 		return 1
 	}
 	fmt.Fprint(stdout, receipt.FormatSummary(statement, true))
@@ -592,24 +595,12 @@ func receiptShow(stdout io.Writer, stderr io.Writer, args []string) int {
 		return 2
 	}
 	printProofBundle(stdout, paths)
-	names := make([]string, 0, len(paths.ArtifactPaths))
-	for name := range paths.ArtifactPaths {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		fmt.Fprintln(stdout, "[artifacts none]")
-	} else {
-		for _, name := range names {
-			fmt.Fprintf(stdout, "[artifact %s %s]\n", name, paths.ArtifactPaths[name])
-		}
-	}
-	summary, err := os.ReadFile(paths.SummaryPath)
+	report, err := receipt.VerifyBundleReport(paths)
 	if err != nil {
-		fmt.Fprintf(stderr, "bundle summary unavailable: %v\n", err)
+		fmt.Fprint(stdout, receipt.FormatReview(paths, report))
 		return 1
 	}
-	fmt.Fprint(stdout, string(summary))
+	fmt.Fprint(stdout, receipt.FormatReview(paths, report))
 	return 0
 }
 

@@ -253,7 +253,7 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
 	summary := FormatSummary(receipt.Statement, true)
-	for _, needle := range []string{"verification=verified", "execution_id=exec_123", "signing_mode=dev", "key_source=dev_fallback", "attestation=absent", "divergence_verdict=kill_candidate", "artifact_count=0"} {
+	for _, needle := range []string{"verification=verified", "execution_id=exec_123", "result_class=denied", "signing_mode=dev", "key_source=dev_fallback", "attestation=absent", "divergence_verdict=kill_candidate", "artifact_count=0"} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
@@ -298,12 +298,70 @@ func TestFormatSummaryIncludesGovernedActionEvidence(t *testing.T) {
 	for _, needle := range []string{
 		"governed_action_count=1",
 		"governed_action_1=kind=http_request",
+		"governed_action_normalized_count=1",
+		"governed_action_normalized_1=count=1 kind=http_request",
 		"decision=deny",
 		"denial_marker=direct_egress_denied",
+		"denial_class=governed_action",
 	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
+	}
+}
+
+func TestBuildPredicateClassifiesReconciledAndAbnormal(t *testing.T) {
+	signer := mustDevSigner(t)
+	reconciled := testReceiptInput()
+	reconciled.ExecutionStatus = "reconciled"
+	reconciled.Outcome = Outcome{ExitCode: -1, Reason: "recovered_on_boot", ContainmentVerdict: "error"}
+	reconciled.TelemetryEvents = reconciled.TelemetryEvents[:1]
+	receiptValue, err := BuildSignedReceipt(reconciled, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt(reconciled): %v", err)
+	}
+	if receiptValue.Statement.Predicate.ResultClass != ResultClassReconciled {
+		t.Fatalf("result_class = %q want reconciled", receiptValue.Statement.Predicate.ResultClass)
+	}
+
+	abnormal := testReceiptInput()
+	abnormal.ExecutionStatus = "teardown_failed"
+	abnormal.Outcome = Outcome{ExitCode: 137, Reason: "teardown_failed", ContainmentVerdict: "error"}
+	abnormal.TelemetryEvents = abnormal.TelemetryEvents[:1]
+	receiptValue, err = BuildSignedReceipt(abnormal, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt(abnormal): %v", err)
+	}
+	if receiptValue.Statement.Predicate.ResultClass != ResultClassAbnormal {
+		t.Fatalf("result_class = %q want abnormal", receiptValue.Statement.Predicate.ResultClass)
+	}
+}
+
+func TestBuildPredicateAddsNormalizedGovernedActionSummary(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	raw := append([]telemetry.Event{}, input.TelemetryEvents...)
+	raw = append(raw, input.TelemetryEvents[len(input.TelemetryEvents)-1])
+	input.TelemetryEvents = raw
+	receiptValue, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receiptValue.Statement.Predicate.GovernedActions == nil {
+		t.Fatal("expected governed action summary")
+	}
+	summary := receiptValue.Statement.Predicate.GovernedActions
+	if summary.Count != 2 {
+		t.Fatalf("raw governed action count = %d want 2", summary.Count)
+	}
+	if len(summary.Actions) != 2 {
+		t.Fatalf("raw governed action records = %d want 2", len(summary.Actions))
+	}
+	if len(summary.Normalized) != 1 {
+		t.Fatalf("normalized governed action records = %d want 1", len(summary.Normalized))
+	}
+	if summary.Normalized[0].Count != 2 {
+		t.Fatalf("normalized count = %d want 2", summary.Normalized[0].Count)
 	}
 }
 

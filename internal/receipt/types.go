@@ -39,6 +39,35 @@ type Outcome struct {
 	OutputTruncated    bool
 }
 
+type ResultClass string
+
+const (
+	ResultClassCompleted  ResultClass = "completed"
+	ResultClassDenied     ResultClass = "denied"
+	ResultClassAbnormal   ResultClass = "abnormal"
+	ResultClassReconciled ResultClass = "reconciled"
+)
+
+type DenialClass string
+
+const (
+	DenialClassGovernedAction DenialClass = "governed_action"
+	DenialClassPolicy         DenialClass = "policy"
+)
+
+type DenialSummary struct {
+	Class  DenialClass `json:"class"`
+	RuleID string      `json:"rule_id,omitempty"`
+	Marker string      `json:"marker,omitempty"`
+}
+
+type SemanticsMode string
+
+const (
+	SemanticsModeExplicitV1    SemanticsMode = "explicit_v1"
+	SemanticsModeLegacyDerived SemanticsMode = "legacy_derived"
+)
+
 type Artifact struct {
 	Name      string            `json:"name"`
 	Digest    map[string]string `json:"digest"`
@@ -76,6 +105,9 @@ type ExecutionReceiptPredicate struct {
 	DeclaredPurpose    string                 `json:"declared_purpose,omitempty"`
 	WorkspaceID        string                 `json:"workspace_id,omitempty"`
 	ExecutionStatus    string                 `json:"execution_status,omitempty"`
+	SemanticsMode      SemanticsMode          `json:"semantics_mode,omitempty"`
+	ResultClass        ResultClass            `json:"result_class"`
+	Denial             *DenialSummary         `json:"denial,omitempty"`
 	IntentDigest       string                 `json:"intent_digest,omitempty"`
 	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
 	EvidenceDigest     string                 `json:"evidence_digest"`
@@ -104,8 +136,9 @@ type BrokerSummary struct {
 }
 
 type GovernedActionSummary struct {
-	Count   int                    `json:"count"`
-	Actions []GovernedActionRecord `json:"actions,omitempty"`
+	Count      int                             `json:"count"`
+	Actions    []GovernedActionRecord          `json:"actions,omitempty"`
+	Normalized []NormalizedGovernedActionEntry `json:"normalized,omitempty"`
 }
 
 type GovernedActionRecord struct {
@@ -114,6 +147,7 @@ type GovernedActionRecord struct {
 	Resource            string            `json:"resource,omitempty"`
 	Method              string            `json:"method,omitempty"`
 	Decision            string            `json:"decision"`
+	Outcome             string            `json:"outcome,omitempty"`
 	Reason              string            `json:"reason,omitempty"`
 	RuleID              string            `json:"rule_id,omitempty"`
 	PolicyDigest        string            `json:"policy_digest,omitempty"`
@@ -124,6 +158,28 @@ type GovernedActionRecord struct {
 	ResponseDigestAlgo  string            `json:"response_digest_algo,omitempty"`
 	DenialMarker        string            `json:"denial_marker,omitempty"`
 	AuditPayload        map[string]string `json:"audit_payload,omitempty"`
+	Error               string            `json:"error,omitempty"`
+}
+
+type NormalizedGovernedActionEntry struct {
+	Count               int               `json:"count"`
+	ActionType          string            `json:"action_type"`
+	Target              string            `json:"target"`
+	Resource            string            `json:"resource,omitempty"`
+	Method              string            `json:"method,omitempty"`
+	Decision            string            `json:"decision"`
+	Outcome             string            `json:"outcome,omitempty"`
+	Reason              string            `json:"reason,omitempty"`
+	RuleID              string            `json:"rule_id,omitempty"`
+	PolicyDigest        string            `json:"policy_digest,omitempty"`
+	Brokered            bool              `json:"brokered"`
+	BrokeredCredentials bool              `json:"brokered_credentials"`
+	BindingName         string            `json:"binding_name,omitempty"`
+	ResponseDigest      string            `json:"response_digest,omitempty"`
+	ResponseDigestAlgo  string            `json:"response_digest_algo,omitempty"`
+	DenialMarker        string            `json:"denial_marker,omitempty"`
+	AuditPayload        map[string]string `json:"audit_payload,omitempty"`
+	Error               string            `json:"error,omitempty"`
 }
 
 type StatementSubject struct {
