@@ -100,5 +100,18 @@ jobs:
       - name: Canonical demo proof
         run: python3 scripts/run_canonical_demo.py --serve
 
+      - name: Stop canonical proof runtime
+        run: |
+          pkill -f "${GITHUB_WORKSPACE}/.aegis/bin/aegis serve" || true
+          pkill -f "${GITHUB_WORKSPACE}/.aegis/bin/orchestrator --db " || true
+          for _ in $(seq 1 20); do
+            if ! curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "runtime still active on http://localhost:8080 after canonical cleanup" >&2
+          exit 1
+
       - name: Red-team fault matrix proof
         run: python3 scripts/run_red_team_fault_matrix.py
