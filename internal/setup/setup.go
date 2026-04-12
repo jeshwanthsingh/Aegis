@@ -136,20 +136,24 @@ func Bootstrap(ctx context.Context, repoRoot string, cfg config.Config) (created
 		return created, reused, artifacts, goErr
 	}
 
-	cliBuilt, err := buildIfNeeded(ctx, repoRoot, goBin, cfg.Runtime.CLIBin, []string{"./cmd/aegis-cli"}, binarySourceRoots(repoRoot, "cli"))
+	cliBuilt, err := buildIfNeeded(ctx, repoRoot, goBin, cfg.Runtime.CLIBin, []string{"./cmd/aegis-cli"}, binarySourceRoots(repoRoot, "cli"), nil)
 	if err != nil {
 		return created, reused, artifacts, err
 	}
 	artifacts.AegisBuilt = cliBuilt
 
-	orchBuilt, err := buildIfNeeded(ctx, repoRoot, goBin, cfg.Runtime.OrchestratorBin, []string{"./cmd/orchestrator"}, binarySourceRoots(repoRoot, "orchestrator"))
+	orchBuilt, err := buildIfNeeded(ctx, repoRoot, goBin, cfg.Runtime.OrchestratorBin, []string{"./cmd/orchestrator"}, binarySourceRoots(repoRoot, "orchestrator"), nil)
 	if err != nil {
 		return created, reused, artifacts, err
 	}
 	artifacts.OrchestratorBuilt = orchBuilt
 
 	guestBinary := filepath.Join(repoRoot, "guest-runner", "guest-runner")
-	guestBuilt, err := buildIfNeeded(ctx, filepath.Join(repoRoot, "guest-runner"), goBin, guestBinary, []string{"."}, binarySourceRoots(repoRoot, "guest-runner"))
+	guestBuilt, err := buildIfNeeded(ctx, filepath.Join(repoRoot, "guest-runner"), goBin, guestBinary, []string{"."}, binarySourceRoots(repoRoot, "guest-runner"), []string{
+		"CGO_ENABLED=0",
+		"GOOS=linux",
+		"GOARCH=amd64",
+	})
 	if err != nil {
 		return created, reused, artifacts, err
 	}
@@ -450,7 +454,7 @@ func findGoBinary() (string, error) {
 	return "", fmt.Errorf("go toolchain not found; install Go or add it to PATH before running aegis setup")
 }
 
-func buildIfNeeded(ctx context.Context, dir string, goBin string, target string, packages []string, sourceRoots []string) (bool, error) {
+func buildIfNeeded(ctx context.Context, dir string, goBin string, target string, packages []string, sourceRoots []string, extraEnv []string) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return false, fmt.Errorf("create bin dir for %s: %w", target, err)
 	}
@@ -464,6 +468,9 @@ func buildIfNeeded(ctx context.Context, dir string, goBin string, target string,
 	args := append([]string{"build", "-buildvcs=false", "-o", target}, packages...)
 	cmd := exec.CommandContext(ctx, goBin, args...)
 	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("build %s: %w: %s", target, err, strings.TrimSpace(string(output)))

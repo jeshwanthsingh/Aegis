@@ -40,7 +40,7 @@ GO_BIN="$(find_go)" || { echo 'missing go toolchain' >&2; exit 1; }
 
 (
   cd "$REPO_DIR/guest-runner"
-  "$GO_BIN" build -buildvcs=false -a -o "$GUEST_RUNNER_BIN" .
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build -buildvcs=false -a -o "$GUEST_RUNNER_BIN" .
 )
 
 sha256="$(sha256sum "$GUEST_RUNNER_BIN" | awk '{print $1}')"
