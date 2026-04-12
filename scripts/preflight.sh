@@ -2,12 +2,30 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB_URL_DEFAULT="postgres://postgres:postgres@localhost/postgres?sslmode=disable"
-DB_URL="${DB_URL:-$DB_URL_DEFAULT}"
+CONFIG_PATH="${AEGIS_CONFIG:-$REPO_DIR/.aegis/config.yaml}"
 ROOTFS_IMAGE="${ROOTFS_PATH:-${AEGIS_ROOTFS_PATH:-$REPO_DIR/assets/alpine-base.ext4}}"
 DEFAULT_CGROUP_PARENT="/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/aegis"
 CGROUP_PARENT="${AEGIS_CGROUP_PARENT:-$DEFAULT_CGROUP_PARENT}"
 FAILURES=0
+
+config_db_url() {
+  if [ ! -f "$CONFIG_PATH" ]; then
+    return 0
+  fi
+  awk '
+    $1 == "database:" { in_db = 1; next }
+    in_db && $1 == "url:" {
+      sub(/^[[:space:]]*url:[[:space:]]*/, "", $0)
+      gsub(/^"/, "", $0)
+      gsub(/"$/, "", $0)
+      print
+      exit
+    }
+    in_db && /^[^[:space:]]/ { in_db = 0 }
+  ' "$CONFIG_PATH"
+}
+
+DB_URL="${DB_URL:-${AEGIS_DB_URL:-$(config_db_url)}}"
 
 pass() {
   printf 'PASS %s\n' "$1"
@@ -107,10 +125,14 @@ check_postgres() {
     fail "postgres" "psql not found on PATH"
     return
   fi
+  if [ -z "$DB_URL" ]; then
+    fail "postgres" "database URL unresolved; run 'go run ./cmd/aegis-cli setup' or set DB_URL/AEGIS_DB_URL"
+    return
+  fi
   if PGPASSWORD="${PGPASSWORD:-}" psql -w "$DB_URL" -c 'select 1' >/dev/null 2>&1; then
     pass "postgres"
   else
-    fail "postgres" "unable to connect using DB_URL=${DB_URL} without prompting; set DB_URL or PGPASSWORD appropriately"
+    fail "postgres" "unable to connect using DB_URL=${DB_URL} without prompting; update .aegis/config.yaml or set DB_URL/AEGIS_DB_URL and PGPASSWORD appropriately"
   fi
 }
 
