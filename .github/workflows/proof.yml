@@ -48,6 +48,14 @@ jobs:
           test -x /usr/lib/postgresql/16/bin/initdb
           test -x /usr/lib/postgresql/16/bin/pg_ctl
           test -x /usr/lib/postgresql/16/bin/psql
+          test -f "$HOME/aegis/assets/vmlinux"
+          test -f "$HOME/aegis/assets/alpine-base.ext4"
+
+      - name: Materialize proof assets
+        run: |
+          mkdir -p assets
+          ln -sfn "$HOME/aegis/assets/vmlinux" assets/vmlinux
+          ln -sfn "$HOME/aegis/assets/alpine-base.ext4" assets/alpine-base.ext4
 
       - name: Prepare repo-local config
         run: |
