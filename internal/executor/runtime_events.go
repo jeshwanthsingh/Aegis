@@ -207,43 +207,26 @@ func (n *runtimeEventNormalizer) emitGovernedAction(event models.RuntimeEvent, d
 	if bus == nil {
 		return
 	}
-	if event.Type != models.EventNetConnect || decision.CedarAction != models.ActionConnect || decision.Decision != models.DecisionDeny {
+	req, governedDecision, ok := governance.EvaluateDirectEgress(event, decision)
+	if !ok {
 		return
 	}
-	if !governance.IsHTTPConnectPort(event.DstPort) {
-		return
-	}
-	target := governance.DirectConnectTarget(event.DstIP, event.DstPort)
 	emitIfBus(bus, telemetry.KindGovernedAction, telemetry.GovernedActionData{
 		ExecutionID:         n.executionID,
-		ActionType:          governance.ActionHTTPRequest,
-		Target:              target,
-		Resource:            target,
-		Method:              "CONNECT",
+		ActionType:          req.ActionType,
+		Target:              req.Target,
+		Resource:            req.Resource,
+		Method:              req.Method,
 		Decision:            "deny",
 		Outcome:             "denied",
-		Reason:              decision.Reason,
-		RuleID:              directEgressRuleID(decision.Reason),
-		PolicyDigest:        decision.Metadata["policy_digest"],
-		Brokered:            false,
+		Reason:              governedDecision.Reason,
+		RuleID:              governedDecision.RuleID,
+		PolicyDigest:        governedDecision.PolicyDigest,
+		Brokered:            req.Brokered,
 		BrokeredCredentials: false,
 		DenialMarker:        "direct_egress_denied",
-		AuditPayload: map[string]string{
-			"dst_ip":   event.DstIP,
-			"dst_port": fmt.Sprintf("%d", event.DstPort),
-		},
+		AuditPayload:        governedDecision.AuditPayload,
 	})
-}
-
-func directEgressRuleID(reason string) string {
-	switch reason {
-	case "network access is disabled by intent contract":
-		return "governance.direct_egress_disabled"
-	case "destination is outside network allowlists":
-		return "governance.direct_egress_target_denied"
-	default:
-		return "governance.direct_egress_denied"
-	}
 }
 
 func (n *runtimeEventNormalizer) emitStatus(status guestRuntimeSensorStatus, bus *telemetry.Bus) {

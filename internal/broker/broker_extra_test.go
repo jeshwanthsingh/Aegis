@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"aegis/internal/governance"
 	"aegis/internal/telemetry"
 )
 
@@ -94,7 +95,7 @@ func TestBroker_AllowedDomainsAndWildcardMatching(t *testing.T) {
 		"example.net":        true,
 		"denied.example.com": false,
 	} {
-		if got := b.domainAllowed(name); got != allowed {
+		if got := governance.DomainAllowed(b.AllowedDomains(), name); got != allowed {
 			t.Fatalf("domainAllowed(%q) = %v, want %v", name, got, allowed)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"aegis/internal/governance"
 	"aegis/internal/models"
 	policycontract "aegis/internal/policy/contract"
 	policydivergence "aegis/internal/policy/divergence"
@@ -360,7 +361,85 @@ func TestReadChunksEmitsGovernedActionForDeniedDirectEgress(t *testing.T) {
 			if err := json.Unmarshal(event.Data, &data); err != nil {
 				t.Fatalf("unmarshal governed action: %v", err)
 			}
-			if data.ActionType != "http_request" || data.Decision != "deny" || data.DenialMarker != "direct_egress_denied" {
+			if data.ActionType != governance.ActionHTTPRequest || data.Decision != "deny" || data.DenialMarker != "direct_egress_denied" {
+				t.Fatalf("unexpected governed action data: %+v", data)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for governed action telemetry")
+		}
+	}
+}
+
+func TestReadChunksEmitsGovernedActionForDeniedNonHTTPDirectEgress(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	intent := policycontract.IntentContract{
+		Version:         "v1",
+		ExecutionID:     "exec-governed-non-http",
+		WorkflowID:      "wf-1",
+		TaskClass:       "unit_test",
+		DeclaredPurpose: "exercise broader direct egress evidence",
+		Language:        "python",
+		ResourceScope: policycontract.ResourceScope{
+			WorkspaceRoot:    "/workspace",
+			ReadPaths:        []string{"/workspace"},
+			WritePaths:       []string{"/workspace"},
+			MaxDistinctFiles: 8,
+		},
+		NetworkScope: policycontract.NetworkScope{
+			AllowNetwork:     false,
+			MaxDNSQueries:    0,
+			MaxOutboundConns: 0,
+		},
+		ProcessScope: policycontract.ProcessScope{
+			AllowedBinaries:   []string{"python3"},
+			MaxChildProcesses: 2,
+		},
+		Budgets: policycontract.BudgetLimits{
+			TimeoutSec:  10,
+			MemoryMB:    128,
+			CPUQuota:    100,
+			StdoutBytes: 1024,
+		},
+	}
+	eval := policyevaluator.New(intent)
+	bus := telemetry.NewBus("exec-governed-non-http")
+	ch, unsubscribe := bus.Subscribe()
+	defer unsubscribe()
+
+	go func() {
+		enc := json.NewEncoder(server)
+		_ = enc.Encode(models.GuestChunk{
+			Type: "telemetry",
+			Name: guestRuntimeEventBatchKind,
+			Data: mustJSON(t, guestRuntimeEventBatch{
+				Events: []guestRuntimeEvent{
+					{TsUnixNano: 101, Type: "net.connect", PID: 42, DstIP: "10.0.0.5", DstPort: 22},
+				},
+			}),
+		})
+		_ = enc.Encode(models.GuestChunk{Type: "done", ExitCode: 0, Reason: "completed"})
+	}()
+
+	if _, err := ReadChunks(client, time.Now().Add(2*time.Second), nil, bus, eval, nil, nil); err != nil {
+		t.Fatalf("ReadChunks: %v", err)
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event := <-ch:
+			if event.Kind != telemetry.KindGovernedAction {
+				continue
+			}
+			var data telemetry.GovernedActionData
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				t.Fatalf("unmarshal governed action: %v", err)
+			}
+			if data.ActionType != governance.ActionNetworkConnect || data.Decision != "deny" || data.DenialMarker != "direct_egress_denied" {
 				t.Fatalf("unexpected governed action data: %+v", data)
 			}
 			return

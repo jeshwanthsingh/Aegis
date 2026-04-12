@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"aegis/internal/governance"
@@ -161,6 +162,7 @@ func (e *Evaluator) evaluateFileAccess(event models.RuntimeEvent, result models.
 
 func (e *Evaluator) evaluateConnect(event models.RuntimeEvent, result models.PolicyPointDecision) models.PolicyPointDecision {
 	result.Metadata["dst_ip"] = strings.TrimSpace(event.DstIP)
+	result.Metadata["dst_port"] = strconv.FormatUint(uint64(event.DstPort), 10)
 	if event.Domain != "" {
 		result.Metadata["domain"] = strings.TrimSpace(event.Domain)
 	}
