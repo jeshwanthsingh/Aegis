@@ -271,6 +271,13 @@ func validateBrokerScope(scope BrokerScope) error {
 			return fmt.Errorf("broker_scope.allowed_delegations must not contain empty values")
 		}
 	}
+	for _, actionType := range scope.AllowedActionTypes {
+		switch strings.ToLower(strings.TrimSpace(actionType)) {
+		case "http_request", "dependency_fetch":
+		default:
+			return fmt.Errorf("broker_scope.allowed_action_types contains invalid value %q", actionType)
+		}
+	}
 	return nil
 }
 

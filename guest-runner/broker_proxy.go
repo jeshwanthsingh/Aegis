@@ -8,22 +8,25 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mdlayher/vsock"
 )
 
 const (
-	brokerProxyAddr = "127.0.0.1:8888"
-	brokerVsockCID  = vsock.Host
-	brokerVsockPort = 1025
-	brokerTimeout   = 30 * time.Second
+	brokerProxyAddr      = "127.0.0.1:8888"
+	brokerVsockCID       = vsock.Host
+	brokerVsockPort      = 1025
+	brokerTimeout        = 30 * time.Second
+	governedActionHeader = "X-Aegis-Governed-Action"
 )
 
 // proxyRequest matches the BrokerRequest wire type on the host side.
 type proxyRequest struct {
 	Method     string              `json:"method"`
 	URL        string              `json:"url"`
+	ActionType string              `json:"action_type,omitempty"`
 	Headers    map[string][]string `json:"headers,omitempty"`
 	BodyBase64 string              `json:"body_base64,omitempty"`
 }
@@ -97,7 +100,16 @@ func handleBrokerProxyRequest(w http.ResponseWriter, r *http.Request) {
 	msg := proxyRequest{
 		Method:  r.Method,
 		URL:     targetURL,
-		Headers: map[string][]string(r.Header),
+		Headers: make(map[string][]string),
+	}
+	for key, vals := range r.Header {
+		if strings.EqualFold(key, governedActionHeader) {
+			if msg.ActionType == "" && len(vals) > 0 {
+				msg.ActionType = strings.TrimSpace(vals[0])
+			}
+			continue
+		}
+		msg.Headers[key] = vals
 	}
 	if len(body) > 0 {
 		msg.BodyBase64 = base64.StdEncoding.EncodeToString(body)

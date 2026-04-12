@@ -296,6 +296,37 @@ func FormatSummary(statement Statement, verified bool) string {
 			lines = append(lines, "broker_bindings_used="+strings.Join(statement.Predicate.BrokerSummary.BindingsUsed, ","))
 		}
 	}
+	if statement.Predicate.GovernedActions != nil {
+		lines = append(lines, fmt.Sprintf("governed_action_count=%d", statement.Predicate.GovernedActions.Count))
+		for idx, action := range statement.Predicate.GovernedActions.Actions {
+			fields := []string{
+				fmt.Sprintf("kind=%s", action.ActionType),
+				fmt.Sprintf("decision=%s", action.Decision),
+				fmt.Sprintf("target=%s", action.Target),
+				fmt.Sprintf("brokered=%t", action.Brokered),
+				fmt.Sprintf("brokered_credentials=%t", action.BrokeredCredentials),
+			}
+			if action.Method != "" {
+				fields = append(fields, "method="+action.Method)
+			}
+			if action.RuleID != "" {
+				fields = append(fields, "rule_id="+action.RuleID)
+			}
+			if action.PolicyDigest != "" {
+				fields = append(fields, "policy_digest="+action.PolicyDigest)
+			}
+			if action.ResponseDigest != "" {
+				fields = append(fields, fmt.Sprintf("response_digest=%s:%s", action.ResponseDigestAlgo, action.ResponseDigest))
+			}
+			if action.DenialMarker != "" {
+				fields = append(fields, "denial_marker="+action.DenialMarker)
+			}
+			if action.Reason != "" {
+				fields = append(fields, "reason="+action.Reason)
+			}
+			lines = append(lines, fmt.Sprintf("governed_action_%d=%s", idx+1, strings.Join(fields, " ")))
+		}
+	}
 	return strings.Join(lines, "\n") + "\n"
 }
 

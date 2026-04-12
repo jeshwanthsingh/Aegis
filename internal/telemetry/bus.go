@@ -8,8 +8,12 @@ import (
 )
 
 const (
-	busBufferSize        = 256
-	subscriberBufferSize = 64
+	// Python startup plus point decisions and divergence updates can exceed the
+	// original 256-event buffer before broker/governed-action events arrive.
+	// Keep the per-execution buffer comfortably above that so receipts retain
+	// late critical evidence instead of silently dropping it.
+	busBufferSize        = 4096
+	subscriberBufferSize = 256
 )
 
 // Bus is a per-execution, in-process telemetry event bus.

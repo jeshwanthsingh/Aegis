@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"aegis/internal/governance"
 	"aegis/internal/models"
 	"aegis/internal/policy/cedar"
 	"aegis/internal/policy/contract"
@@ -42,7 +43,8 @@ func (e *Evaluator) Evaluate(event models.RuntimeEvent) models.PolicyPointDecisi
 		Decision:    models.DecisionAllow,
 		Reason:      "allowed by intent contract",
 		Metadata: map[string]string{
-			"task_class": e.compiled.Context.TaskClass,
+			"task_class":    e.compiled.Context.TaskClass,
+			"policy_digest": governance.DigestIntent(e.intent),
 		},
 	}
 

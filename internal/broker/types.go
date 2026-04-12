@@ -5,6 +5,7 @@ package broker
 type BrokerRequest struct {
 	Method     string              `json:"method"`
 	URL        string              `json:"url"`
+	ActionType string              `json:"action_type,omitempty"`
 	Headers    map[string][]string `json:"headers,omitempty"`
 	BodyBase64 string              `json:"body_base64,omitempty"`
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"aegis/internal/governance"
 	"aegis/internal/policy/contract"
 	"aegis/internal/telemetry"
 )
@@ -15,6 +16,14 @@ func makeTestBroker(domains []string, delegations []string, bus *telemetry.Bus) 
 	return New(contract.BrokerScope{
 		AllowedDomains:     domains,
 		AllowedDelegations: delegations,
+	}, "test-exec-id", bus)
+}
+
+func makeActionBroker(domains []string, delegations []string, actionTypes []string, bus *telemetry.Bus) *Broker {
+	return New(contract.BrokerScope{
+		AllowedDomains:     domains,
+		AllowedDelegations: delegations,
+		AllowedActionTypes: actionTypes,
 	}, "test-exec-id", bus)
 }
 
@@ -150,6 +159,101 @@ func TestBroker_DenialEmitsTelemetry(t *testing.T) {
 	}
 	if !foundDenied {
 		t.Error("credential.denied not emitted")
+	}
+}
+
+func TestBroker_DependencyFetchRequiresExplicitGrant(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	b := makeActionBroker([]string{host}, nil, []string{governance.ActionHTTPRequest}, nil)
+	resp := b.Handle(BrokerRequest{Method: http.MethodGet, URL: srv.URL + "/pkg.whl", ActionType: governance.ActionDependencyFetch})
+	if !resp.Denied {
+		t.Fatal("expected dependency_fetch denied without explicit grant")
+	}
+	if resp.DenyReason != "governance.action_type_denied" {
+		t.Fatalf("wrong deny reason: %s", resp.DenyReason)
+	}
+}
+
+func TestBroker_DependencyFetchDeniedForUnapprovedSource(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	b := makeActionBroker([]string{"example.invalid"}, nil, []string{governance.ActionDependencyFetch}, nil)
+	resp := b.Handle(BrokerRequest{Method: http.MethodGet, URL: srv.URL + "/pkg.whl", ActionType: governance.ActionDependencyFetch})
+	if !resp.Denied {
+		t.Fatal("expected dependency_fetch denied for unapproved source")
+	}
+	if resp.DenyReason != "broker.domain_denied" {
+		t.Fatalf("wrong deny reason: %s", resp.DenyReason)
+	}
+}
+
+func TestBroker_DependencyFetchAllowsReadOnlyMethod(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("wheel"))
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	b := makeActionBroker([]string{host}, nil, []string{governance.ActionDependencyFetch}, nil)
+	resp := b.Handle(BrokerRequest{Method: http.MethodGet, URL: srv.URL + "/pkg.whl", ActionType: governance.ActionDependencyFetch})
+	if !resp.Allowed {
+		t.Fatalf("expected allowed dependency_fetch, got %+v", resp)
+	}
+}
+
+func TestBroker_HTTPRequestAllowedWithExplicitGrantAndCredential(t *testing.T) {
+	var receivedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	t.Setenv("AEGIS_CRED_TESTTOKEN_TOKEN", "secret-test-value")
+	host := strings.TrimPrefix(srv.URL, "http://")
+	b := makeActionBroker([]string{host}, []string{"testtoken"}, []string{governance.ActionHTTPRequest}, nil)
+	resp := b.Handle(BrokerRequest{Method: http.MethodGet, URL: srv.URL + "/api", ActionType: governance.ActionHTTPRequest})
+	if !resp.Allowed || receivedAuth != "Bearer secret-test-value" {
+		t.Fatalf("unexpected explicit http_request allow result: resp=%+v auth=%q", resp, receivedAuth)
+	}
+}
+
+func TestBroker_GovernedActionTelemetryIncludesDigestAndDecision(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	bus := telemetry.NewBus("test-exec-id")
+	host := strings.TrimPrefix(srv.URL, "http://")
+	b := makeActionBroker([]string{host}, nil, []string{governance.ActionHTTPRequest}, bus)
+	_ = b.Handle(BrokerRequest{Method: http.MethodGet, URL: srv.URL + "/test", ActionType: governance.ActionHTTPRequest})
+	events := bus.Drain()
+	found := false
+	for _, ev := range events {
+		if ev.Kind != telemetry.KindGovernedAction {
+			continue
+		}
+		var data telemetry.GovernedActionData
+		if err := json.Unmarshal(ev.Data, &data); err != nil {
+			t.Fatalf("unmarshal governed action: %v", err)
+		}
+		found = true
+		if data.ActionType != governance.ActionHTTPRequest || data.Decision != "allow" || data.ResponseDigest == "" {
+			t.Fatalf("unexpected governed action data: %+v", data)
+		}
+	}
+	if !found {
+		t.Fatal("governed.action.v1 not emitted")
 	}
 }
 

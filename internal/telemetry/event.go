@@ -33,6 +33,7 @@ const (
 	KindCredentialAllowed   = "credential.allowed"
 	KindCredentialDenied    = "credential.denied"
 	KindCredentialError     = "credential.error"
+	KindGovernedAction      = "governed.action.v1"
 )
 
 type CgroupConfiguredData struct {
@@ -104,7 +105,6 @@ type CleanupDoneData struct {
 	AllClean       bool `json:"all_clean"`
 }
 
-
 type CredentialBrokerData struct {
 	ExecutionID  string `json:"execution_id"`
 	BindingName  string `json:"binding_name,omitempty"`
@@ -113,4 +113,25 @@ type CredentialBrokerData struct {
 	ActionType   string `json:"action_type"`
 	Outcome      string `json:"outcome"`
 	DenialReason string `json:"denial_reason,omitempty"`
+}
+
+type GovernedActionData struct {
+	ExecutionID         string            `json:"execution_id"`
+	ActionType          string            `json:"action_type"`
+	Target              string            `json:"target"`
+	Resource            string            `json:"resource,omitempty"`
+	Method              string            `json:"method,omitempty"`
+	Decision            string            `json:"decision"`
+	Outcome             string            `json:"outcome,omitempty"`
+	Reason              string            `json:"reason,omitempty"`
+	RuleID              string            `json:"rule_id,omitempty"`
+	PolicyDigest        string            `json:"policy_digest,omitempty"`
+	Brokered            bool              `json:"brokered"`
+	BrokeredCredentials bool              `json:"brokered_credentials"`
+	BindingName         string            `json:"binding_name,omitempty"`
+	ResponseDigest      string            `json:"response_digest,omitempty"`
+	ResponseDigestAlgo  string            `json:"response_digest_algo,omitempty"`
+	DenialMarker        string            `json:"denial_marker,omitempty"`
+	AuditPayload        map[string]string `json:"audit_payload,omitempty"`
+	Error               string            `json:"error,omitempty"`
 }

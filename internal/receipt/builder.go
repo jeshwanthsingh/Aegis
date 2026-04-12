@@ -45,7 +45,7 @@ func BuildSignedReceipt(input Input, signer *Signer) (SignedReceipt, error) {
 
 func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int, error) {
 	intentDigest, intentAlgo := digestBytes(input.IntentRaw)
-	evidenceDigest, runtimeEventCount, pointSummary, divergenceSummary, brokerSummary, err := summarizeTelemetry(input.TelemetryEvents)
+	evidenceDigest, runtimeEventCount, pointSummary, divergenceSummary, brokerSummary, governedSummary, err := summarizeTelemetry(input.TelemetryEvents)
 	if err != nil {
 		return ExecutionReceiptPredicate{}, 0, err
 	}
@@ -73,6 +73,7 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		Divergence:         divergenceSummary,
 		Outcome:            input.Outcome,
 		BrokerSummary:      brokerSummary,
+		GovernedActions:    governedSummary,
 		Trust:              trustPostureForSigner(signer),
 		Limitations:        limitations,
 		StartedAt:          input.StartedAt.UTC(),
@@ -94,7 +95,7 @@ func buildSubjects(artifacts []Artifact) []StatementSubject {
 	return subjects
 }
 
-func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSummary, DivergenceSummary, *BrokerSummary, error) {
+func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSummary, DivergenceSummary, *BrokerSummary, *GovernedActionSummary, error) {
 	canonical := make([]map[string]any, 0, len(events))
 	pointSummary := PointDecisionSummary{}
 	divergenceSummary := DivergenceSummary{Verdict: models.DivergenceAllow, TriggeredRuleIDs: []string{}}
@@ -103,6 +104,7 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 	deniedDomainsSet := map[string]struct{}{}
 	bindingsUsedSet := map[string]struct{}{}
 	brokerReqCount, brokerAllowedCount, brokerDeniedCount := 0, 0, 0
+	governedActions := make([]GovernedActionRecord, 0)
 	for _, event := range events {
 		if event.Kind == telemetry.KindReceipt {
 			continue
@@ -114,7 +116,7 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 		case telemetry.KindPolicyPointDecision:
 			var point models.PolicyPointDecision
 			if err := json.Unmarshal(event.Data, &point); err != nil {
-				return "", 0, PointDecisionSummary{}, DivergenceSummary{}, nil, fmt.Errorf("decode point decision: %w", err)
+				return "", 0, PointDecisionSummary{}, DivergenceSummary{}, nil, nil, fmt.Errorf("decode point decision: %w", err)
 			}
 			switch point.Decision {
 			case models.DecisionAllow:
@@ -127,7 +129,7 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 		case telemetry.KindPolicyDivergence:
 			var divergence models.PolicyDivergenceResult
 			if err := json.Unmarshal(event.Data, &divergence); err != nil {
-				return "", 0, PointDecisionSummary{}, DivergenceSummary{}, nil, fmt.Errorf("decode divergence result: %w", err)
+				return "", 0, PointDecisionSummary{}, DivergenceSummary{}, nil, nil, fmt.Errorf("decode divergence result: %w", err)
 			}
 			ruleIDs := make([]string, 0, len(divergence.TriggeredRules))
 			for _, hit := range divergence.TriggeredRules {
@@ -135,26 +137,54 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 			}
 			sort.Strings(ruleIDs)
 			divergenceSummary = DivergenceSummary{Verdict: divergence.CurrentVerdict, TriggeredRuleIDs: ruleIDs, RuleHitCount: len(ruleIDs)}
+		case telemetry.KindGovernedAction:
+			var action telemetry.GovernedActionData
+			if err := json.Unmarshal(event.Data, &action); err != nil {
+				return "", 0, PointDecisionSummary{}, DivergenceSummary{}, nil, nil, fmt.Errorf("decode governed action: %w", err)
+			}
+			governedActions = append(governedActions, GovernedActionRecord{
+				ActionType:          action.ActionType,
+				Target:              action.Target,
+				Resource:            action.Resource,
+				Method:              action.Method,
+				Decision:            action.Decision,
+				Reason:              action.Reason,
+				RuleID:              action.RuleID,
+				PolicyDigest:        action.PolicyDigest,
+				Brokered:            action.Brokered,
+				BrokeredCredentials: action.BrokeredCredentials,
+				BindingName:         action.BindingName,
+				ResponseDigest:      action.ResponseDigest,
+				ResponseDigestAlgo:  action.ResponseDigestAlgo,
+				DenialMarker:        action.DenialMarker,
+				AuditPayload:        cloneStringMap(action.AuditPayload),
+			})
 		case telemetry.KindCredentialAllowed:
 			var bd telemetry.CredentialBrokerData
 			if json.Unmarshal(event.Data, &bd) == nil {
 				brokerReqCount++
 				brokerAllowedCount++
-				if bd.TargetDomain != "" { allowedDomainsSet[bd.TargetDomain] = struct{}{} }
-				if bd.BindingName != "" { bindingsUsedSet[bd.BindingName] = struct{}{} }
+				if bd.TargetDomain != "" {
+					allowedDomainsSet[bd.TargetDomain] = struct{}{}
+				}
+				if bd.BindingName != "" {
+					bindingsUsedSet[bd.BindingName] = struct{}{}
+				}
 			}
 		case telemetry.KindCredentialDenied:
 			var bd telemetry.CredentialBrokerData
 			if json.Unmarshal(event.Data, &bd) == nil {
 				brokerReqCount++
 				brokerDeniedCount++
-				if bd.TargetDomain != "" { deniedDomainsSet[bd.TargetDomain] = struct{}{} }
+				if bd.TargetDomain != "" {
+					deniedDomainsSet[bd.TargetDomain] = struct{}{}
+				}
 			}
 		}
 	}
 	bytes, err := json.Marshal(canonical)
 	if err != nil {
-		return "", 0, PointDecisionSummary{}, DivergenceSummary{}, nil, fmt.Errorf("marshal evidence summary: %w", err)
+		return "", 0, PointDecisionSummary{}, DivergenceSummary{}, nil, nil, fmt.Errorf("marshal evidence summary: %w", err)
 	}
 	digest := sha256.Sum256(bytes)
 	var bs *BrokerSummary
@@ -168,7 +198,11 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 			BindingsUsed:   setToSortedSlice(bindingsUsedSet),
 		}
 	}
-	return hex.EncodeToString(digest[:]), runtimeEventCount, pointSummary, divergenceSummary, bs, nil
+	var gs *GovernedActionSummary
+	if len(governedActions) > 0 {
+		gs = &GovernedActionSummary{Count: len(governedActions), Actions: governedActions}
+	}
+	return hex.EncodeToString(digest[:]), runtimeEventCount, pointSummary, divergenceSummary, bs, gs, nil
 }
 
 func hasReadOnlyFileSemantics(events []telemetry.Event) bool {

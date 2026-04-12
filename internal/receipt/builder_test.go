@@ -260,6 +260,25 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 	}
 }
 
+func TestFormatSummaryIncludesGovernedActionEvidence(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := FormatSummary(receipt.Statement, true)
+	for _, needle := range []string{
+		"governed_action_count=1",
+		"governed_action_1=kind=http_request",
+		"decision=deny",
+		"denial_marker=direct_egress_denied",
+	} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q: %s", needle, summary)
+		}
+	}
+}
+
 func testReceiptInput() Input {
 	started := time.Unix(1700000000, 0).UTC()
 	finished := started.Add(2 * time.Second)
@@ -267,6 +286,21 @@ func testReceiptInput() Input {
 	pointDeny, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 2, EventType: models.EventNetConnect, CedarAction: models.ActionConnect, Decision: models.DecisionDeny, Reason: "network disabled"})
 	divergence, _ := json.Marshal(models.PolicyDivergenceResult{ExecutionID: "exec_123", Backend: models.BackendFirecracker, StartedAt: started, UpdatedAt: finished, LastSeq: 2, CurrentVerdict: models.DivergenceKillCandidate, TriggeredRules: []models.DivergenceRuleHit{{RuleID: "network.connect_disabled", Category: "network", Severity: models.DivergenceSeverityKillCandidate, Message: "connect destination=127.0.0.1 attempted while allow_network=false", EventSeq: 2}}})
 	runtimeEvent, _ := json.Marshal(models.RuntimeEvent{ExecutionID: "exec_123", Backend: models.BackendFirecracker, Seq: 1, TsUnixNano: started.UnixNano(), Type: models.EventProcessExec, PID: 10, Exe: "/usr/bin/python3", Comm: "python3"})
+	governedAction, _ := json.Marshal(telemetry.GovernedActionData{
+		ExecutionID:         "exec_123",
+		ActionType:          "http_request",
+		Target:              "tcp://127.0.0.1:80",
+		Resource:            "tcp://127.0.0.1:80",
+		Method:              "CONNECT",
+		Decision:            "deny",
+		Outcome:             "denied",
+		Reason:              "network access is disabled by intent contract",
+		RuleID:              "governance.direct_egress_disabled",
+		PolicyDigest:        "policy-digest",
+		Brokered:            false,
+		BrokeredCredentials: false,
+		DenialMarker:        "direct_egress_denied",
+	})
 	return Input{
 		ExecutionID:     "exec_123",
 		WorkflowID:      "wf_9",
@@ -277,7 +311,7 @@ func testReceiptInput() Input {
 		FinishedAt:      finished,
 		IntentRaw:       []byte(`{"version":"v1","execution_id":"exec_123"}`),
 		Outcome:         Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
-		TelemetryEvents: []telemetry.Event{{ExecID: "exec_123", Kind: telemetry.KindRuntimeEvent, Data: runtimeEvent}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointAllow}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointDeny}, {ExecID: "exec_123", Kind: telemetry.KindPolicyDivergence, Data: divergence}},
+		TelemetryEvents: []telemetry.Event{{ExecID: "exec_123", Kind: telemetry.KindRuntimeEvent, Data: runtimeEvent}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointAllow}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointDeny}, {ExecID: "exec_123", Kind: telemetry.KindPolicyDivergence, Data: divergence}, {ExecID: "exec_123", Kind: telemetry.KindGovernedAction, Data: governedAction}},
 		Attributes:      map[string]string{"mode": "test"},
 	}
 }

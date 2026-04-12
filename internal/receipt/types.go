@@ -66,29 +66,29 @@ type TrustPosture struct {
 }
 
 type ExecutionReceiptPredicate struct {
-	Version            string                `json:"version"`
-	ExecutionID        string                `json:"execution_id"`
-	WorkflowID         string                `json:"workflow_id,omitempty"`
-	Backend            models.RuntimeBackend `json:"backend"`
-	TaskClass          string                `json:"task_class,omitempty"`
-	DeclaredPurpose    string                `json:"declared_purpose,omitempty"`
-	IntentDigest       string                `json:"intent_digest,omitempty"`
-	IntentDigestAlgo   string                `json:"intent_digest_algo,omitempty"`
-	EvidenceDigest     string                `json:"evidence_digest"`
-	EvidenceDigestAlgo string                `json:"evidence_digest_algo"`
-	RuntimeEventCount  int                   `json:"runtime_event_count"`
-	PointDecisions     PointDecisionSummary  `json:"point_decisions"`
-	Divergence         DivergenceSummary     `json:"divergence"`
-	Outcome            Outcome               `json:"outcome"`
-	Trust              TrustPosture          `json:"trust"`
-	Limitations        []string              `json:"limitations,omitempty"`
-	StartedAt          time.Time             `json:"started_at"`
-	FinishedAt         time.Time             `json:"finished_at"`
-	SignerKeyID        string                `json:"signer_key_id"`
-	BrokerSummary       *BrokerSummary        `json:"broker_summary,omitempty"`
-	Metadata           map[string]string     `json:"metadata,omitempty"`
+	Version            string                 `json:"version"`
+	ExecutionID        string                 `json:"execution_id"`
+	WorkflowID         string                 `json:"workflow_id,omitempty"`
+	Backend            models.RuntimeBackend  `json:"backend"`
+	TaskClass          string                 `json:"task_class,omitempty"`
+	DeclaredPurpose    string                 `json:"declared_purpose,omitempty"`
+	IntentDigest       string                 `json:"intent_digest,omitempty"`
+	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
+	EvidenceDigest     string                 `json:"evidence_digest"`
+	EvidenceDigestAlgo string                 `json:"evidence_digest_algo"`
+	RuntimeEventCount  int                    `json:"runtime_event_count"`
+	PointDecisions     PointDecisionSummary   `json:"point_decisions"`
+	Divergence         DivergenceSummary      `json:"divergence"`
+	Outcome            Outcome                `json:"outcome"`
+	Trust              TrustPosture           `json:"trust"`
+	Limitations        []string               `json:"limitations,omitempty"`
+	StartedAt          time.Time              `json:"started_at"`
+	FinishedAt         time.Time              `json:"finished_at"`
+	SignerKeyID        string                 `json:"signer_key_id"`
+	BrokerSummary      *BrokerSummary         `json:"broker_summary,omitempty"`
+	GovernedActions    *GovernedActionSummary `json:"governed_actions,omitempty"`
+	Metadata           map[string]string      `json:"metadata,omitempty"`
 }
-
 
 type BrokerSummary struct {
 	RequestCount   int      `json:"request_count"`
@@ -98,6 +98,30 @@ type BrokerSummary struct {
 	DomainsDenied  []string `json:"domains_denied,omitempty"`
 	BindingsUsed   []string `json:"bindings_used,omitempty"`
 }
+
+type GovernedActionSummary struct {
+	Count   int                    `json:"count"`
+	Actions []GovernedActionRecord `json:"actions,omitempty"`
+}
+
+type GovernedActionRecord struct {
+	ActionType          string            `json:"action_type"`
+	Target              string            `json:"target"`
+	Resource            string            `json:"resource,omitempty"`
+	Method              string            `json:"method,omitempty"`
+	Decision            string            `json:"decision"`
+	Reason              string            `json:"reason,omitempty"`
+	RuleID              string            `json:"rule_id,omitempty"`
+	PolicyDigest        string            `json:"policy_digest,omitempty"`
+	Brokered            bool              `json:"brokered"`
+	BrokeredCredentials bool              `json:"brokered_credentials"`
+	BindingName         string            `json:"binding_name,omitempty"`
+	ResponseDigest      string            `json:"response_digest,omitempty"`
+	ResponseDigestAlgo  string            `json:"response_digest_algo,omitempty"`
+	DenialMarker        string            `json:"denial_marker,omitempty"`
+	AuditPayload        map[string]string `json:"audit_payload,omitempty"`
+}
+
 type StatementSubject struct {
 	Name   string            `json:"name"`
 	Digest map[string]string `json:"digest"`

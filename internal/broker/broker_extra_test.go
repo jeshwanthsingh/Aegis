@@ -102,7 +102,7 @@ func TestBroker_AllowedDomainsAndWildcardMatching(t *testing.T) {
 
 func TestBroker_DenyErrorUsesForbiddenEnvelope(t *testing.T) {
 	b := makeTestBroker([]string{"example.com"}, nil, nil)
-	resp := b.denyError("broker.invalid_url", "invalid URL")
+	resp := b.denyError("", "http_request", "digest", "broker.invalid_url", "invalid URL")
 	if !resp.Denied || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("denyError response = %+v", resp)
 	}
