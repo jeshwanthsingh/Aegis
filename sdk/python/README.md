@@ -9,6 +9,17 @@ Package name:
 
 This SDK is for the current self-hosted HTTP API exposed by `aegis serve`.
 
+Public support posture:
+
+- primary public path: source checkout, release assets, `aegis setup`, `aegis doctor`, `aegis serve`, then proof verification
+- secondary path: this Python package talking to an already running Aegis runtime
+- not-primary: package-only claims that imply the Python package also installs and boots the runtime by itself
+
+Version coupling:
+
+- the SDK version in this repo is `0.1.0`
+- treat it as repo-coupled package metadata for this Aegis checkout, not as proof of an independently supported PyPI distribution channel
+
 ## Install
 
 ### Source checkout mode
@@ -31,7 +42,7 @@ python examples/run_code.py
 
 ### Installed-package mode
 
-Separate concern from the source checkout.
+Secondary concern from the source checkout.
 
 Local installed-package path from this repo:
 
@@ -48,6 +59,8 @@ PY
 ```
 
 That path should not depend on `PYTHONPATH`, editable install, or the repo checkout being your current working directory.
+
+It still assumes `aegis serve` is already running somewhere reachable. Installed-package mode is client consumption, not runtime installation.
 
 Python requirement:
 

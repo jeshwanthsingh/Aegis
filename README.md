@@ -17,6 +17,54 @@ You need:
 
 Aegis is the system for that shape of problem.
 
+## Public Consumption Matrix
+
+Use Aegis through one of these paths:
+
+### Primary public path
+
+Source checkout on Linux/KVM with release assets:
+
+1. obtain the repo checkout
+2. obtain the required release assets:
+   - `firecracker`
+   - `vmlinux`
+   - `alpine-base.ext4`
+3. verify those assets against `scripts/release-checksums.txt`
+4. run `aegis setup`
+5. run `aegis doctor`
+6. run `aegis serve`
+7. run code through an SDK or API client
+8. run `aegis receipt verify`
+
+This is the primary supported public path today.
+
+### Secondary public path
+
+Consume the Python or TypeScript SDK packages against an already running Aegis runtime.
+
+This path assumes:
+
+- the Aegis runtime is already installed and understood
+- `aegis serve` is already running
+- you are consuming the SDK as a client, not using the SDK as a standalone Aegis installer
+
+### Not-yet-supported / not-primary
+
+These are not honest primary claims today:
+
+- `pip install aegis-sdk` and you are done
+- `npm install @aegis/sdk` and you are done
+- package-only usage that also bootstraps Firecracker, rootfs assets, database setup, and runtime readiness
+
+The SDKs are client packages for a running Aegis runtime. They are not the runtime distribution story by themselves.
+
+Current version posture:
+
+- this repo currently carries Python SDK version `0.1.0`
+- this repo currently carries TypeScript SDK version `0.1.0`
+- treat those as repo-coupled package versions for this checkout, not as evidence of separately supported public registry releases
+
 ## Source Checkout Quickstart
 
 For a source checkout, the primary onboarding path is:
@@ -64,6 +112,29 @@ That path gives you:
 - a verification result against the emitted proof
 
 For the full source-checkout path, caveats, and TypeScript source-tree mode, start with [docs/quickstart.md](docs/quickstart.md).
+
+## Release Assets And Checksums
+
+The source-checkout runtime path expects these release artifacts:
+
+- `firecracker`
+- `vmlinux`
+- `alpine-base.ext4`
+
+The repo-local checksum file is:
+
+```text
+scripts/release-checksums.txt
+```
+
+That file is the checksum contract for the release assets consumed by `scripts/install.sh`. If you use that installer path, make sure the checkout you are using matches the intended release asset set instead of mixing arbitrary repo state with arbitrary downloaded assets.
+
+`scripts/install.sh` is optional automation. It is not the primary truth surface. The primary truth surfaces remain:
+
+- `aegis setup`
+- `aegis doctor`
+- `aegis serve`
+- `aegis receipt verify`
 
 ## What Aegis gives you
 

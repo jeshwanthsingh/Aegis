@@ -2,6 +2,12 @@
 
 This is the canonical source-checkout onboarding path.
 
+Public positioning:
+
+- primary public path: source checkout on Linux/KVM with release assets, `aegis setup`, `aegis doctor`, `aegis serve`, one SDK example, and `aegis receipt verify`
+- secondary path: installed SDK package usage against an already running Aegis runtime
+- not-primary: package-only claims that sound like runtime install/bootstrap by themselves
+
 For a source checkout, follow this exact sequence:
 
 1. host prerequisites
@@ -30,6 +36,18 @@ bash scripts/install.sh
 ```
 
 That script is convenience automation for a source checkout. It is not the primary truth surface. The primary truth surfaces are `aegis setup` and `aegis doctor`.
+
+Release assets expected for the source-checkout runtime path:
+
+- `firecracker`
+- `vmlinux`
+- `alpine-base.ext4`
+
+Checksum contract:
+
+- `scripts/release-checksums.txt`
+
+If you use `scripts/install.sh`, it validates those artifacts against the repo-local checksum file above. Keep the checkout and release asset set aligned. Do not assume any random checkout and any random release asset bundle are meant to go together.
 
 ## 1. Bootstrap from the source checkout
 
@@ -113,9 +131,10 @@ Source checkout Python usage:
 
 Installed-package Python usage:
 
-- separate concern
-- once the package is built/published for your environment, import `aegis` in your own project
-- not the primary path for a fresh repo checkout
+- secondary path only
+- assumes a working Aegis runtime is already running elsewhere
+- import `aegis` in your own project after installing the package for your environment
+- not the primary path for a fresh repo checkout or first runtime bring-up
 
 Source checkout TypeScript usage:
 
@@ -130,9 +149,10 @@ That path assumes Node.js and npm are already installed on the host.
 
 Installed-package TypeScript usage:
 
-- separate concern
-- once the package is built/published for your environment, consume `@aegis/sdk` in your own project
-- not the primary path for a fresh repo checkout
+- secondary path only
+- assumes a working Aegis runtime is already running elsewhere
+- consume `@aegis/sdk` in your own project after installing the package for your environment
+- not the primary path for a fresh repo checkout or first runtime bring-up
 
 ## Stronger second-step proof
 

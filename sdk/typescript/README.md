@@ -13,6 +13,17 @@ Runtime target:
 
 This SDK is the Node-first client for the current `aegis serve` HTTP API.
 
+Public support posture:
+
+- primary public path: source checkout, release assets, `aegis setup`, `aegis doctor`, `aegis serve`, then proof verification
+- secondary path: this TypeScript package talking to an already running Aegis runtime
+- not-primary: package-only claims that imply the TypeScript package also installs and boots the runtime by itself
+
+Version coupling:
+
+- the SDK version in this repo is `0.1.0`
+- treat it as repo-coupled package metadata for this Aegis checkout, not as proof of an independently supported npm distribution channel
+
 ## Install
 
 ### Source checkout mode
@@ -35,7 +46,7 @@ The package exports from `dist/src/index.js` after build.
 
 ### Installed-package mode
 
-Separate concern from the source checkout.
+Secondary concern from the source checkout.
 
 Local installed-package path from this repo:
 
@@ -54,6 +65,8 @@ EOF
 ```
 
 That path should consume the package through its declared entrypoint instead of importing repo source files directly.
+
+It still assumes `aegis serve` is already running somewhere reachable. Installed-package mode is client consumption, not runtime installation.
 
 ## Client initialization
 
