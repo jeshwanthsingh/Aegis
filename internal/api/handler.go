@@ -45,6 +45,8 @@ type ExecuteResponse struct {
 	ExitReason           string `json:"exit_reason,omitempty"`
 	DurationMs           int64  `json:"duration_ms"`
 	ExecutionID          string `json:"execution_id"`
+	DispatchPath         string `json:"dispatch_path,omitempty"`
+	ColdFallbackReason   string `json:"cold_fallback_reason,omitempty"`
 	Error                string `json:"error,omitempty"`
 	OutputTruncated      bool   `json:"output_truncated,omitempty"`
 	ProofDir             string `json:"proof_dir,omitempty"`
@@ -123,14 +125,21 @@ func requestedExecutionID(req ExecuteRequest, intent *policycontract.IntentContr
 	return ""
 }
 
-func warmEligible(req ExecuteRequest, warm *warmpool.Manager, pol *policy.Policy) bool {
+func warmShapeDecision(req ExecuteRequest, warm *warmpool.Manager, pol *policy.Policy, assetsDir string, rootfsPath string) (string, string) {
 	if warm == nil || !warm.Enabled() || pol == nil {
-		return false
+		return "", warmpool.FallbackPoolDisabled
 	}
 	if req.WorkspaceID != "" {
-		return false
+		return "", warmpool.FallbackWorkspace
 	}
-	return req.Profile == pol.DefaultProfile
+	if !warmpool.SupportedWarmProfile(req.Profile) {
+		return "", warmpool.FallbackProfile
+	}
+	shapeKey := warmpool.ShapeKey(req.Profile, assetsDir, rootfsPath, pol)
+	if !warm.SupportsShape(shapeKey) {
+		return "", warmpool.FallbackShapeMissing
+	}
+	return shapeKey, ""
 }
 
 func resolveRequestedProfile(req ExecuteRequest, pol *policy.Policy) string {
@@ -252,24 +261,28 @@ func enrichSandboxFailure(err error, vm *executor.VMInstance) (string, string) {
 	return errMsg + "\n" + stderrDetail, stderrDetail
 }
 
-func acquireExecutionVM(ctx context.Context, warm *warmpool.Manager, execID string, req ExecuteRequest, pol *policy.Policy, computeProfile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*executor.VMInstance, string, error) {
-	if warmEligible(req, warm, pol) {
-		vm, ok, err := warm.Claim(ctx)
+func acquireExecutionVM(ctx context.Context, warm *warmpool.Manager, execID string, req ExecuteRequest, pol *policy.Policy, computeProfile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	shapeKey, fallbackReason := warmShapeDecision(req, warm, pol, assetsDir, rootfsPath)
+	if shapeKey != "" {
+		vm, ok, claimReason, err := warm.ClaimFor(ctx, shapeKey)
 		if ok && err == nil {
 			vm.CgroupID = execID
-			return vm, "warm", nil
+			return vm, "warm", "", nil
 		}
 		if err != nil {
-			observability.Warn("warm_pool_claim_failed", observability.Fields{"execution_id": execID, "error": err.Error()})
+			fallbackReason = claimReason
+			observability.Warn("warm_pool_claim_failed", observability.Fields{"execution_id": execID, "error": err.Error(), "fallback_reason": fallbackReason})
+		} else {
+			fallbackReason = claimReason
 		}
-	} else if warm != nil && warm.Enabled() {
-		warm.RecordColdFallback()
+	} else if warm != nil {
+		warm.RecordColdFallbackReason(fallbackReason)
 	}
 	vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir, rootfsPath, bus)
 	if vm != nil {
 		vm.CgroupID = execID
 	}
-	return vm, "cold", err
+	return vm, "cold", fallbackReason, err
 }
 
 // WithAuth wraps a handler with Bearer token authentication.
@@ -353,8 +366,16 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 
 		proofRoot := receipt.ProofRoot(strings.TrimSpace(os.Getenv("AEGIS_PROOF_ROOT")))
 		proofPaths := receipt.BundlePaths{}
+		var (
+			vmPath             string
+			coldFallbackReason string
+		)
 		respond := func(resp ExecuteResponse, rec store.ExecutionRecord) {
 			resp.DurationMs = time.Since(start).Milliseconds()
+			resp.DispatchPath = vmPath
+			if vmPath == "cold" && coldFallbackReason != "" {
+				resp.ColdFallbackReason = coldFallbackReason
+			}
 			resp = withReceiptProof(resp, proofPaths)
 			writeJSON(w, http.StatusOK, resp)
 		}
@@ -452,9 +473,8 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			observability.ObserveBootDuration(time.Since(bootStart))
 		}
 
-		var vmPath string
 		claimStart := time.Now()
-		vm, vmPath, err = acquireExecutionVMFunc(ctx, warm, execID, req, pol, computeProfile, assetsDir, rootfsPath, bus)
+		vm, vmPath, coldFallbackReason, err = acquireExecutionVMFunc(ctx, warm, execID, req, pol, computeProfile, assetsDir, rootfsPath, bus)
 		claimElapsed := time.Since(claimStart)
 		if err != nil {
 			recordBoot()
@@ -496,7 +516,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			respond(ExecuteResponse{ExecutionID: execID, Error: clientError}, rec)
 			return
 		}
-		observability.Info("vm_acquired", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": claimElapsed.Milliseconds()})
+		observability.Info("vm_acquired", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": claimElapsed.Milliseconds(), "cold_fallback_reason": coldFallbackReason})
 		vm.CgroupID = execID
 
 		resolvedResources := resourcesForProfile(pol.Resources, computeProfile)
@@ -739,13 +759,15 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Execution-ID", execID)
 		var (
-			vm              *executor.VMInstance
-			exitCode        int
-			exitReason      = "completed"
-			outputTruncated bool
-			stdoutData      string
-			stderrData      string
-			receiptPolicy   = buildReceiptPolicy(pol, policyVersion, req.Profile)
+			vm                 *executor.VMInstance
+			vmPath             string
+			exitCode           int
+			exitReason         = "completed"
+			coldFallbackReason string
+			outputTruncated    bool
+			stdoutData         string
+			stderrData         string
+			receiptPolicy      = buildReceiptPolicy(pol, policyVersion, req.Profile)
 		)
 
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond+startupSlack)
@@ -764,9 +786,8 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			observability.ObserveBootDuration(time.Since(bootStart))
 		}
 
-		var vmPath string
 		claimStart := time.Now()
-		vm, vmPath, err = acquireExecutionVMFunc(ctx, warm, execID, req, pol, computeProfile, assetsDir, rootfsPath, bus)
+		vm, vmPath, coldFallbackReason, err = acquireExecutionVMFunc(ctx, warm, execID, req, pol, computeProfile, assetsDir, rootfsPath, bus)
 		claimElapsed := time.Since(claimStart)
 		if err != nil {
 			recordBoot()
@@ -803,7 +824,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: clientError})
 			return
 		}
-		observability.Info("vm_acquired", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": claimElapsed.Milliseconds()})
+		observability.Info("vm_acquired", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": claimElapsed.Milliseconds(), "cold_fallback_reason": coldFallbackReason})
 		vm.CgroupID = execID
 
 		resolvedResources := resourcesForProfile(pol.Resources, computeProfile)

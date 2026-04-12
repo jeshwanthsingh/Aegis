@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,6 +84,70 @@ func TestReconcileMarksInflightAndRemovesOrphans(t *testing.T) {
 	}
 	if !receiptCleanup.ScratchRemoved || !receiptCleanup.SocketRemoved || !receiptCleanup.CgroupRemoved || !receiptCleanup.AllClean {
 		t.Fatalf("receiptCleanup = %+v, want scratch/socket/cgroup/all clean true", receiptCleanup)
+	}
+	for _, path := range []string{scratch, socket, vsock, cgroupPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, stat err=%v", path, err)
+		}
+	}
+}
+
+func TestReconcileRemovesUntrackedWarmOrphansWithoutReceipt(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("AEGIS_CGROUP_PARENT", filepath.Join(root, "cgroups"))
+
+	scratch := filepath.Join(root, "scratch-warm123.ext4")
+	socket := filepath.Join("/tmp/aegis", "fc-warm123.sock")
+	vsock := filepath.Join("/tmp/aegis", "vsock-warm123.sock")
+	if err := os.MkdirAll("/tmp/aegis", 0o700); err != nil {
+		t.Fatalf("MkdirAll /tmp/aegis: %v", err)
+	}
+	for _, path := range []string{scratch, socket, vsock} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", path, err)
+		}
+	}
+	cgroupPath := filepath.Join(root, "cgroups", "warm123")
+	if err := os.MkdirAll(cgroupPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll cgroupPath: %v", err)
+	}
+
+	origGlob := globScratchPathsFunc
+	origMarkInflight := markInFlightReconciledFunc
+	origMarkExec := markExecutionReconciledFunc
+	origLoadExec := loadExecutionRecordFunc
+	origEmitReconciledReceipt := emitReconciledReceiptFunc
+	t.Cleanup(func() {
+		globScratchPathsFunc = origGlob
+		markInFlightReconciledFunc = origMarkInflight
+		markExecutionReconciledFunc = origMarkExec
+		loadExecutionRecordFunc = origLoadExec
+		emitReconciledReceiptFunc = origEmitReconciledReceipt
+	})
+
+	globScratchPathsFunc = func(string) ([]string, error) { return []string{scratch}, nil }
+	markInFlightReconciledFunc = func(*store.Store) error { return nil }
+	markExecutionCalls := 0
+	markExecutionReconciledFunc = func(_ *store.Store, executionID string) error {
+		markExecutionCalls++
+		return nil
+	}
+	loadExecutionRecordFunc = func(_ *store.Store, executionID string) (store.ExecutionRecord, error) {
+		return store.ExecutionRecord{}, sql.ErrNoRows
+	}
+	receiptCalls := 0
+	emitReconciledReceiptFunc = func(store.ExecutionRecord, telemetry.CleanupDoneData) (receipt.BundlePaths, error) {
+		receiptCalls++
+		return receipt.BundlePaths{}, nil
+	}
+
+	reconcile(nil)
+
+	if markExecutionCalls != 0 {
+		t.Fatalf("markExecutionReconciled calls = %d, want 0", markExecutionCalls)
+	}
+	if receiptCalls != 0 {
+		t.Fatalf("emitReconciledReceipt calls = %d, want 0", receiptCalls)
 	}
 	for _, path := range []string{scratch, socket, vsock, cgroupPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {

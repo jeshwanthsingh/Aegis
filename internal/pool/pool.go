@@ -33,18 +33,23 @@ type Config struct {
 	Policy       *policy.Policy
 	Profile      policy.ComputeProfile
 	ProfileName  string
+	Shapes       []ShapeConfig
 }
 
 type Status struct {
-	Enabled         bool   `json:"enabled"`
-	ConfiguredSize  int    `json:"configured_size"`
-	Available       int    `json:"available"`
-	Initializing    int    `json:"initializing"`
-	MaxAgeSeconds   int64  `json:"max_age_seconds"`
-	WarmClaims      uint64 `json:"warm_claims"`
-	ColdFallbacks   uint64 `json:"cold_fallbacks"`
-	ClaimErrors     uint64 `json:"claim_errors"`
-	RecycledExpired uint64 `json:"recycled_expired"`
+	Enabled             bool              `json:"enabled"`
+	ConfiguredSize      int               `json:"configured_size"`
+	Available           int               `json:"available"`
+	Initializing        int               `json:"initializing"`
+	MaxAgeSeconds       int64             `json:"max_age_seconds"`
+	WarmClaims          uint64            `json:"warm_claims"`
+	ColdFallbacks       uint64            `json:"cold_fallbacks"`
+	ClaimErrors         uint64            `json:"claim_errors"`
+	RecycledExpired     uint64            `json:"recycled_expired"`
+	ConfiguredByShape   map[string]int    `json:"configured_by_shape,omitempty"`
+	AvailableByShape    map[string]int    `json:"available_by_shape,omitempty"`
+	InitializingByShape map[string]int    `json:"initializing_by_shape,omitempty"`
+	ColdFallbackReasons map[string]uint64 `json:"cold_fallback_reasons,omitempty"`
 }
 
 type entry struct {
@@ -69,9 +74,53 @@ type Manager struct {
 	coldFallbacks   atomic.Uint64
 	claimErrors     atomic.Uint64
 	recycledExpired atomic.Uint64
+
+	shapeManagers   map[string]*shapeManager
+	shapeOrder      []string
+	fallbackReasons map[string]uint64
+}
+
+type shapeManager struct {
+	label   string
+	manager *Manager
 }
 
 func New(cfg Config) *Manager {
+	if len(cfg.Shapes) > 0 {
+		if cfg.MaxAge <= 0 {
+			cfg.MaxAge = 5 * time.Minute
+		}
+		if cfg.ReadyTimeout <= 0 {
+			cfg.ReadyTimeout = defaultReadyTimeout
+		}
+		mgr := &Manager{
+			cfg:             cfg,
+			shapeManagers:   map[string]*shapeManager{},
+			fallbackReasons: map[string]uint64{},
+		}
+		for _, shape := range cfg.Shapes {
+			if shape.Size <= 0 {
+				continue
+			}
+			sub := newSingle(Config{
+				Size:         shape.Size,
+				MaxAge:       cfg.MaxAge,
+				ReadyTimeout: cfg.ReadyTimeout,
+				AssetsDir:    shape.AssetsDir,
+				RootfsPath:   shape.RootfsPath,
+				Policy:       shape.Policy,
+				Profile:      shape.Profile,
+				ProfileName:  shape.ProfileName,
+			})
+			mgr.shapeManagers[shape.Key] = &shapeManager{label: shape.Label, manager: sub}
+			mgr.shapeOrder = append(mgr.shapeOrder, shape.Key)
+		}
+		return mgr
+	}
+	return newSingle(cfg)
+}
+
+func newSingle(cfg Config) *Manager {
 	if cfg.MaxAge <= 0 {
 		cfg.MaxAge = 5 * time.Minute
 	}
@@ -123,11 +172,23 @@ func NewWithHooks(cfg Config, hooks Hooks) *Manager {
 }
 
 func (m *Manager) Enabled() bool {
-	return m != nil && m.cfg.Size > 0
+	if m == nil {
+		return false
+	}
+	if len(m.shapeManagers) > 0 {
+		return len(m.shapeManagers) > 0
+	}
+	return m.cfg.Size > 0
 }
 
 func (m *Manager) Start() {
 	if !m.Enabled() {
+		return
+	}
+	if len(m.shapeManagers) > 0 {
+		for _, key := range m.shapeOrder {
+			m.shapeManagers[key].manager.Start()
+		}
 		return
 	}
 	m.mu.Lock()
@@ -143,6 +204,15 @@ func (m *Manager) Start() {
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil
+	}
+	if len(m.shapeManagers) > 0 {
+		var firstErr error
+		for _, key := range m.shapeOrder {
+			if err := m.shapeManagers[key].manager.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
 	}
 	m.cancel()
 	m.mu.Lock()
@@ -165,21 +235,47 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) Claim(ctx context.Context) (*executor.VMInstance, bool, error) {
+	vm, warm, _, err := m.claimWithReason(ctx)
+	return vm, warm, err
+}
+
+func (m *Manager) ClaimFor(ctx context.Context, shapeKey string) (*executor.VMInstance, bool, string, error) {
 	if !m.Enabled() {
-		return nil, false, nil
+		return nil, false, FallbackPoolDisabled, nil
 	}
+	if len(m.shapeManagers) == 0 {
+		return m.claimWithReason(ctx)
+	}
+	shape, ok := m.shapeManagers[shapeKey]
+	if !ok {
+		m.RecordColdFallbackReason(FallbackShapeMissing)
+		return nil, false, FallbackShapeMissing, nil
+	}
+	vm, warm, reason, err := shape.manager.claimWithReason(ctx)
+	if !warm {
+		m.RecordColdFallbackReason(reason)
+	}
+	return vm, warm, reason, err
+}
+
+func (m *Manager) claimWithReason(ctx context.Context) (*executor.VMInstance, bool, string, error) {
+	if !m.Enabled() {
+		return nil, false, FallbackPoolDisabled, nil
+	}
+	staleFound := false
 	for {
 		var claimed *entry
 		m.mu.Lock()
 		if m.closed {
 			m.mu.Unlock()
-			return nil, false, errors.New("warm pool closed")
+			return nil, false, FallbackClaimError, errors.New("warm pool closed")
 		}
 		now := time.Now()
 		for len(m.ready) > 0 {
 			candidate := m.ready[0]
 			m.ready = m.ready[1:]
 			if now.Sub(candidate.readyAt) > m.cfg.MaxAge {
+				staleFound = true
 				m.recycledExpired.Add(1)
 				go m.recycle(candidate)
 				continue
@@ -192,22 +288,48 @@ func (m *Manager) Claim(ctx context.Context) (*executor.VMInstance, bool, error)
 
 		if claimed == nil {
 			m.coldFallbacks.Add(1)
-			return nil, false, nil
+			if staleFound {
+				return nil, false, FallbackStaleEntry, nil
+			}
+			return nil, false, FallbackPoolEmpty, nil
 		}
 		if err := m.hooks.Resume(ctx, claimed.vm); err != nil {
 			m.claimErrors.Add(1)
 			go m.recycle(claimed)
 			m.coldFallbacks.Add(1)
-			return nil, false, err
+			return nil, false, FallbackClaimError, err
 		}
 		m.warmClaims.Add(1)
-		return claimed.vm, true, nil
+		return claimed.vm, true, "", nil
 	}
 }
 
 func (m *Manager) RecordColdFallback() {
+	m.RecordColdFallbackReason(FallbackPoolEmpty)
+}
+
+func (m *Manager) SupportsShape(shapeKey string) bool {
+	if m == nil || shapeKey == "" {
+		return false
+	}
+	if len(m.shapeManagers) == 0 {
+		return m.Enabled()
+	}
+	_, ok := m.shapeManagers[shapeKey]
+	return ok
+}
+
+func (m *Manager) RecordColdFallbackReason(reason string) {
 	if m == nil {
 		return
+	}
+	if reason == "" {
+		reason = FallbackPoolEmpty
+	}
+	if len(m.shapeManagers) > 0 {
+		m.mu.Lock()
+		m.fallbackReasons[reason]++
+		m.mu.Unlock()
 	}
 	m.coldFallbacks.Add(1)
 }
@@ -215,6 +337,37 @@ func (m *Manager) RecordColdFallback() {
 func (m *Manager) Status() Status {
 	if m == nil {
 		return Status{}
+	}
+	if len(m.shapeManagers) > 0 {
+		status := Status{
+			Enabled:             len(m.shapeManagers) > 0,
+			MaxAgeSeconds:       int64(m.cfg.MaxAge / time.Second),
+			ConfiguredByShape:   map[string]int{},
+			AvailableByShape:    map[string]int{},
+			InitializingByShape: map[string]int{},
+			ColdFallbackReasons: map[string]uint64{},
+		}
+		for _, key := range m.shapeOrder {
+			shape := m.shapeManagers[key]
+			subStatus := shape.manager.Status()
+			status.ConfiguredSize += subStatus.ConfiguredSize
+			status.Available += subStatus.Available
+			status.Initializing += subStatus.Initializing
+			status.WarmClaims += subStatus.WarmClaims
+			status.ColdFallbacks += subStatus.ColdFallbacks
+			status.ClaimErrors += subStatus.ClaimErrors
+			status.RecycledExpired += subStatus.RecycledExpired
+			status.ConfiguredByShape[shape.label] = subStatus.ConfiguredSize
+			status.AvailableByShape[shape.label] = subStatus.Available
+			status.InitializingByShape[shape.label] = subStatus.Initializing
+		}
+		status.ColdFallbacks += m.coldFallbacks.Load()
+		m.mu.Lock()
+		for reason, count := range m.fallbackReasons {
+			status.ColdFallbackReasons[reason] = count
+		}
+		m.mu.Unlock()
+		return status
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -97,18 +97,10 @@ func main() {
 	observability.SetWorkerSlotsFunc(pool.Available)
 	registry := api.NewBusRegistry()
 	stats := api.NewStatsCounter()
-	defaultProfile, ok := pol.Profiles[pol.DefaultProfile]
-	if !ok {
-		observability.Fatal("startup_failed", observability.Fields{"step": "resolve_default_profile", "error": "default profile missing", "profile": pol.DefaultProfile})
-	}
 	warmPool := warmpool.New(warmpool.Config{
-		Size:        envInt("AEGIS_WARM_POOL_SIZE", 0),
-		MaxAge:      time.Duration(envInt("AEGIS_WARM_POOL_MAX_AGE", 300)) * time.Second,
-		AssetsDir:   *assetsDir,
-		RootfsPath:  *rootfsPath,
-		Policy:      pol,
-		Profile:     defaultProfile,
-		ProfileName: pol.DefaultProfile,
+		Size:   envInt("AEGIS_WARM_POOL_SIZE", 0),
+		MaxAge: time.Duration(envInt("AEGIS_WARM_POOL_MAX_AGE", 300)) * time.Second,
+		Shapes: warmpool.DefaultShapes(envInt("AEGIS_WARM_POOL_SIZE", 0), *assetsDir, *rootfsPath, pol),
 	})
 	warmPool.Start()
 	defer warmPool.Close()
@@ -208,16 +200,17 @@ func reconcile(s *store.Store) {
 		}
 		cleanup.AllClean = cleanup.ScratchRemoved && cleanup.SocketRemoved && cleanup.CgroupRemoved
 
-		if err := markExecutionReconciledFunc(s, uuid); err != nil {
-			observability.Warn("reconcile_mark_execution_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
-			continue
-		}
 		rec, err := loadExecutionRecordFunc(s, uuid)
 		if err == sql.ErrNoRows {
+			observability.Info("reconcile_untracked_warm_orphan_removed", observability.Fields{"execution_id": uuid})
 			continue
 		}
 		if err != nil {
 			observability.Warn("reconcile_load_execution_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
+			continue
+		}
+		if err := markExecutionReconciledFunc(s, uuid); err != nil {
+			observability.Warn("reconcile_mark_execution_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
 			continue
 		}
 		if rec.Status != store.StatusReconciled {

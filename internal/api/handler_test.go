@@ -94,19 +94,23 @@ func TestChooseExecutionIDRejectsMalformed(t *testing.T) {
 	}
 }
 
-func TestWarmEligibleRequiresDefaultScratchProfile(t *testing.T) {
+func TestWarmShapeDecision(t *testing.T) {
 	t.Parallel()
 
 	pol := policy.Default()
-	warm := warmpool.New(warmpool.Config{Size: 1, MaxAge: time.Minute})
-	if !warmEligible(ExecuteRequest{Profile: pol.DefaultProfile}, warm, pol) {
-		t.Fatal("expected default-profile scratch request to be warm-eligible")
+	warm := warmpool.New(warmpool.Config{
+		Size:   2,
+		MaxAge: time.Minute,
+		Shapes: warmpool.DefaultShapes(2, "", "", pol),
+	})
+	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "standard"}, warm, pol, "", ""); key == "" || reason != "" {
+		t.Fatalf("standard should be warm-eligible, key=%q reason=%q", key, reason)
 	}
-	if warmEligible(ExecuteRequest{Profile: "crunch"}, warm, pol) {
-		t.Fatal("non-default profile should not be warm-eligible")
+	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "crunch"}, warm, pol, "", ""); key != "" || reason != warmpool.FallbackProfile {
+		t.Fatalf("crunch should fall back with profile reason, key=%q reason=%q", key, reason)
 	}
-	if warmEligible(ExecuteRequest{Profile: pol.DefaultProfile, WorkspaceID: "demo"}, warm, pol) {
-		t.Fatal("workspace-backed request should not be warm-eligible")
+	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "nano", WorkspaceID: "demo"}, warm, pol, "", ""); key != "" || reason != warmpool.FallbackWorkspace {
+		t.Fatalf("workspace-backed request should fall back with workspace reason, key=%q reason=%q", key, reason)
 	}
 }
 
@@ -129,6 +133,24 @@ func TestResolveRequestedProfile(t *testing.T) {
 	}
 	if got := resolveRequestedProfile(ExecuteRequest{}, pol); got != "standard" {
 		t.Fatalf("empty language should prefer standard, got %q", got)
+	}
+}
+
+func TestExecuteHandlerReportsDispatchPathAndFallbackReason(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"dispatch_path":"cold"`) || !strings.Contains(body, `"cold_fallback_reason":"pool_disabled"`) {
+		t.Fatalf("unexpected body: %s", body)
 	}
 }
 
@@ -599,8 +621,8 @@ func installHandlerRuntimeStubs(t *testing.T) {
 	origEmit := emitSignedReceiptFunc
 	origWrite := writeExecutionRecordFunc
 
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return &executor.VMInstance{FirecrackerPID: 77, VsockPath: "/tmp/vsock"}, "cold", nil
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return &executor.VMInstance{FirecrackerPID: 77, VsockPath: "/tmp/vsock"}, "cold", warmpool.FallbackPoolDisabled, nil
 	}
 	setupCgroupFunc = func(string, int, policy.ResourcePolicy, *telemetry.Bus) error { return nil }
 	teardownVMFunc = func(*executor.VMInstance, *telemetry.Bus) error { return nil }
@@ -680,8 +702,8 @@ func TestExecuteHandlerLifecycleStateTransitions(t *testing.T) {
 
 func TestExecuteHandlerBootTimeoutLifecycleState(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(ctx context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, _ *policy.Policy, _ policy.ComputeProfile, _ string, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return nil, "", context.DeadlineExceeded
+	acquireExecutionVMFunc = func(ctx context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, _ *policy.Policy, _ policy.ComputeProfile, _ string, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return nil, "cold", warmpool.FallbackPoolDisabled, context.DeadlineExceeded
 	}
 	var statuses []string
 	writeExecutionRecordFunc = func(_ *store.Store, rec store.ExecutionRecord) error {
@@ -860,8 +882,8 @@ func TestExecuteHandlerInvalidExecutionID(t *testing.T) {
 
 func TestExecuteHandlerWorkspaceValidationError(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return nil, "", executor.ErrInvalidWorkspaceID
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return nil, "cold", warmpool.FallbackWorkspace, executor.ErrInvalidWorkspaceID
 	}
 
 	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -877,8 +899,8 @@ func TestExecuteHandlerWorkspaceValidationError(t *testing.T) {
 
 func TestExecuteHandlerWorkspaceNotFound(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return nil, "", os.ErrNotExist
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return nil, "cold", warmpool.FallbackWorkspace, os.ErrNotExist
 	}
 
 	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -894,8 +916,8 @@ func TestExecuteHandlerWorkspaceNotFound(t *testing.T) {
 
 func TestExecuteHandlerAcquireSandboxFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return nil, "", errors.New("vm start failed")
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return nil, "cold", warmpool.FallbackClaimError, errors.New("vm start failed")
 	}
 
 	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -1113,8 +1135,8 @@ func TestStreamHandlerDuplicateExecutionIDConflict(t *testing.T) {
 
 func TestStreamHandlerWorkspaceValidationError(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return nil, "", executor.ErrInvalidWorkspaceID
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return nil, "cold", warmpool.FallbackWorkspace, executor.ErrInvalidWorkspaceID
 	}
 
 	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -1130,8 +1152,8 @@ func TestStreamHandlerWorkspaceValidationError(t *testing.T) {
 
 func TestStreamHandlerWorkspaceNotFound(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return nil, "", os.ErrNotExist
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return nil, "cold", warmpool.FallbackWorkspace, os.ErrNotExist
 	}
 
 	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -1146,8 +1168,8 @@ func TestStreamHandlerWorkspaceNotFound(t *testing.T) {
 }
 func TestStreamHandlerAcquireSandboxFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
-		return nil, "", errors.New("vm start failed")
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return nil, "cold", warmpool.FallbackClaimError, errors.New("vm start failed")
 	}
 
 	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
