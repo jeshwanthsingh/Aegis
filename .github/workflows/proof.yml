@@ -48,6 +48,11 @@ jobs:
           test -x /usr/lib/postgresql/16/bin/pg_ctl
           test -x /usr/lib/postgresql/16/bin/psql
 
+      - name: Build repo-local Aegis CLI
+        run: |
+          mkdir -p .aegis/bin
+          go build -buildvcs=false -o .aegis/bin/aegis ./cmd/aegis-cli
+
       - name: Canonical demo proof
         run: python3 scripts/run_canonical_demo.py --serve
 
