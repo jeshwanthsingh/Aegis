@@ -146,8 +146,10 @@ type GovernedActionRecord struct {
 	Target              string            `json:"target"`
 	Resource            string            `json:"resource,omitempty"`
 	Method              string            `json:"method,omitempty"`
+	CapabilityPath      string            `json:"capability_path,omitempty"`
 	Decision            string            `json:"decision"`
 	Outcome             string            `json:"outcome,omitempty"`
+	Used                bool              `json:"used"`
 	Reason              string            `json:"reason,omitempty"`
 	RuleID              string            `json:"rule_id,omitempty"`
 	PolicyDigest        string            `json:"policy_digest,omitempty"`
@@ -167,8 +169,10 @@ type NormalizedGovernedActionEntry struct {
 	Target              string            `json:"target"`
 	Resource            string            `json:"resource,omitempty"`
 	Method              string            `json:"method,omitempty"`
+	CapabilityPath      string            `json:"capability_path,omitempty"`
 	Decision            string            `json:"decision"`
 	Outcome             string            `json:"outcome,omitempty"`
+	Used                bool              `json:"used"`
 	Reason              string            `json:"reason,omitempty"`
 	RuleID              string            `json:"rule_id,omitempty"`
 	PolicyDigest        string            `json:"policy_digest,omitempty"`

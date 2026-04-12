@@ -75,3 +75,35 @@ func TestEvaluateDirectEgressClassifiesNonHTTPConnect(t *testing.T) {
 		t.Fatalf("unexpected decision: %+v", decision)
 	}
 }
+
+func TestEffectiveBrokerActionTypesNormalizesDefault(t *testing.T) {
+	got := EffectiveBrokerActionTypes(contract.BrokerScope{
+		AllowedDomains:     []string{"api.example.com"},
+		AllowedActionTypes: []string{"HTTP_REQUEST", "", ActionHTTPRequest},
+	})
+	if len(got) != 1 || got[0] != ActionHTTPRequest {
+		t.Fatalf("EffectiveBrokerActionTypes() = %v", got)
+	}
+}
+
+func TestEvaluateBrokerCapabilityBuildsSharedCapabilityRecord(t *testing.T) {
+	record := EvaluateBrokerCapability(contract.BrokerScope{
+		AllowedDomains:     []string{"packages.example.com"},
+		AllowedActionTypes: []string{ActionDependencyFetch},
+	}, Request{
+		ExecutionID: "exec",
+		ActionType:  ActionDependencyFetch,
+		Method:      http.MethodGet,
+		Target:      "https://packages.example.com/pkg.whl?token=hidden",
+		Resource:    "packages.example.com",
+	})
+	if !record.Decision.Allow || record.Decision.Deny {
+		t.Fatalf("unexpected decision: %+v", record.Decision)
+	}
+	if record.Use.Path != CapabilityPathBroker || record.Use.Used {
+		t.Fatalf("unexpected capability use: %+v", record.Use)
+	}
+	if record.Request.Target != "https://packages.example.com/pkg.whl" {
+		t.Fatalf("sanitized target = %q", record.Request.Target)
+	}
+}

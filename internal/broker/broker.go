@@ -52,7 +52,6 @@ func (b *Broker) Handle(req BrokerRequest) BrokerResponse {
 		actionType = governance.ActionHTTPRequest
 	}
 	target := governance.SanitizeTarget(req.URL)
-	policyDigest := governance.DigestBrokerScope(b.scope)
 
 	// Emit request event regardless of outcome.
 	domain, domainErr := extractDomain(req.URL)
@@ -66,13 +65,32 @@ func (b *Broker) Handle(req BrokerRequest) BrokerResponse {
 
 	// Reject CONNECT tunneling: host cannot inject auth headers into opaque TLS streams.
 	if strings.ToUpper(req.Method) == http.MethodConnect {
-		return b.deny(domain, "", target, actionType, "broker.connect_not_supported", "CONNECT tunneling is not supported in v1; use plain HTTP requests", policyDigest, nil)
+		return b.deny(governance.CapabilityRecord{
+			Request: governance.Request{
+				ExecutionID: b.execID,
+				ActionType:  actionType,
+				Method:      strings.ToUpper(req.Method),
+				Target:      target,
+				Resource:    domain,
+				Brokered:    true,
+			},
+			Decision: governance.Decision{
+				Deny:         true,
+				RuleID:       "broker.connect_not_supported",
+				Reason:       "CONNECT tunneling is not supported in v1; use plain HTTP requests",
+				PolicyDigest: governance.DigestBrokerScope(b.scope),
+				AuditPayload: map[string]string{"target_domain": domain},
+			},
+			Use: governance.CapabilityUse{
+				Path: governance.CapabilityPathBroker,
+			},
+		}, "")
 	}
 
 	if domainErr != nil {
-		return b.denyError(target, actionType, policyDigest, "broker.invalid_url", fmt.Sprintf("invalid URL: %v", domainErr))
+		return b.denyError(target, actionType, governance.DigestBrokerScope(b.scope), "broker.invalid_url", fmt.Sprintf("invalid URL: %v", domainErr))
 	}
-	decision := governance.EvaluateBroker(b.scope, governance.Request{
+	record := governance.EvaluateBrokerCapability(b.scope, governance.Request{
 		ExecutionID: b.execID,
 		ActionType:  actionType,
 		Method:      req.Method,
@@ -80,14 +98,19 @@ func (b *Broker) Handle(req BrokerRequest) BrokerResponse {
 		Resource:    domain,
 		Brokered:    true,
 	})
-	if decision.Deny {
-		return b.deny(domain, "", target, actionType, decision.RuleID, decision.Reason, decision.PolicyDigest, decision.AuditPayload)
+	if record.Decision.Deny {
+		return b.deny(record, "")
 	}
 
 	// Find the first loaded credential binding from allowed delegations.
 	binding, bindingName := b.resolveBinding()
 	if len(b.scope.AllowedDelegations) > 0 && !binding.IsLoaded() {
-		return b.deny(domain, "", target, actionType, "broker.binding_unavailable", "no configured host credential matched broker_scope.allowed_delegations", policyDigest, nil)
+		record.Decision.Allow = false
+		record.Decision.Deny = true
+		record.Decision.RuleID = "broker.binding_unavailable"
+		record.Decision.Reason = "no configured host credential matched broker_scope.allowed_delegations"
+		record.Use.BindingName = ""
+		return b.deny(record, "")
 	}
 
 	// Perform the outbound HTTP request with credential injection.
@@ -102,25 +125,11 @@ func (b *Broker) Handle(req BrokerRequest) BrokerResponse {
 			Outcome:      "error",
 			DenialReason: err.Error(),
 		})
-		b.emitGovernedAction(telemetry.GovernedActionData{
-			ExecutionID:         b.execID,
-			ActionType:          actionType,
-			Target:              target,
-			Resource:            domain,
-			Method:              strings.ToUpper(req.Method),
-			Decision:            "allow",
-			Outcome:             "error",
-			Reason:              "governed action allowed but upstream execution failed",
-			RuleID:              "governance.allow",
-			PolicyDigest:        policyDigest,
-			Brokered:            true,
-			BrokeredCredentials: binding.IsLoaded(),
-			BindingName:         bindingName,
-			Error:               err.Error(),
-			AuditPayload: map[string]string{
-				"target_domain": domain,
-			},
-		})
+		record.Use.BindingName = bindingName
+		record.Use.CredentialsInjected = binding.IsLoaded()
+		record.Use.Error = err.Error()
+		record.Decision.Reason = "governed action allowed but upstream execution failed"
+		b.emitGovernedAction(record.ToGovernedActionData())
 		return BrokerResponse{Error: fmt.Sprintf("broker request failed: %v", err)}
 	}
 
@@ -132,26 +141,12 @@ func (b *Broker) Handle(req BrokerRequest) BrokerResponse {
 		ActionType:   actionType,
 		Outcome:      "allowed",
 	})
-	b.emitGovernedAction(telemetry.GovernedActionData{
-		ExecutionID:         b.execID,
-		ActionType:          actionType,
-		Target:              target,
-		Resource:            domain,
-		Method:              strings.ToUpper(req.Method),
-		Decision:            "allow",
-		Outcome:             "completed",
-		Reason:              "governed action allowed by broker scope",
-		RuleID:              "governance.allow",
-		PolicyDigest:        policyDigest,
-		Brokered:            true,
-		BrokeredCredentials: binding.IsLoaded(),
-		BindingName:         bindingName,
-		ResponseDigest:      responseDigest,
-		ResponseDigestAlgo:  "sha256",
-		AuditPayload: map[string]string{
-			"target_domain": domain,
-		},
-	})
+	record.Use.BindingName = bindingName
+	record.Use.CredentialsInjected = binding.IsLoaded()
+	record.Use.ResponseDigest = responseDigest
+	record.Use.ResponseDigestAlgo = "sha256"
+	record.Use.Used = true
+	b.emitGovernedAction(record.ToGovernedActionData())
 
 	return resp
 }
@@ -228,7 +223,11 @@ func (b *Broker) execute(req BrokerRequest, binding CredentialBinding) (BrokerRe
 	}, digestBytes(respBody), nil
 }
 
-func (b *Broker) deny(domain, bindingName, target, actionType, reason, detail, policyDigest string, auditPayload map[string]string) BrokerResponse {
+func (b *Broker) deny(record governance.CapabilityRecord, bindingName string) BrokerResponse {
+	domain := record.Request.Resource
+	actionType := record.Request.ActionType
+	reason := record.Decision.RuleID
+	detail := record.Decision.Reason
 	b.emit(telemetry.KindCredentialDenied, telemetry.CredentialBrokerData{
 		ExecutionID:  b.execID,
 		BindingName:  bindingName,
@@ -237,27 +236,15 @@ func (b *Broker) deny(domain, bindingName, target, actionType, reason, detail, p
 		Outcome:      "denied",
 		DenialReason: reason,
 	})
-	if len(auditPayload) == 0 {
-		auditPayload = map[string]string{
+	if len(record.Decision.AuditPayload) == 0 {
+		record.Decision.AuditPayload = map[string]string{
 			"target_domain": domain,
 		}
 	}
-	b.emitGovernedAction(telemetry.GovernedActionData{
-		ExecutionID:         b.execID,
-		ActionType:          actionType,
-		Target:              target,
-		Resource:            domain,
-		Decision:            "deny",
-		Outcome:             "denied",
-		Reason:              detail,
-		RuleID:              reason,
-		PolicyDigest:        policyDigest,
-		Brokered:            true,
-		BrokeredCredentials: bindingName != "",
-		BindingName:         bindingName,
-		DenialMarker:        "governed_action_denied",
-		AuditPayload:        auditPayload,
-	})
+	record.Use.BindingName = bindingName
+	record.Use.CredentialsInjected = bindingName != ""
+	record.Use.DenialMarker = "governed_action_denied"
+	b.emitGovernedAction(record.ToGovernedActionData())
 	return BrokerResponse{
 		Denied:     true,
 		DenyReason: reason,
@@ -267,7 +254,23 @@ func (b *Broker) deny(domain, bindingName, target, actionType, reason, detail, p
 }
 
 func (b *Broker) denyError(target, actionType, policyDigest, reason, detail string) BrokerResponse {
-	return b.deny("", "", target, actionType, reason, detail, policyDigest, nil)
+	return b.deny(governance.CapabilityRecord{
+		Request: governance.Request{
+			ExecutionID: b.execID,
+			ActionType:  actionType,
+			Target:      target,
+			Brokered:    true,
+		},
+		Decision: governance.Decision{
+			Deny:         true,
+			RuleID:       reason,
+			Reason:       detail,
+			PolicyDigest: policyDigest,
+		},
+		Use: governance.CapabilityUse{
+			Path: governance.CapabilityPathBroker,
+		},
+	}, "")
 }
 
 func (b *Broker) emit(kind string, data telemetry.CredentialBrokerData) {

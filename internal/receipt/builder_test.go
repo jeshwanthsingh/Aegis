@@ -298,8 +298,12 @@ func TestFormatSummaryIncludesGovernedActionEvidence(t *testing.T) {
 	for _, needle := range []string{
 		"governed_action_count=1",
 		"governed_action_1=kind=http_request",
+		"capability_path=direct_egress",
+		"used=false",
 		"governed_action_normalized_count=1",
 		"governed_action_normalized_1=count=1 kind=http_request",
+		"capability_count=1",
+		"capability_1=count=1 requested=http_request",
 		"decision=deny",
 		"denial_marker=direct_egress_denied",
 		"denial_class=governed_action",
@@ -363,6 +367,9 @@ func TestBuildPredicateAddsNormalizedGovernedActionSummary(t *testing.T) {
 	if summary.Normalized[0].Count != 2 {
 		t.Fatalf("normalized count = %d want 2", summary.Normalized[0].Count)
 	}
+	if summary.Normalized[0].CapabilityPath != "direct_egress" || summary.Normalized[0].Used {
+		t.Fatalf("unexpected normalized capability evidence: %+v", summary.Normalized[0])
+	}
 }
 
 func testReceiptInput() Input {
@@ -378,8 +385,10 @@ func testReceiptInput() Input {
 		Target:              "tcp://127.0.0.1:80",
 		Resource:            "tcp://127.0.0.1:80",
 		Method:              "CONNECT",
+		CapabilityPath:      "direct_egress",
 		Decision:            "deny",
 		Outcome:             "denied",
+		Used:                false,
 		Reason:              "network access is disabled by intent contract",
 		RuleID:              "governance.direct_egress_disabled",
 		PolicyDigest:        "policy-digest",

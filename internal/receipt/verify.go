@@ -179,10 +179,18 @@ func validateSemanticReceipt(statement Statement) error {
 		if predicate.GovernedActions.Count != len(predicate.GovernedActions.Actions) {
 			return verificationError(FailureClassSemanticReceipt, "governed action raw count mismatch: count=%d actions=%d", predicate.GovernedActions.Count, len(predicate.GovernedActions.Actions))
 		}
+		for idx, action := range predicate.GovernedActions.Actions {
+			if err := validateGovernedActionRecord(action); err != nil {
+				return verificationError(FailureClassSemanticReceipt, "governed action %d invalid: %v", idx+1, err)
+			}
+		}
 		if len(predicate.GovernedActions.Normalized) > 0 {
 			total := 0
 			lastKey := ""
 			for idx, action := range predicate.GovernedActions.Normalized {
+				if err := validateNormalizedGovernedAction(action); err != nil {
+					return verificationError(FailureClassSemanticReceipt, "normalized governed action %d invalid: %v", idx+1, err)
+				}
 				if action.Count <= 0 {
 					return verificationError(FailureClassSemanticReceipt, "normalized governed action %d has invalid count %d", idx+1, action.Count)
 				}
@@ -273,4 +281,38 @@ func hasPolicyDenial(predicate ExecutionReceiptPredicate) bool {
 
 func normalizedGovernedActionSortKey(action NormalizedGovernedActionEntry) string {
 	return governedActionSortKey(action)
+}
+
+func validateGovernedActionRecord(action GovernedActionRecord) error {
+	return validateGovernedAction(action.ActionType, action.CapabilityPath, action.Decision, action.Used, action.Brokered, action.BrokeredCredentials, action.BindingName)
+}
+
+func validateNormalizedGovernedAction(action NormalizedGovernedActionEntry) error {
+	return validateGovernedAction(action.ActionType, action.CapabilityPath, action.Decision, action.Used, action.Brokered, action.BrokeredCredentials, action.BindingName)
+}
+
+func validateGovernedAction(actionType string, capabilityPath string, decision string, used bool, brokered bool, brokeredCredentials bool, bindingName string) error {
+	if strings.TrimSpace(actionType) == "" {
+		return fmt.Errorf("action_type is required")
+	}
+	switch strings.TrimSpace(capabilityPath) {
+	case "", "broker", "direct_egress":
+	default:
+		return fmt.Errorf("unexpected capability_path: %s", capabilityPath)
+	}
+	switch strings.ToLower(strings.TrimSpace(decision)) {
+	case "allow", "deny":
+	default:
+		return fmt.Errorf("unexpected decision: %s", decision)
+	}
+	if strings.EqualFold(strings.TrimSpace(decision), "deny") && used {
+		return fmt.Errorf("denied action cannot be marked used")
+	}
+	if !brokered && brokeredCredentials {
+		return fmt.Errorf("non-brokered action cannot inject brokered credentials")
+	}
+	if !brokered && strings.TrimSpace(bindingName) != "" {
+		return fmt.Errorf("non-brokered action cannot include binding_name")
+	}
+	return nil
 }

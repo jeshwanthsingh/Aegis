@@ -251,6 +251,12 @@ func TestBroker_GovernedActionTelemetryIncludesDigestAndDecision(t *testing.T) {
 		if data.ActionType != governance.ActionHTTPRequest || data.Decision != "allow" || data.ResponseDigest == "" {
 			t.Fatalf("unexpected governed action data: %+v", data)
 		}
+		if data.CapabilityPath != string(governance.CapabilityPathBroker) || !data.Used {
+			t.Fatalf("missing capability boundary evidence: %+v", data)
+		}
+		if data.BrokeredCredentials {
+			t.Fatalf("unexpected governed action data: %+v", data)
+		}
 	}
 	if !found {
 		t.Fatal("governed.action.v1 not emitted")

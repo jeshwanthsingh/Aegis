@@ -6,16 +6,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"aegis/internal/models"
 	"aegis/internal/policy/contract"
+	"aegis/internal/telemetry"
 )
 
 const (
 	ActionHTTPRequest     = "http_request"
 	ActionDependencyFetch = "dependency_fetch"
 	ActionNetworkConnect  = "network_connect"
+)
+
+type CapabilityPath string
+
+const (
+	CapabilityPathBroker       CapabilityPath = "broker"
+	CapabilityPathDirectEgress CapabilityPath = "direct_egress"
 )
 
 type Request struct {
@@ -35,6 +44,23 @@ type Decision struct {
 	RuleID       string            `json:"rule_id,omitempty"`
 	PolicyDigest string            `json:"policy_digest,omitempty"`
 	AuditPayload map[string]string `json:"audit_payload,omitempty"`
+}
+
+type CapabilityUse struct {
+	Path                CapabilityPath `json:"path"`
+	Used                bool           `json:"used"`
+	CredentialsInjected bool           `json:"credentials_injected,omitempty"`
+	BindingName         string         `json:"binding_name,omitempty"`
+	ResponseDigest      string         `json:"response_digest,omitempty"`
+	ResponseDigestAlgo  string         `json:"response_digest_algo,omitempty"`
+	DenialMarker        string         `json:"denial_marker,omitempty"`
+	Error               string         `json:"error,omitempty"`
+}
+
+type CapabilityRecord struct {
+	Request  Request       `json:"request"`
+	Decision Decision      `json:"decision"`
+	Use      CapabilityUse `json:"use"`
 }
 
 func NormalizeActionType(value string) string {
@@ -83,6 +109,28 @@ func DigestBrokerScope(scope contract.BrokerScope) string {
 		RequireHostConsent: scope.RequireHostConsent,
 	}
 	return digestJSON(payload)
+}
+
+func EffectiveBrokerActionTypes(scope contract.BrokerScope) []string {
+	allowedTypes := append([]string(nil), scope.AllowedActionTypes...)
+	if len(allowedTypes) == 0 && len(scope.AllowedDomains) > 0 {
+		allowedTypes = []string{ActionHTTPRequest}
+	}
+	normalized := make([]string, 0, len(allowedTypes))
+	seen := map[string]struct{}{}
+	for _, candidate := range allowedTypes {
+		value := NormalizeActionType(candidate)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 func DigestIntent(intent contract.IntentContract) string {
@@ -149,10 +197,7 @@ func EvaluateBroker(scope contract.BrokerScope, req Request) Decision {
 		AuditPayload: map[string]string{"target_domain": domain},
 	}
 
-	allowedTypes := append([]string(nil), scope.AllowedActionTypes...)
-	if len(allowedTypes) == 0 && len(scope.AllowedDomains) > 0 {
-		allowedTypes = []string{ActionHTTPRequest}
-	}
+	allowedTypes := EffectiveBrokerActionTypes(scope)
 	allowedAction := false
 	for _, candidate := range allowedTypes {
 		if NormalizeActionType(candidate) == actionType {
@@ -182,6 +227,24 @@ func EvaluateBroker(scope contract.BrokerScope, req Request) Decision {
 		return decision
 	}
 	return decision
+}
+
+func EvaluateBrokerCapability(scope contract.BrokerScope, req Request) CapabilityRecord {
+	req.ActionType = NormalizeActionType(req.ActionType)
+	if req.ActionType == "" {
+		req.ActionType = ActionHTTPRequest
+	}
+	req.Target = SanitizeTarget(req.Target)
+	req.Resource = strings.ToLower(strings.TrimSpace(req.Resource))
+	req.Method = strings.ToUpper(strings.TrimSpace(req.Method))
+	req.Brokered = true
+	return CapabilityRecord{
+		Request:  req,
+		Decision: EvaluateBroker(scope, req),
+		Use: CapabilityUse{
+			Path: CapabilityPathBroker,
+		},
+	}
 }
 
 func EvaluateDirectEgress(event models.RuntimeEvent, point models.PolicyPointDecision) (Request, Decision, bool) {
@@ -220,6 +283,60 @@ func EvaluateDirectEgress(event models.RuntimeEvent, point models.PolicyPointDec
 		AuditPayload: cloneStringMap(request.Context),
 	}
 	return request, decision, true
+}
+
+func EvaluateDirectEgressCapability(event models.RuntimeEvent, point models.PolicyPointDecision) (CapabilityRecord, bool) {
+	req, decision, ok := EvaluateDirectEgress(event, point)
+	if !ok {
+		return CapabilityRecord{}, false
+	}
+	return CapabilityRecord{
+		Request:  req,
+		Decision: decision,
+		Use: CapabilityUse{
+			Path:         CapabilityPathDirectEgress,
+			Used:         false,
+			DenialMarker: "direct_egress_denied",
+		},
+	}, true
+}
+
+func (record CapabilityRecord) ToGovernedActionData() telemetry.GovernedActionData {
+	decision := "allow"
+	if record.Decision.Deny || !record.Decision.Allow {
+		decision = "deny"
+	}
+	outcome := "allowed"
+	switch {
+	case decision == "deny":
+		outcome = "denied"
+	case strings.TrimSpace(record.Use.Error) != "":
+		outcome = "error"
+	case record.Use.Used:
+		outcome = "completed"
+	}
+	return telemetry.GovernedActionData{
+		ExecutionID:         record.Request.ExecutionID,
+		ActionType:          record.Request.ActionType,
+		Target:              record.Request.Target,
+		Resource:            record.Request.Resource,
+		Method:              record.Request.Method,
+		Decision:            decision,
+		Outcome:             outcome,
+		Reason:              record.Decision.Reason,
+		RuleID:              record.Decision.RuleID,
+		PolicyDigest:        record.Decision.PolicyDigest,
+		Brokered:            record.Request.Brokered,
+		BrokeredCredentials: record.Use.CredentialsInjected,
+		BindingName:         record.Use.BindingName,
+		ResponseDigest:      record.Use.ResponseDigest,
+		ResponseDigestAlgo:  record.Use.ResponseDigestAlgo,
+		DenialMarker:        record.Use.DenialMarker,
+		AuditPayload:        cloneStringMap(record.Decision.AuditPayload),
+		Error:               record.Use.Error,
+		CapabilityPath:      string(record.Use.Path),
+		Used:                record.Use.Used,
+	}
 }
 
 func DomainAllowed(allowedDomains []string, domain string) bool {

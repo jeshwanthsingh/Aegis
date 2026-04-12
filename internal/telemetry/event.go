@@ -134,4 +134,6 @@ type GovernedActionData struct {
 	DenialMarker        string            `json:"denial_marker,omitempty"`
 	AuditPayload        map[string]string `json:"audit_payload,omitempty"`
 	Error               string            `json:"error,omitempty"`
+	CapabilityPath      string            `json:"capability_path,omitempty"`
+	Used                bool              `json:"used"`
 }

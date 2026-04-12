@@ -354,7 +354,9 @@ func FormatSummary(statement Statement, verified bool) string {
 		lines = append(lines, fmt.Sprintf("governed_action_normalized_count=%d", len(statement.Predicate.GovernedActions.Normalized)))
 		for idx, action := range statement.Predicate.GovernedActions.Normalized {
 			lines = append(lines, fmt.Sprintf("governed_action_normalized_%d=%s", idx+1, formatNormalizedGovernedActionFields(action)))
+			lines = append(lines, fmt.Sprintf("capability_%d=%s", idx+1, formatCapabilitySummaryFields(action)))
 		}
+		lines = append(lines, fmt.Sprintf("capability_count=%d", len(statement.Predicate.GovernedActions.Normalized)))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -523,6 +525,15 @@ func FormatReview(paths BundlePaths, report VerificationReport) string {
 			lines = append(lines, "marker="+p.Denial.Marker)
 		}
 	}
+	lines = append(lines, "[capabilities]")
+	if p.GovernedActions == nil || len(p.GovernedActions.Normalized) == 0 {
+		lines = append(lines, "count=0")
+	} else {
+		lines = append(lines, fmt.Sprintf("count=%d", len(p.GovernedActions.Normalized)))
+		for idx, action := range p.GovernedActions.Normalized {
+			lines = append(lines, fmt.Sprintf("capability_%d=%s", idx+1, formatCapabilitySummaryFields(action)))
+		}
+	}
 	lines = append(lines, "[governed_actions]")
 	if p.GovernedActions == nil || len(p.GovernedActions.Actions) == 0 {
 		lines = append(lines, "raw_count=0", "normalized_count=0")
@@ -586,8 +597,12 @@ func formatGovernedActionFields(action GovernedActionRecord) string {
 		fmt.Sprintf("kind=%s", action.ActionType),
 		fmt.Sprintf("decision=%s", action.Decision),
 		fmt.Sprintf("target=%s", action.Target),
+		fmt.Sprintf("used=%t", action.Used),
 		fmt.Sprintf("brokered=%t", action.Brokered),
 		fmt.Sprintf("brokered_credentials=%t", action.BrokeredCredentials),
+	}
+	if action.CapabilityPath != "" {
+		fields = append(fields, "capability_path="+action.CapabilityPath)
 	}
 	if action.Method != "" {
 		fields = append(fields, "method="+action.Method)
@@ -628,8 +643,12 @@ func formatNormalizedGovernedActionFields(action NormalizedGovernedActionEntry) 
 		fmt.Sprintf("kind=%s", action.ActionType),
 		fmt.Sprintf("decision=%s", action.Decision),
 		fmt.Sprintf("target=%s", action.Target),
+		fmt.Sprintf("used=%t", action.Used),
 		fmt.Sprintf("brokered=%t", action.Brokered),
 		fmt.Sprintf("brokered_credentials=%t", action.BrokeredCredentials),
+	}
+	if action.CapabilityPath != "" {
+		fields = append(fields, "capability_path="+action.CapabilityPath)
 	}
 	if action.Method != "" {
 		fields = append(fields, "method="+action.Method)
@@ -660,6 +679,37 @@ func formatNormalizedGovernedActionFields(action NormalizedGovernedActionEntry) 
 	}
 	if len(action.AuditPayload) > 0 {
 		fields = append(fields, "audit_payload="+formatAuditPayload(action.AuditPayload))
+	}
+	return strings.Join(fields, " ")
+}
+
+func formatCapabilitySummaryFields(action NormalizedGovernedActionEntry) string {
+	fields := []string{
+		fmt.Sprintf("count=%d", action.Count),
+		fmt.Sprintf("requested=%s", action.ActionType),
+		fmt.Sprintf("decision=%s", action.Decision),
+		fmt.Sprintf("used=%t", action.Used),
+		fmt.Sprintf("brokered=%t", action.Brokered),
+		fmt.Sprintf("credential_injected=%t", action.BrokeredCredentials),
+		fmt.Sprintf("target=%s", action.Target),
+	}
+	if action.CapabilityPath != "" {
+		fields = append(fields, "path="+action.CapabilityPath)
+	}
+	if action.Method != "" {
+		fields = append(fields, "method="+action.Method)
+	}
+	if action.BindingName != "" {
+		fields = append(fields, "binding_name="+action.BindingName)
+	}
+	if action.RuleID != "" {
+		fields = append(fields, "rule_id="+action.RuleID)
+	}
+	if action.PolicyDigest != "" {
+		fields = append(fields, "policy_digest="+action.PolicyDigest)
+	}
+	if action.DenialMarker != "" {
+		fields = append(fields, "denial_marker="+action.DenialMarker)
 	}
 	return strings.Join(fields, " ")
 }

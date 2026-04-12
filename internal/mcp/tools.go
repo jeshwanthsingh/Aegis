@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"aegis/internal/api"
+	"aegis/internal/governance"
 	policycontract "aegis/internal/policy/contract"
 	"aegis/internal/receipt"
 
@@ -436,10 +437,9 @@ func BuildDefaultIntent(executionID string, language string, timeoutSec float64,
 			maxOutboundConns = 1
 		}
 	}
-	brokerActionTypes := []string{}
-	if len(brokerDomains) > 0 {
-		brokerActionTypes = append(brokerActionTypes, "http_request")
-	}
+	brokerActionTypes := governance.EffectiveBrokerActionTypes(policycontract.BrokerScope{
+		AllowedDomains: brokerDomains,
+	})
 	intent := policycontract.IntentContract{
 		Version:         "v1",
 		ExecutionID:     executionID,

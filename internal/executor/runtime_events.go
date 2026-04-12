@@ -207,26 +207,11 @@ func (n *runtimeEventNormalizer) emitGovernedAction(event models.RuntimeEvent, d
 	if bus == nil {
 		return
 	}
-	req, governedDecision, ok := governance.EvaluateDirectEgress(event, decision)
+	record, ok := governance.EvaluateDirectEgressCapability(event, decision)
 	if !ok {
 		return
 	}
-	emitIfBus(bus, telemetry.KindGovernedAction, telemetry.GovernedActionData{
-		ExecutionID:         n.executionID,
-		ActionType:          req.ActionType,
-		Target:              req.Target,
-		Resource:            req.Resource,
-		Method:              req.Method,
-		Decision:            "deny",
-		Outcome:             "denied",
-		Reason:              governedDecision.Reason,
-		RuleID:              governedDecision.RuleID,
-		PolicyDigest:        governedDecision.PolicyDigest,
-		Brokered:            req.Brokered,
-		BrokeredCredentials: false,
-		DenialMarker:        "direct_egress_denied",
-		AuditPayload:        governedDecision.AuditPayload,
-	})
+	emitIfBus(bus, telemetry.KindGovernedAction, record.ToGovernedActionData())
 }
 
 func (n *runtimeEventNormalizer) emitStatus(status guestRuntimeSensorStatus, bus *telemetry.Bus) {
