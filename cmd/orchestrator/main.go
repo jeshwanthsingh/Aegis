@@ -93,9 +93,10 @@ func main() {
 		observability.Warn("auth_disabled", observability.Fields{"message": "AEGIS_API_KEY not set, running in unauthenticated dev mode"})
 	}
 
-	pool := executor.NewPool(5)
+	pool := executor.NewPool(envInt("AEGIS_WORKER_POOL_SIZE", 5))
 	observability.SetWorkerSlotsFunc(pool.Available)
 	registry := api.NewBusRegistry()
+	workspaceRegistry := api.NewWorkspaceRegistry()
 	stats := api.NewStatsCounter()
 	warmPool := warmpool.New(warmpool.Config{
 		Size:   envInt("AEGIS_WARM_POOL_SIZE", 0),
@@ -118,8 +119,8 @@ func main() {
 	mux.HandleFunc("GET /v1/events/{exec_id}", api.NewTelemetryHandler(registry))
 	mux.HandleFunc("POST /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleCreateWorkspace()))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
-	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
-	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath))))
+	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath), workspaceRegistry)))
+	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath), workspaceRegistry)))
 	if info, err := os.Stat(uiDir); err == nil && info.IsDir() {
 		uiFS := http.FileServer(http.Dir(uiDir))
 		mux.Handle("GET /ui/", http.StripPrefix("/ui/", uiFS))

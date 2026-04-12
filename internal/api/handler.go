@@ -355,7 +355,8 @@ func HandleCreateWorkspace() http.HandlerFunc {
 	}
 }
 
-func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol *policy.Policy, assetsDir string, rootfsPath string, registry *BusRegistry, stats *StatsCounter, policyVersion string) http.HandlerFunc {
+func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol *policy.Policy, assetsDir string, rootfsPath string, registry *BusRegistry, stats *StatsCounter, policyVersion string, workspaceRegistries ...*WorkspaceRegistry) http.HandlerFunc {
+	workspaceRegistry := resolveWorkspaceRegistry(workspaceRegistries)
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		execStatus := "error"
@@ -379,14 +380,6 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			resp = withReceiptProof(resp, proofPaths)
 			writeJSON(w, http.StatusOK, resp)
 		}
-
-		if err := pool.Acquire(); err != nil {
-			execStatus = "too_many_requests"
-			w.Header().Set("Retry-After", "5")
-			writeAPIError(w, http.StatusTooManyRequests, "too_many_requests", "too many concurrent executions", errorDetails("retry_after_seconds", 5))
-			return
-		}
-		defer pool.Release()
 
 		var req ExecuteRequest
 		if err := decodeJSONBody(r.Body, &req); err != nil {
@@ -418,6 +411,26 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error(), errorDetails("field", "execution_id"))
 			return
 		}
+		if req.WorkspaceID != "" {
+			if err := executor.ValidateWorkspaceID(req.WorkspaceID); err != nil {
+				execStatus = "validation_error"
+				writeAPIError(w, http.StatusBadRequest, "invalid_workspace_id", err.Error(), errorDetails("workspace_id", req.WorkspaceID))
+				return
+			}
+			if !workspaceRegistry.TryClaim(req.WorkspaceID, execID) {
+				execStatus = "workspace_busy"
+				writeAPIError(w, http.StatusConflict, "workspace_busy", "workspace already has an active execution", errorDetails("workspace_id", req.WorkspaceID))
+				return
+			}
+			defer workspaceRegistry.Release(req.WorkspaceID, execID)
+		}
+		if err := pool.Acquire(); err != nil {
+			execStatus = "too_many_requests"
+			w.Header().Set("Retry-After", "5")
+			writeAPIError(w, http.StatusTooManyRequests, "too_many_requests", "too many concurrent executions", errorDetails("retry_after_seconds", 5))
+			return
+		}
+		defer pool.Release()
 		bus, execID, err := claimExecutionBus(registry, execID, requestedExecutionID(req, intent) != "")
 		if err != nil {
 			execStatus = "conflict"
@@ -671,21 +684,14 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 	}
 }
 
-func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol *policy.Policy, assetsDir string, rootfsPath string, registry *BusRegistry, stats *StatsCounter, policyVersion string) http.HandlerFunc {
+func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol *policy.Policy, assetsDir string, rootfsPath string, registry *BusRegistry, stats *StatsCounter, policyVersion string, workspaceRegistries ...*WorkspaceRegistry) http.HandlerFunc {
+	workspaceRegistry := resolveWorkspaceRegistry(workspaceRegistries)
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		execStatus := "error"
 		defer func() { observability.RecordExecution(execStatus, time.Since(start)) }()
 
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
-
-		if err := pool.Acquire(); err != nil {
-			execStatus = "too_many_requests"
-			w.Header().Set("Retry-After", "5")
-			writeAPIError(w, http.StatusTooManyRequests, "too_many_requests", "too many concurrent executions", errorDetails("retry_after_seconds", 5))
-			return
-		}
-		defer pool.Release()
 
 		var req ExecuteRequest
 		if err := decodeJSONBody(r.Body, &req); err != nil {
@@ -717,6 +723,26 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error(), errorDetails("field", "execution_id"))
 			return
 		}
+		if req.WorkspaceID != "" {
+			if err := executor.ValidateWorkspaceID(req.WorkspaceID); err != nil {
+				execStatus = "validation_error"
+				writeAPIError(w, http.StatusBadRequest, "invalid_workspace_id", err.Error(), errorDetails("workspace_id", req.WorkspaceID))
+				return
+			}
+			if !workspaceRegistry.TryClaim(req.WorkspaceID, execID) {
+				execStatus = "workspace_busy"
+				writeAPIError(w, http.StatusConflict, "workspace_busy", "workspace already has an active execution", errorDetails("workspace_id", req.WorkspaceID))
+				return
+			}
+			defer workspaceRegistry.Release(req.WorkspaceID, execID)
+		}
+		if err := pool.Acquire(); err != nil {
+			execStatus = "too_many_requests"
+			w.Header().Set("Retry-After", "5")
+			writeAPIError(w, http.StatusTooManyRequests, "too_many_requests", "too many concurrent executions", errorDetails("retry_after_seconds", 5))
+			return
+		}
+		defer pool.Release()
 		bus, execID, err := claimExecutionBus(registry, execID, requestedExecutionID(req, intent) != "")
 		if err != nil {
 			execStatus = "conflict"
@@ -1385,4 +1411,11 @@ func claimExecutionBus(registry *BusRegistry, execID string, clientSupplied bool
 		}
 		execID = uuid.New().String()
 	}
+}
+
+func resolveWorkspaceRegistry(registries []*WorkspaceRegistry) *WorkspaceRegistry {
+	if len(registries) > 0 && registries[0] != nil {
+		return registries[0]
+	}
+	return NewWorkspaceRegistry()
 }

@@ -882,9 +882,6 @@ func TestExecuteHandlerInvalidExecutionID(t *testing.T) {
 
 func TestExecuteHandlerWorkspaceValidationError(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
-		return nil, "cold", warmpool.FallbackWorkspace, executor.ErrInvalidWorkspaceID
-	}
 
 	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
 	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"workspace_id":"../escape"}`))
@@ -892,7 +889,7 @@ func TestExecuteHandlerWorkspaceValidationError(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), executor.ErrInvalidWorkspaceID.Error()) {
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"code":"invalid_workspace_id"`) {
 		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
@@ -1133,11 +1130,58 @@ func TestStreamHandlerDuplicateExecutionIDConflict(t *testing.T) {
 	}
 }
 
+func TestStreamHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	workspaceRegistry := NewWorkspaceRegistry()
+	if !workspaceRegistry.TryClaim("ws-busy", "held-exec") {
+		t.Fatal("failed to seed active workspace claim")
+	}
+
+	acquireCalled := false
+	receiptCalled := false
+	recordCount := 0
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		acquireCalled = true
+		return nil, "", "", errors.New("unexpected vm acquire")
+	}
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+		receiptCalled = true
+		return models.ContainmentReceipt{}, receipt.BundlePaths{}, nil
+	}
+	writeExecutionRecordFunc = func(_ *store.Store, _ store.ExecutionRecord) error {
+		recordCount++
+		return nil
+	}
+
+	pool := executor.NewPool(1)
+	handler := NewStreamHandler(nil, pool, nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test", workspaceRegistry)
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute/stream", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"workspace_id":"ws-busy"}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"code":"workspace_busy"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"execution_id"`) || strings.Contains(rr.Body.String(), `"proof_dir"`) {
+		t.Fatalf("workspace rejection should not include execution proof fields: %s", rr.Body.String())
+	}
+	if acquireCalled {
+		t.Fatal("vm acquire should not run for pre-admission workspace conflict")
+	}
+	if receiptCalled {
+		t.Fatal("receipt signing should not run for pre-admission workspace conflict")
+	}
+	if recordCount != 0 {
+		t.Fatalf("writeExecutionRecordFunc called %d times, want 0", recordCount)
+	}
+	if got := pool.Available(); got != 1 {
+		t.Fatalf("pool available = %d, want 1", got)
+	}
+}
+
 func TestStreamHandlerWorkspaceValidationError(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
-		return nil, "cold", warmpool.FallbackWorkspace, executor.ErrInvalidWorkspaceID
-	}
 
 	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
 	req := httptest.NewRequest(http.MethodPost, "/v1/execute/stream", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"workspace_id":"../escape"}`))
@@ -1145,7 +1189,7 @@ func TestStreamHandlerWorkspaceValidationError(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), executor.ErrInvalidWorkspaceID.Error()) {
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"code":"invalid_workspace_id"`) {
 		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
@@ -1324,6 +1368,56 @@ func TestExecuteHandlerDuplicateCompletedExecutionIDReturnsConflict(t *testing.T
 	}
 	if !strings.Contains(rr.Body.String(), "execution_id already in use") {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestExecuteHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	workspaceRegistry := NewWorkspaceRegistry()
+	if !workspaceRegistry.TryClaim("ws-busy", "held-exec") {
+		t.Fatal("failed to seed active workspace claim")
+	}
+
+	acquireCalled := false
+	receiptCalled := false
+	recordCount := 0
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		acquireCalled = true
+		return nil, "", "", errors.New("unexpected vm acquire")
+	}
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+		receiptCalled = true
+		return models.ContainmentReceipt{}, receipt.BundlePaths{}, nil
+	}
+	writeExecutionRecordFunc = func(_ *store.Store, _ store.ExecutionRecord) error {
+		recordCount++
+		return nil
+	}
+
+	pool := executor.NewPool(1)
+	handler := NewHandler(nil, pool, nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test", workspaceRegistry)
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"workspace_id":"ws-busy"}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"code":"workspace_busy"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"execution_id"`) || strings.Contains(rr.Body.String(), `"proof_dir"`) {
+		t.Fatalf("workspace rejection should not include execution proof fields: %s", rr.Body.String())
+	}
+	if acquireCalled {
+		t.Fatal("vm acquire should not run for pre-admission workspace conflict")
+	}
+	if receiptCalled {
+		t.Fatal("receipt signing should not run for pre-admission workspace conflict")
+	}
+	if recordCount != 0 {
+		t.Fatalf("writeExecutionRecordFunc called %d times, want 0", recordCount)
+	}
+	if got := pool.Available(); got != 1 {
+		t.Fatalf("pool available = %d, want 1", got)
 	}
 }
 

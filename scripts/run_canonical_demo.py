@@ -235,6 +235,7 @@ class LocalRuntime:
         runtime_log: Path,
         warm_pool_size: int,
         broker_token: str,
+        worker_pool_size: int | None = None,
     ) -> None:
         self.go_bin = go_bin
         self.cli_bin = cli_bin
@@ -244,6 +245,7 @@ class LocalRuntime:
         self.runtime_log = runtime_log
         self.warm_pool_size = warm_pool_size
         self.broker_token = broker_token
+        self.worker_pool_size = worker_pool_size
         self.proc: subprocess.Popen[str] | None = None
         self._log_handle = None
 
@@ -255,6 +257,8 @@ class LocalRuntime:
         env["AEGIS_CONFIG"] = str(self.config_path)
         env["AEGIS_DB_URL"] = self.db_url
         env["AEGIS_WARM_POOL_SIZE"] = str(self.warm_pool_size)
+        if self.worker_pool_size is not None:
+            env["AEGIS_WORKER_POOL_SIZE"] = str(self.worker_pool_size)
         env["AEGIS_CRED_GITHUB_TOKEN"] = self.broker_token
         env.setdefault("AEGIS_URL", self.base_url)
         subprocess_run(
@@ -279,6 +283,8 @@ class LocalRuntime:
         print(f"runtime_config={self.config_path}")
         print(f"runtime_db_override={self.db_url}")
         print(f"runtime_warm_pool_size_override={self.warm_pool_size}")
+        if self.worker_pool_size is not None:
+            print(f"runtime_worker_pool_size_override={self.worker_pool_size}")
         print("runtime_broker_token_source=synthetic_local_demo_token")
         return self
 
@@ -671,15 +677,17 @@ def run_governed_allow(base_url: str, verify_cmd: list[str]) -> ExecutionResult:
 def run_governed_deny(base_url: str, verify_cmd: list[str]) -> ExecutionResult:
     execution_id = str(uuid.uuid4())
     result = execute(base_url, "governed_deny", governed_deny_payload(execution_id), verify_cmd)
-    stdout = str(result.response.get("stdout", ""))
-    require_contains(stdout, DENIED_MARKER, label="governed_deny stdout")
     exit_reason = str(result.response.get("exit_reason", ""))
     if exit_reason not in {"completed", "divergence_terminated"}:
         raise RuntimeError(f"governed_deny: unexpected exit_reason={exit_reason!r}; response={result.response}")
     require_contains(result.verify_output, "verification=verified", label="governed_deny verify")
+    require_contains(result.verify_output, "result_class=denied", label="governed_deny verify")
     require_contains(result.verify_output, "governed_action_1=kind=network_connect", label="governed_deny verify")
     require_contains(result.verify_output, "decision=deny", label="governed_deny verify")
     require_contains(result.verify_output, "denial_marker=direct_egress_denied", label="governed_deny verify")
+    stdout = str(result.response.get("stdout", ""))
+    if stdout and DENIED_MARKER not in stdout and exit_reason == "completed":
+        raise RuntimeError(f"governed_deny stdout: expected to find {DENIED_MARKER!r} in:\n{stdout}")
     print_case("governed_deny", result)
     return result
 

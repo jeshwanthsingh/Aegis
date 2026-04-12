@@ -104,6 +104,16 @@ func DeleteWorkspace(workspaceID string) error {
 	return nil
 }
 
+func ValidateWorkspaceID(workspaceID string) error {
+	if workspaceID == "" {
+		return fmt.Errorf("workspace ID is required")
+	}
+	if !workspaceIDPattern.MatchString(workspaceID) {
+		return ErrInvalidWorkspaceID
+	}
+	return nil
+}
+
 func createExt4Disk(path string, sizeMB int) error {
 	if sizeMB <= 0 {
 		return fmt.Errorf("workspace size must be positive")
@@ -143,11 +153,8 @@ func createExt4Disk(path string, sizeMB int) error {
 }
 
 func workspaceDiskPath(workspaceID string) (string, error) {
-	if workspaceID == "" {
-		return "", fmt.Errorf("workspace ID is required")
-	}
-	if !workspaceIDPattern.MatchString(workspaceID) {
-		return "", ErrInvalidWorkspaceID
+	if err := ValidateWorkspaceID(workspaceID); err != nil {
+		return "", err
 	}
 	if err := InitWorkspacesDir(); err != nil {
 		return "", err
