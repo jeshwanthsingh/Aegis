@@ -71,6 +71,8 @@ func runMain(stdout io.Writer, stderr io.Writer, args []string) int {
 		return setupCmd(stdout, stderr, args[1:])
 	case "serve":
 		return serveCmd(stdout, stderr, args[1:])
+	case "doctor", "self-test":
+		return doctorCmd(stdout, stderr, args[1:])
 	case "run":
 		return run(stdout, stderr, args[1:])
 	case "health":
@@ -84,7 +86,7 @@ func runMain(stdout io.Writer, stderr io.Writer, args []string) int {
 }
 
 func usage(stderr io.Writer) {
-	fmt.Fprintln(stderr, "usage: aegis <setup|serve|run|health|receipt>")
+	fmt.Fprintln(stderr, "usage: aegis <setup|serve|doctor|self-test|run|health|receipt>")
 }
 
 func setupCmd(stdout io.Writer, stderr io.Writer, args []string) int {

@@ -258,3 +258,143 @@ func TestHealthUsesV1HealthRoute(t *testing.T) {
 		t.Fatalf("unexpected stdout: %s", stdout.String())
 	}
 }
+
+func TestDoctorCommandReportsHealthyRuntimeAndReceiptPath(t *testing.T) {
+	repo := makeTestRepo(t)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	origStaticChecks := doctorStaticChecksFunc
+	origVerify := doctorVerifyBundlePathsFunc
+	t.Cleanup(func() {
+		doctorStaticChecksFunc = origStaticChecks
+		doctorVerifyBundlePathsFunc = origVerify
+	})
+	doctorStaticChecksFunc = func(string, config.Config) []doctorCheck {
+		return []doctorCheck{
+			{Bucket: "host", Label: "linux host", Status: doctorPass, Detail: "running on linux"},
+			{Bucket: "host", Label: "/dev/kvm access", Status: doctorPass, Detail: "ok"},
+			{Bucket: "host", Label: "firecracker", Status: doctorPass, Detail: "/usr/bin/firecracker"},
+			{Bucket: "host", Label: "kernel image", Status: doctorPass, Detail: "/tmp/vmlinux"},
+			{Bucket: "host", Label: "rootfs", Status: doctorPass, Detail: "/tmp/alpine-base.ext4"},
+			{Bucket: "host", Label: "rootfs semantic", Status: doctorPass, Detail: "verified"},
+			{Bucket: "host", Label: "database", Status: doctorPass, Detail: "connection ok"},
+			{Bucket: "host", Label: "cgroup parent", Status: doctorPass, Detail: "ok"},
+		}
+	}
+	doctorVerifyBundlePathsFunc = func(paths receipt.BundlePaths) (receipt.Statement, error) {
+		return receipt.Statement{
+			Predicate: receipt.ExecutionReceiptPredicate{
+				ExecutionID: "doctor-exec",
+				Outcome:     receipt.Outcome{ExitCode: 0, Reason: "completed"},
+			},
+		}, nil
+	}
+	proofDir := filepath.Join(t.TempDir(), "doctor-exec")
+	if err := os.MkdirAll(proofDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll proofDir: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/health":
+			_, _ = w.Write([]byte(`{"status":"ok","worker_slots_available":5,"worker_slots_total":5}`))
+		case "/ready":
+			_, _ = w.Write([]byte(`{"status":"ready","db_ok":true,"worker_slots_available":5,"worker_slots_total":5}`))
+		case "/v1/execute":
+			_, _ = fmt.Fprintf(w, `{"stdout":"doctor-self-test\n","exit_code":0,"duration_ms":12,"execution_id":"doctor-exec","proof_dir":%q,"receipt_path":%q,"receipt_public_key_path":%q,"receipt_summary_path":%q}`, proofDir, filepath.Join(proofDir, "receipt.dsse.json"), filepath.Join(proofDir, "receipt.pub"), filepath.Join(proofDir, "receipt.summary.txt"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AEGIS_URL", server.URL)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runMain(&stdout, &stderr, []string{"doctor"})
+	if code != 0 {
+		t.Fatalf("doctor exit=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	for _, needle := range []string{
+		"[PASS] runtime health: status=ok workers=5/5 available",
+		"[PASS] runtime ready: status=ready db_ok=true workers=5/5 available",
+		"[PASS] execute self-test: execution_id=doctor-exec",
+		"[PASS] receipt verify: verified execution_id=doctor-exec outcome=completed exit_code=0",
+		"host_ready=PASS",
+		"runtime_ready=PASS",
+		"execution_path_ready=PASS",
+		"receipt_path_ready=PASS",
+	} {
+		if !strings.Contains(stdout.String(), needle) {
+			t.Fatalf("stdout missing %q: %s", needle, stdout.String())
+		}
+	}
+}
+
+func TestDoctorCommandSurfacesRuntimeFailureHonestly(t *testing.T) {
+	repo := makeTestRepo(t)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	origStaticChecks := doctorStaticChecksFunc
+	t.Cleanup(func() { doctorStaticChecksFunc = origStaticChecks })
+	doctorStaticChecksFunc = func(string, config.Config) []doctorCheck {
+		return []doctorCheck{{Bucket: "host", Label: "linux host", Status: doctorPass, Detail: "running on linux"}}
+	}
+	t.Setenv("AEGIS_URL", "http://127.0.0.1:1")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runMain(&stdout, &stderr, []string{"doctor"})
+	if code == 0 {
+		t.Fatalf("expected doctor failure stdout=%s", stdout.String())
+	}
+	for _, needle := range []string{
+		"[FAIL] runtime health:",
+		"[SKIP] execute self-test: skipped because runtime is not reachable",
+		"[SKIP] receipt verify: skipped because execution self-test did not run",
+		"host_ready=PASS",
+		"runtime_ready=FAIL",
+		"execution_path_ready=SKIP",
+		"receipt_path_ready=SKIP",
+	} {
+		if !strings.Contains(stdout.String(), needle) {
+			t.Fatalf("stdout missing %q: %s", needle, stdout.String())
+		}
+	}
+}
+
+func makeTestRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "ai"), 0o755); err != nil {
+		t.Fatalf("MkdirAll ai: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module aegis\n\ngo 1.22.5\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	cfg := config.Default(repo)
+	cfg.API.URL = "http://127.0.0.1:8080"
+	configPath := filepath.Join(repo, config.DefaultConfigRelPath)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(config.RenderStarterConfig(cfg)), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	return repo
+}
