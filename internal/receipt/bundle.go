@@ -275,6 +275,9 @@ func FormatSummary(statement Statement, verified bool) string {
 	if statement.Predicate.WorkspaceID != "" {
 		lines = append(lines, "workspace_id="+statement.Predicate.WorkspaceID)
 	}
+	if statement.Predicate.ExecutionStatus != "" {
+		lines = append(lines, "execution_status="+statement.Predicate.ExecutionStatus)
+	}
 	if statement.Predicate.BrokerSummary != nil {
 		brokerEvents := []string{"credential.request"}
 		if statement.Predicate.BrokerSummary.AllowedCount > 0 {

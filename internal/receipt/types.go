@@ -22,6 +22,7 @@ type Input struct {
 	TaskClass       string
 	DeclaredPurpose string
 	WorkspaceID     string
+	ExecutionStatus string
 	StartedAt       time.Time
 	FinishedAt      time.Time
 	IntentRaw       []byte
@@ -74,6 +75,7 @@ type ExecutionReceiptPredicate struct {
 	TaskClass          string                 `json:"task_class,omitempty"`
 	DeclaredPurpose    string                 `json:"declared_purpose,omitempty"`
 	WorkspaceID        string                 `json:"workspace_id,omitempty"`
+	ExecutionStatus    string                 `json:"execution_status,omitempty"`
 	IntentDigest       string                 `json:"intent_digest,omitempty"`
 	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
 	EvidenceDigest     string                 `json:"evidence_digest"`

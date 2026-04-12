@@ -256,6 +256,9 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 }
 
 func (vm *VMInstance) Kill() error {
+	if vm == nil || vm.FirecrackerPID <= 0 {
+		return nil
+	}
 	proc, err := os.FindProcess(vm.FirecrackerPID)
 	if err != nil {
 		return err
@@ -266,6 +269,7 @@ func (vm *VMInstance) Kill() error {
 		}
 		return err
 	}
+	vm.FirecrackerPID = 0
 	return nil
 }
 

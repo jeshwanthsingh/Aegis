@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -12,10 +14,39 @@ import (
 
 	"aegis/internal/api"
 	"aegis/internal/executor"
+	"aegis/internal/models"
 	"aegis/internal/observability"
 	"aegis/internal/policy"
 	warmpool "aegis/internal/pool"
+	"aegis/internal/receipt"
 	"aegis/internal/store"
+	"aegis/internal/telemetry"
+)
+
+var (
+	globScratchPathsFunc       = filepath.Glob
+	readFileFunc               = os.ReadFile
+	removePathFunc             = os.Remove
+	findProcessFunc            = os.FindProcess
+	markInFlightReconciledFunc = func(s *store.Store) error {
+		if s == nil {
+			return nil
+		}
+		return s.MarkInFlightReconciled()
+	}
+	markExecutionReconciledFunc = func(s *store.Store, executionID string) error {
+		if s == nil {
+			return nil
+		}
+		return s.MarkReconciled(executionID)
+	}
+	loadExecutionRecordFunc = func(s *store.Store, executionID string) (store.ExecutionRecord, error) {
+		if s == nil {
+			return store.ExecutionRecord{}, sql.ErrNoRows
+		}
+		return s.GetExecution(executionID)
+	}
+	emitReconciledReceiptFunc = emitReconciledReceipt
 )
 
 func main() {
@@ -131,7 +162,10 @@ func envInt(name string, fallback int) int {
 // reconcile cleans up orphaned scratch images and sockets from a previous crash.
 func reconcile(s *store.Store) {
 	cgroupParent := executor.DefaultCgroupParent()
-	matches, err := filepath.Glob("/tmp/aegis/scratch-*.ext4")
+	if err := markInFlightReconciledFunc(s); err != nil {
+		observability.Warn("reconcile_mark_inflight_failed", observability.Fields{"error": err.Error()})
+	}
+	matches, err := globScratchPathsFunc("/tmp/aegis/scratch-*.ext4")
 	if err != nil || len(matches) == 0 {
 		return
 	}
@@ -144,12 +178,13 @@ func reconcile(s *store.Store) {
 		socketPath := "/tmp/aegis/fc-" + uuid + ".sock"
 		vsockPath := "/tmp/aegis/vsock-" + uuid + ".sock"
 		cgPath := executor.CgroupPath(cgroupParent, uuid)
+		cleanup := telemetry.CleanupDoneData{}
 
 		procsPath := cgPath + "/cgroup.procs"
-		if data, err := os.ReadFile(procsPath); err == nil {
+		if data, err := readFileFunc(procsPath); err == nil {
 			for _, pidStr := range strings.Fields(string(data)) {
 				if pid, err := strconv.Atoi(pidStr); err == nil {
-					if proc, err := os.FindProcess(pid); err == nil {
+					if proc, err := findProcessFunc(pid); err == nil {
 						_ = proc.Kill()
 						observability.Warn("reconcile_orphaned_pid_killed", observability.Fields{"execution_id": uuid, "pid": pid})
 					}
@@ -158,14 +193,83 @@ func reconcile(s *store.Store) {
 		}
 
 		for _, f := range []string{scratchPath, socketPath, vsockPath} {
-			if err := os.Remove(f); err == nil {
+			if err := removePathFunc(f); err == nil {
 				observability.Info("reconcile_orphaned_file_removed", observability.Fields{"execution_id": uuid, "file": filepath.Base(f)})
+				switch f {
+				case scratchPath:
+					cleanup.ScratchRemoved = true
+				case socketPath, vsockPath:
+					cleanup.SocketRemoved = true
+				}
 			}
 		}
-		_ = os.Remove(cgPath)
+		if err := removePathFunc(cgPath); err == nil {
+			cleanup.CgroupRemoved = true
+		}
+		cleanup.AllClean = cleanup.ScratchRemoved && cleanup.SocketRemoved && cleanup.CgroupRemoved
 
-		if err := s.MarkSandboxError(uuid); err != nil {
-			observability.Warn("reconcile_mark_sandbox_error_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
+		if err := markExecutionReconciledFunc(s, uuid); err != nil {
+			observability.Warn("reconcile_mark_execution_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
+			continue
+		}
+		rec, err := loadExecutionRecordFunc(s, uuid)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			observability.Warn("reconcile_load_execution_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
+			continue
+		}
+		if rec.Status != store.StatusReconciled {
+			continue
+		}
+		if paths, err := emitReconciledReceiptFunc(rec, cleanup); err != nil {
+			observability.Warn("reconcile_receipt_failed", observability.Fields{"execution_id": uuid, "error": err.Error()})
+		} else {
+			observability.Info("reconcile_receipt_written", observability.Fields{"execution_id": uuid, "proof_dir": paths.ProofDir})
 		}
 	}
+}
+
+func emitReconciledReceipt(rec store.ExecutionRecord, cleanup telemetry.CleanupDoneData) (receipt.BundlePaths, error) {
+	finishedAt := time.Now().UTC()
+	startedAt := rec.CreatedAt.UTC()
+	if startedAt.IsZero() {
+		startedAt = finishedAt
+	}
+	cleanupBytes, err := json.Marshal(cleanup)
+	if err != nil {
+		return receipt.BundlePaths{}, fmt.Errorf("marshal reconcile cleanup event: %w", err)
+	}
+	events := []telemetry.Event{{
+		ExecID:    rec.ExecutionID,
+		Timestamp: finishedAt.UnixNano(),
+		Kind:      telemetry.KindCleanupDone,
+		Data:      cleanupBytes,
+	}}
+	stderrData := "recovered_on_boot\n"
+	signer, err := receipt.NewSignerFromEnv()
+	if err != nil {
+		return receipt.BundlePaths{}, err
+	}
+	signedReceipt, err := receipt.BuildSignedReceipt(receipt.Input{
+		ExecutionID:     rec.ExecutionID,
+		Backend:         models.BackendFirecracker,
+		ExecutionStatus: store.StatusReconciled,
+		StartedAt:       startedAt,
+		FinishedAt:      finishedAt,
+		Outcome: receipt.Outcome{
+			ExitCode:           -1,
+			Reason:             "recovered_on_boot",
+			ContainmentVerdict: "contained",
+			OutputTruncated:    false,
+		},
+		TelemetryEvents: events,
+		OutputArtifacts: receipt.ArtifactsFromBundleOutputs(rec.ExecutionID, "", stderrData, false),
+		Attributes:      map[string]string{"reconciled": "true"},
+	}, signer)
+	if err != nil {
+		return receipt.BundlePaths{}, err
+	}
+	return receipt.WriteProofBundle(receipt.ProofRoot(strings.TrimSpace(os.Getenv("AEGIS_PROOF_ROOT"))), rec.ExecutionID, signedReceipt, signer.PublicKey, "", stderrData, false)
 }

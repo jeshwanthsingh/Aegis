@@ -24,6 +24,7 @@ import (
 	policyevaluator "aegis/internal/policy/evaluator"
 	warmpool "aegis/internal/pool"
 	"aegis/internal/receipt"
+	"aegis/internal/store"
 	"aegis/internal/telemetry"
 )
 
@@ -591,10 +592,12 @@ func installHandlerRuntimeStubs(t *testing.T) {
 	origTeardown := teardownVMFunc
 	origStartBroker := startBrokerListenerFunc
 	origDial := dialWithRetryFunc
+	origWaitReady := waitForGuestReadyFunc
 	origSend := sendPayloadFunc
 	origRead := readChunksFunc
 	origPoller := startCgroupPollerFunc
 	origEmit := emitSignedReceiptFunc
+	origWrite := writeExecutionRecordFunc
 
 	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, error) {
 		return &executor.VMInstance{FirecrackerPID: 77, VsockPath: "/tmp/vsock"}, "cold", nil
@@ -603,6 +606,7 @@ func installHandlerRuntimeStubs(t *testing.T) {
 	teardownVMFunc = func(*executor.VMInstance, *telemetry.Bus) error { return nil }
 	startBrokerListenerFunc = func(context.Context, string, *broker.Broker, *policydivergence.Evaluator) error { return nil }
 	dialWithRetryFunc = func(string, uint32, time.Duration) (net.Conn, error) { return stubConn{}, nil }
+	waitForGuestReadyFunc = func(string, time.Duration) error { return nil }
 	sendPayloadFunc = func(net.Conn, models.Payload, time.Time, *telemetry.Bus, *policyevaluator.Evaluator, *policydivergence.Evaluator, func(models.PolicyDivergenceResult) error) (models.Result, error) {
 		return models.Result{Stdout: "ok\n", ExitCode: 0, ExitReason: "completed", DurationMs: 7, StdoutBytes: 3}, nil
 	}
@@ -610,7 +614,7 @@ func installHandlerRuntimeStubs(t *testing.T) {
 		return &models.Result{Stdout: "ok\n", ExitCode: 0, ExitReason: "completed", DurationMs: 7, StdoutBytes: 3}, nil
 	}
 	startCgroupPollerFunc = func(context.Context, *telemetry.Bus, string, time.Duration) func() { return func() {} }
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
 		return models.ContainmentReceipt{Verdict: "completed"}, receipt.BundlePaths{
 			ProofDir:      "/tmp/aegis/proofs/exec",
 			ReceiptPath:   "/tmp/aegis/proofs/exec/receipt.dsse.json",
@@ -625,10 +629,12 @@ func installHandlerRuntimeStubs(t *testing.T) {
 		teardownVMFunc = origTeardown
 		startBrokerListenerFunc = origStartBroker
 		dialWithRetryFunc = origDial
+		waitForGuestReadyFunc = origWaitReady
 		sendPayloadFunc = origSend
 		readChunksFunc = origRead
 		startCgroupPollerFunc = origPoller
 		emitSignedReceiptFunc = origEmit
+		writeExecutionRecordFunc = origWrite
 	})
 }
 
@@ -646,6 +652,79 @@ func TestExecuteHandlerSuccessResponseIncludesProof(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), `"stdout":"ok\n"`) || !strings.Contains(rr.Body.String(), `"receipt_path":"`) {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestExecuteHandlerLifecycleStateTransitions(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	var statuses []string
+	writeExecutionRecordFunc = func(_ *store.Store, rec store.ExecutionRecord) error {
+		statuses = append(statuses, rec.Status)
+		return nil
+	}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	want := []string{store.StatusRequested, store.StatusBooting, store.StatusGuestReady, store.StatusRunning, store.StatusFinalizing, store.StatusCompleted}
+	if !slices.Equal(statuses, want) {
+		t.Fatalf("lifecycle statuses = %v, want %v", statuses, want)
+	}
+}
+
+func TestExecuteHandlerBootTimeoutLifecycleState(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	acquireExecutionVMFunc = func(ctx context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, _ *policy.Policy, _ policy.ComputeProfile, _ string, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, error) {
+		return nil, "", context.DeadlineExceeded
+	}
+	var statuses []string
+	writeExecutionRecordFunc = func(_ *store.Store, rec store.ExecutionRecord) error {
+		statuses = append(statuses, rec.Status)
+		return nil
+	}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"error":"timeout"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	want := []string{store.StatusRequested, store.StatusBooting, store.StatusTimedOut}
+	if !slices.Equal(statuses, want) {
+		t.Fatalf("lifecycle statuses = %v, want %v", statuses, want)
+	}
+}
+
+func TestExecuteHandlerGuestReadyTimeoutLifecycleState(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	waitForGuestReadyFunc = func(string, time.Duration) error { return context.DeadlineExceeded }
+	var statuses []string
+	writeExecutionRecordFunc = func(_ *store.Store, rec store.ExecutionRecord) error {
+		statuses = append(statuses, rec.Status)
+		return nil
+	}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"error":"timeout"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	want := []string{store.StatusRequested, store.StatusBooting, store.StatusFinalizing, store.StatusTimedOut}
+	if !slices.Equal(statuses, want) {
+		t.Fatalf("lifecycle statuses = %v, want %v", statuses, want)
 	}
 }
 
@@ -675,7 +754,7 @@ func TestExecuteHandlerAuthFailure(t *testing.T) {
 
 func TestExecuteHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
 		return models.ContainmentReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
@@ -896,7 +975,7 @@ func TestStreamHandlerInvalidBody(t *testing.T) {
 
 func TestStreamHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
 		return models.ContainmentReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 

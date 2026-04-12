@@ -271,6 +271,9 @@ func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*
 }
 
 func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
+	if vm == nil {
+		return nil
+	}
 	var errs []error
 	emitIfBus(bus, telemetry.KindCleanupStart, map[string]string{})
 	cleanup := telemetry.CleanupDoneData{}
@@ -291,6 +294,7 @@ func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
 		} else {
 			observability.Info("teardown_tap_removed", observability.Fields{"execution_id": vm.UUID, "tap_name": vm.Network.TapName})
 			cleanup.TapRemoved = true
+			vm.Network = nil
 		}
 	} else {
 		cleanup.TapRemoved = true
@@ -305,6 +309,7 @@ func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
 	} else {
 		observability.Info("teardown_scratch_removed", observability.Fields{"execution_id": vm.UUID})
 		cleanup.ScratchRemoved = true
+		vm.ScratchPath = ""
 	}
 
 	if err := os.Remove(vm.SocketPath); err != nil && !os.IsNotExist(err) {
@@ -313,6 +318,7 @@ func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
 	} else {
 		observability.Info("teardown_fc_socket_removed", observability.Fields{"execution_id": vm.UUID})
 		fcSocketRemoved = true
+		vm.SocketPath = ""
 	}
 
 	if err := os.Remove(vm.VsockPath); err != nil && !os.IsNotExist(err) {
@@ -321,6 +327,7 @@ func Teardown(vm *VMInstance, bus *telemetry.Bus) error {
 	} else {
 		observability.Info("teardown_vsock_socket_removed", observability.Fields{"execution_id": vm.UUID})
 		vsockSocketRemoved = true
+		vm.VsockPath = ""
 	}
 	cleanup.SocketRemoved = fcSocketRemoved && vsockSocketRemoved
 

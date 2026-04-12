@@ -65,6 +65,7 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		TaskClass:          input.TaskClass,
 		DeclaredPurpose:    input.DeclaredPurpose,
 		WorkspaceID:        input.WorkspaceID,
+		ExecutionStatus:    input.ExecutionStatus,
 		IntentDigest:       intentDigest,
 		IntentDigestAlgo:   intentAlgo,
 		EvidenceDigest:     evidenceDigest,

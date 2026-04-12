@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -207,6 +209,41 @@ func stubAllowlistHooks(t *testing.T, ips []net.IP, lookupErr error) func() {
 		lookupAllowlistIPv4 = oldLookup
 		runAllowlistRuleCmd = oldRun
 		allowlistHookMu.Unlock()
+	}
+}
+
+func TestTeardownIsIdempotent(t *testing.T) {
+	t.Setenv("AEGIS_CGROUP_PARENT", t.TempDir())
+
+	root := t.TempDir()
+	scratch := filepath.Join(root, "scratch.ext4")
+	socket := filepath.Join(root, "fc.sock")
+	vsock := filepath.Join(root, "vsock.sock")
+	for _, path := range []string{scratch, socket, vsock} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", path, err)
+		}
+	}
+
+	cgPath := CgroupPath(DefaultCgroupParent(), "exec-idempotent")
+	if err := os.MkdirAll(cgPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll cgroup: %v", err)
+	}
+
+	vm := &VMInstance{
+		UUID:           "exec-idempotent",
+		CgroupID:       "exec-idempotent",
+		FirecrackerPID: 999999,
+		ScratchPath:    scratch,
+		SocketPath:     socket,
+		VsockPath:      vsock,
+	}
+
+	if err := Teardown(vm, telemetry.NewBus("exec-idempotent")); err != nil {
+		t.Fatalf("first Teardown: %v", err)
+	}
+	if err := Teardown(vm, telemetry.NewBus("exec-idempotent")); err != nil {
+		t.Fatalf("second Teardown: %v", err)
 	}
 }
 

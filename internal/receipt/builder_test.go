@@ -274,6 +274,20 @@ func TestFormatSummaryIncludesWorkspaceID(t *testing.T) {
 	}
 }
 
+func TestFormatSummaryIncludesExecutionStatus(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.ExecutionStatus = "teardown_failed"
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := FormatSummary(receipt.Statement, true)
+	if !strings.Contains(summary, "execution_status=teardown_failed") {
+		t.Fatalf("summary missing execution_status: %s", summary)
+	}
+}
+
 func TestFormatSummaryIncludesGovernedActionEvidence(t *testing.T) {
 	signer := mustDevSigner(t)
 	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
