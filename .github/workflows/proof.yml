@@ -44,9 +44,45 @@ jobs:
           test -w /dev/kvm
           command -v systemd-run
           command -v debugfs
+          test -x "$HOME/.local/bin/firecracker"
           test -x /usr/lib/postgresql/16/bin/initdb
           test -x /usr/lib/postgresql/16/bin/pg_ctl
           test -x /usr/lib/postgresql/16/bin/psql
+
+      - name: Prepare repo-local config
+        run: |
+          mkdir -p .aegis/bin
+          cat > .aegis/config.yaml <<EOF
+          version: v1
+
+          api:
+            url: "http://localhost:8080"
+
+          database:
+            url: "postgres://postgres:postgres@localhost/aegis?sslmode=disable"
+
+          runtime:
+            assets_dir: "${GITHUB_WORKSPACE}/assets"
+            policy_path: "${GITHUB_WORKSPACE}/configs/default-policy.yaml"
+            rootfs_path: "${GITHUB_WORKSPACE}/assets/alpine-base.ext4"
+            firecracker_bin: "${HOME}/.local/bin/firecracker"
+            orchestrator_bin: "${GITHUB_WORKSPACE}/.aegis/bin/orchestrator"
+            cli_bin: "${GITHUB_WORKSPACE}/.aegis/bin/aegis"
+            cgroup_parent: "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/aegis"
+            proof_root: "/tmp/aegis/proofs"
+            log_path: "/tmp/aegis-local-orchestrator.log"
+            ui_dir: "${GITHUB_WORKSPACE}/ui"
+            warm_pool_size: 0
+            warm_pool_max_age: 300
+
+          receipt:
+            signing_mode: "strict"
+            seed_file: "${GITHUB_WORKSPACE}/.aegis/receipt_signing_seed.b64"
+
+          demo:
+            broker_env:
+              - "AEGIS_CRED_GITHUB_TOKEN"
+          EOF
 
       - name: Build repo-local Aegis CLI
         run: |
