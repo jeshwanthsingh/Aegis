@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,7 +16,7 @@ import (
 	"strings"
 
 	"aegis/internal/api"
-	"aegis/internal/governance"
+	"aegis/internal/capabilities"
 	policycontract "aegis/internal/policy/contract"
 	"aegis/internal/receipt"
 
@@ -39,19 +40,16 @@ type ToolHandler struct {
 }
 
 type ExecuteArgs struct {
-	Code                string             `json:"code"`
-	Language            string             `json:"language"`
-	TimeoutSec          *float64           `json:"timeout_sec,omitempty"`
-	AllowNetworkDomains []string           `json:"allow_network_domains,omitempty"`
-	AllowWritePaths     []string           `json:"allow_write_paths,omitempty"`
-	BrokerDelegations   []BrokerDelegation `json:"broker_delegations,omitempty"`
+	Code                string                `json:"code"`
+	Language            string                `json:"language"`
+	TimeoutSec          *float64              `json:"timeout_sec,omitempty"`
+	Capabilities        *capabilities.Request `json:"capabilities,omitempty"`
+	AllowNetworkDomains []string              `json:"allow_network_domains,omitempty"`
+	AllowWritePaths     []string              `json:"allow_write_paths,omitempty"`
+	BrokerDelegations   []BrokerDelegation    `json:"broker_delegations,omitempty"`
 }
 
-type BrokerDelegation struct {
-	Name     string `json:"name"`
-	Resource string `json:"resource,omitempty"`
-	Method   string `json:"method,omitempty"`
-}
+type BrokerDelegation = capabilities.Delegation
 
 type ExecuteToolResult struct {
 	ExecutionID     string         `json:"execution_id"`
@@ -190,7 +188,7 @@ func (h *ToolHandler) Execute(ctx context.Context, args ExecuteArgs) (ExecuteToo
 	if strings.TrimSpace(args.Code) == "" {
 		return ExecuteToolResult{}, &InvalidParamsError{Message: "code is required"}
 	}
-	language := normalizeLanguage(args.Language)
+	language := capabilities.NormalizeLanguage(args.Language)
 	if language == "" {
 		return ExecuteToolResult{}, &InvalidParamsError{Message: "language must be one of python, bash, node"}
 	}
@@ -199,16 +197,20 @@ func (h *ToolHandler) Execute(ctx context.Context, args ExecuteArgs) (ExecuteToo
 		return ExecuteToolResult{}, err
 	}
 	executionID := uuid.NewString()
-	intent, err := BuildDefaultIntent(executionID, language, timeoutSec, args.AllowNetworkDomains, args.AllowWritePaths, args.BrokerDelegations)
+	capabilityReq, err := capabilityRequestFromExecuteArgs(args)
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}
-	intentJSON, err := json.Marshal(intentWire(intent))
+	compiled, err := capabilities.Compile(executionID, language, timeoutSec, capabilityReq)
 	if err != nil {
-		return ExecuteToolResult{}, fmt.Errorf("marshal intent: %w", err)
+		var invalid *capabilities.InvalidRequestError
+		if errors.As(err, &invalid) {
+			return ExecuteToolResult{}, &InvalidParamsError{Message: invalid.Error()}
+		}
+		return ExecuteToolResult{}, err
 	}
 	workspaceID := ""
-	if workspaceRequired(args.AllowWritePaths) {
+	if capabilities.WorkspaceRequired(capabilityReq.WritePaths) {
 		workspaceID = mcpWorkspaceID(executionID)
 	}
 	reqBody := api.ExecuteRequest{
@@ -217,7 +219,7 @@ func (h *ToolHandler) Execute(ctx context.Context, args ExecuteArgs) (ExecuteToo
 		Code:        args.Code,
 		TimeoutMs:   int(math.Ceil(timeoutSec * 1000)),
 		WorkspaceID: workspaceID,
-		Intent:      intentJSON,
+		Intent:      compiled.Raw,
 	}
 	beforeWarm, _ := h.readWarmPoolStatus(ctx)
 	resp, raw, err := h.executeHTTP(ctx, reqBody)
@@ -386,104 +388,25 @@ func (h *ToolHandler) executeHTTP(ctx context.Context, payload api.ExecuteReques
 }
 
 func BuildDefaultIntent(executionID string, language string, timeoutSec float64, networkDomains []string, writePaths []string, delegations []BrokerDelegation) (policycontract.IntentContract, error) {
-	if executionID == "" {
-		return policycontract.IntentContract{}, &InvalidParamsError{Message: "execution_id is required"}
-	}
-	language = normalizeLanguage(language)
-	if language == "" {
-		return policycontract.IntentContract{}, &InvalidParamsError{Message: "language must be one of python, bash, node"}
-	}
-	allowedDomains, err := cleanStringList(networkDomains, false)
-	if err != nil {
-		return policycontract.IntentContract{}, err
-	}
-	writeList, err := cleanStringList(writePaths, true)
-	if err != nil {
-		return policycontract.IntentContract{}, err
-	}
-	for _, runtimePath := range runtimeWritePaths(language) {
-		if !slices.Contains(writeList, runtimePath) {
-			writeList = append(writeList, runtimePath)
-		}
-	}
-	allowedDelegations := make([]string, 0, len(delegations))
-	brokerDomains := make([]string, 0, len(delegations))
-	for _, delegation := range delegations {
-		name := strings.TrimSpace(delegation.Name)
-		if name == "" {
-			return policycontract.IntentContract{}, &InvalidParamsError{Message: "broker_delegations entries require name"}
-		}
-		resource := strings.TrimSpace(delegation.Resource)
-		if resource == "" {
-			return policycontract.IntentContract{}, &InvalidParamsError{Message: "broker_delegations entries require resource", Details: map[string]any{"name": name}}
-		}
-		domain, err := delegationDomain(resource)
-		if err != nil {
-			return policycontract.IntentContract{}, &InvalidParamsError{Message: "broker_delegations resource must be a hostname or URL", Details: map[string]any{"name": name, "resource": resource, "cause": err.Error()}}
-		}
-		if !slices.Contains(allowedDelegations, name) {
-			allowedDelegations = append(allowedDelegations, name)
-		}
-		if !slices.Contains(brokerDomains, domain) {
-			brokerDomains = append(brokerDomains, domain)
-		}
-	}
-	allowNetwork := len(allowedDomains) > 0 || len(brokerDomains) > 0
-	allowedIPs := []string{}
-	maxOutboundConns := len(allowedDomains)
-	if len(brokerDomains) > 0 {
-		allowedIPs = append(allowedIPs, "127.0.0.1")
-		if maxOutboundConns < 1 {
-			maxOutboundConns = 1
-		}
-	}
-	brokerActionTypes := governance.EffectiveBrokerActionTypes(policycontract.BrokerScope{
-		AllowedDomains: brokerDomains,
+	compiled, err := capabilities.Compile(executionID, language, timeoutSec, capabilities.Request{
+		NetworkDomains: networkDomains,
+		WritePaths:     writePaths,
+		Broker: &capabilities.BrokerRequest{
+			Delegations:  delegations,
+			HTTPRequests: len(delegations) > 0,
+		},
 	})
-	intent := policycontract.IntentContract{
-		Version:         "v1",
-		ExecutionID:     executionID,
-		WorkflowID:      defaultWorkflowID,
-		TaskClass:       "mcp_execute",
-		DeclaredPurpose: fmt.Sprintf("Execute %s code via the Aegis MCP server", language),
-		Language:        language,
-		ResourceScope: policycontract.ResourceScope{
-			WorkspaceRoot:    defaultWorkspace,
-			ReadPaths:        runtimeReadPaths(language),
-			WritePaths:       writeList,
-			DenyPaths:        []string{},
-			MaxDistinctFiles: maxDistinctFiles(language, writeList),
-		},
-		NetworkScope: policycontract.NetworkScope{
-			AllowNetwork:     allowNetwork,
-			AllowedDomains:   allowedDomains,
-			AllowedIPs:       allowedIPs,
-			MaxDNSQueries:    len(allowedDomains),
-			MaxOutboundConns: maxOutboundConns,
-		},
-		ProcessScope: policycontract.ProcessScope{
-			AllowedBinaries:     []string{defaultBinaryFor(language)},
-			AllowShell:          language == "bash",
-			AllowPackageInstall: false,
-			MaxChildProcesses:   defaultChildProcesses(language),
-		},
-		BrokerScope: policycontract.BrokerScope{
-			AllowedDelegations: allowedDelegations,
-			AllowedDomains:     brokerDomains,
-			AllowedActionTypes: brokerActionTypes,
-			RequireHostConsent: false,
-		},
-		Budgets: policycontract.BudgetLimits{
-			TimeoutSec:  int(math.Ceil(timeoutSec)),
-			MemoryMB:    defaultMemoryMB,
-			CPUQuota:    defaultCPUQuota,
-			StdoutBytes: defaultStdoutBytes,
-		},
-		Attributes: map[string]string{"surface": "mcp"},
+	if err != nil {
+		var invalid *capabilities.InvalidRequestError
+		if errors.As(err, &invalid) {
+			return policycontract.IntentContract{}, &InvalidParamsError{Message: invalid.Error()}
+		}
+		return policycontract.IntentContract{}, err
 	}
-	if err := intent.Validate(); err != nil {
-		return policycontract.IntentContract{}, &InvalidParamsError{Message: err.Error()}
-	}
+	intent := compiled.Intent
+	intent.TaskClass = "mcp_execute"
+	intent.DeclaredPurpose = fmt.Sprintf("Execute %s code via the Aegis MCP server", language)
+	intent.Attributes = map[string]string{"surface": "mcp"}
 	return intent, nil
 }
 
@@ -502,19 +425,52 @@ func executeInputSchema() map[string]any {
 				"default":     defaultTimeoutSec,
 				"description": "Execution timeout in seconds.",
 			},
+			"capabilities": map[string]any{
+				"type":        "object",
+				"description": "Optional high-level capability request surface. Prefer this over the legacy flat allow_* and broker_delegations fields.",
+				"properties": map[string]any{
+					"network_domains": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+					},
+					"write_paths": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+					},
+					"broker": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"http_requests":    map[string]any{"type": "boolean"},
+							"dependency_fetch": map[string]any{"type": "boolean"},
+							"delegations": map[string]any{
+								"type": "array",
+								"items": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"name":     map[string]any{"type": "string"},
+										"resource": map[string]any{"type": "string"},
+										"method":   map[string]any{"type": "string"},
+									},
+									"required": []string{"name"},
+								},
+							},
+						},
+					},
+				},
+			},
 			"allow_network_domains": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Optional domain allowlist for outbound network access.",
+				"description": "Legacy alias for capabilities.network_domains.",
 			},
 			"allow_write_paths": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Optional writable guest paths. Absolute guest paths only.",
+				"description": "Legacy alias for capabilities.write_paths.",
 			},
 			"broker_delegations": map[string]any{
 				"type":        "array",
-				"description": "Optional broker delegations to request.",
+				"description": "Legacy alias for capabilities.broker.delegations.",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -538,6 +494,27 @@ func verifyInputSchema() map[string]any {
 			"proof_dir":    map[string]any{"type": "string", "description": "Explicit proof bundle directory."},
 		},
 	}
+}
+
+func capabilityRequestFromExecuteArgs(args ExecuteArgs) (capabilities.Request, error) {
+	legacyUsed := len(args.AllowNetworkDomains) > 0 || len(args.AllowWritePaths) > 0 || len(args.BrokerDelegations) > 0
+	if args.Capabilities != nil && !args.Capabilities.IsZero() {
+		if legacyUsed {
+			return capabilities.Request{}, &InvalidParamsError{Message: "capabilities cannot be combined with legacy allow_network_domains, allow_write_paths, or broker_delegations"}
+		}
+		return *args.Capabilities, nil
+	}
+	req := capabilities.Request{
+		NetworkDomains: append([]string(nil), args.AllowNetworkDomains...),
+		WritePaths:     append([]string(nil), args.AllowWritePaths...),
+	}
+	if len(args.BrokerDelegations) > 0 {
+		req.Broker = &capabilities.BrokerRequest{
+			Delegations:  append([]capabilities.Delegation(nil), args.BrokerDelegations...),
+			HTTPRequests: true,
+		}
+	}
+	return req, nil
 }
 
 func toolResultFromStructured(payload any, ok bool) CallToolResult {

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"aegis/internal/capabilities"
 	"aegis/internal/config"
 	"aegis/internal/models"
 	"aegis/internal/receipt"
@@ -22,10 +23,11 @@ import (
 )
 
 type executeRequest struct {
-	Lang      string          `json:"lang"`
-	Code      string          `json:"code"`
-	TimeoutMs int             `json:"timeout_ms,omitempty"`
-	Intent    json.RawMessage `json:"intent,omitempty"`
+	Lang         string                `json:"lang"`
+	Code         string                `json:"code"`
+	TimeoutMs    int                   `json:"timeout_ms,omitempty"`
+	Intent       json.RawMessage       `json:"intent,omitempty"`
+	Capabilities *capabilities.Request `json:"capabilities,omitempty"`
 }
 
 type executeResponse struct {
@@ -317,6 +319,27 @@ func run(stdout io.Writer, stderr io.Writer, args []string) int {
 	intentFile := fs.String("intent-file", "", "path to an IntentContract JSON file")
 	timeoutMs := fs.Int("timeout", 0, "timeout in milliseconds")
 	stream := fs.Bool("stream", false, "stream output as it arrives")
+	allowHTTPRequests := fs.Bool("allow-http-request", false, "allow brokered http_request capability")
+	allowDependencyFetch := fs.Bool("allow-dependency-fetch", false, "allow brokered dependency_fetch capability")
+	var networkDomains []string
+	var writePaths []string
+	var brokerDelegations []capabilities.Delegation
+	fs.Func("network-domain", "allowed network domain (repeatable)", func(value string) error {
+		networkDomains = append(networkDomains, strings.TrimSpace(value))
+		return nil
+	})
+	fs.Func("write-path", "allowed writable guest path (repeatable)", func(value string) error {
+		writePaths = append(writePaths, strings.TrimSpace(value))
+		return nil
+	})
+	fs.Func("broker-delegation", "broker delegation in name=resource form (repeatable)", func(value string) error {
+		delegation, err := parseBrokerDelegation(value)
+		if err != nil {
+			return err
+		}
+		brokerDelegations = append(brokerDelegations, delegation)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -349,8 +372,13 @@ func run(stdout io.Writer, stderr io.Writer, args []string) int {
 		}
 		intent = append(intent[:0], b...)
 	}
+	capabilityReq := buildCapabilityRequest(networkDomains, writePaths, brokerDelegations, *allowHTTPRequests, *allowDependencyFetch)
+	if len(intent) > 0 && capabilityReq != nil && !capabilityReq.IsZero() {
+		fmt.Fprintln(stderr, "--intent-file cannot be combined with capability flags")
+		return 2
+	}
 
-	payload, err := json.Marshal(executeRequest{Lang: *lang, Code: source, TimeoutMs: *timeoutMs, Intent: intent})
+	payload, err := json.Marshal(executeRequest{Lang: *lang, Code: source, TimeoutMs: *timeoutMs, Intent: intent, Capabilities: capabilityReq})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -378,6 +406,33 @@ func run(stdout io.Writer, stderr io.Writer, args []string) int {
 		return consumeStream(stdout, stderr, resp)
 	}
 	return consumeSingle(stdout, stderr, resp)
+}
+
+func buildCapabilityRequest(networkDomains []string, writePaths []string, delegations []capabilities.Delegation, allowHTTPRequests bool, allowDependencyFetch bool) *capabilities.Request {
+	req := &capabilities.Request{
+		NetworkDomains: append([]string(nil), networkDomains...),
+		WritePaths:     append([]string(nil), writePaths...),
+	}
+	if len(delegations) > 0 || allowHTTPRequests || allowDependencyFetch {
+		req.Broker = &capabilities.BrokerRequest{
+			Delegations:     append([]capabilities.Delegation(nil), delegations...),
+			HTTPRequests:    allowHTTPRequests,
+			DependencyFetch: allowDependencyFetch,
+		}
+	}
+	if req.IsZero() {
+		return nil
+	}
+	return req
+}
+
+func parseBrokerDelegation(raw string) (capabilities.Delegation, error) {
+	trimmed := strings.TrimSpace(raw)
+	name, resource, ok := strings.Cut(trimmed, "=")
+	if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(resource) == "" {
+		return capabilities.Delegation{}, fmt.Errorf("broker delegation must be name=resource")
+	}
+	return capabilities.Delegation{Name: strings.TrimSpace(name), Resource: strings.TrimSpace(resource)}, nil
 }
 
 func consumeSingle(stdout io.Writer, stderr io.Writer, resp *http.Response) int {

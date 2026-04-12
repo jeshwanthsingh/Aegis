@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"aegis/internal/api"
+	"aegis/internal/capabilities"
 	"aegis/internal/models"
 	"aegis/internal/receipt"
 )
@@ -136,6 +137,55 @@ func TestToolHandlerExecuteAllocatesWorkspaceOnlyForWorkspaceWrites(t *testing.T
 				t.Fatalf("Execute() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestCapabilityRequestFromExecuteArgsRejectsMixedForms(t *testing.T) {
+	_, err := capabilityRequestFromExecuteArgs(ExecuteArgs{
+		Capabilities:        &capabilities.Request{NetworkDomains: []string{"api.example.com"}},
+		AllowNetworkDomains: []string{"legacy.example.com"},
+	})
+	if err == nil {
+		t.Fatal("expected mixed-form rejection")
+	}
+}
+
+func TestToolHandlerExecuteUsesCapabilitiesSurface(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "warm_pool": map[string]any{"enabled": true}})
+			return
+		case "/v1/execute":
+			var req api.ExecuteRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode execute request: %v", err)
+			}
+			if len(req.Intent) == 0 {
+				t.Fatal("expected compiled intent")
+			}
+			_ = json.NewEncoder(w).Encode(api.ExecuteResponse{ExecutionID: req.ExecutionID, ExitCode: 0, ExitReason: "completed"})
+			return
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer apiServer.Close()
+	t.Setenv("AEGIS_BASE_URL", apiServer.URL)
+	handler := NewToolHandler("dev")
+	_, err := handler.Execute(context.Background(), ExecuteArgs{
+		Code:     "print(1)",
+		Language: "python",
+		Capabilities: &capabilities.Request{
+			NetworkDomains: []string{"api.example.com"},
+			Broker: &capabilities.BrokerRequest{
+				Delegations:  []capabilities.Delegation{{Name: "github", Resource: "https://api.github.com/user"}},
+				HTTPRequests: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
 	}
 }
 

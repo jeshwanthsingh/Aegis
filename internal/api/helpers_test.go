@@ -71,14 +71,14 @@ func TestWithAuthAndBuildPointEvaluator(t *testing.T) {
 
 	intentJSON := json.RawMessage(`{"version":"v1","execution_id":"11111111-1111-4111-8111-111111111111","workflow_id":"wf-1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":["/workspace/out"],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}`)
 	reqBody := ExecuteRequest{ExecutionID: "11111111-1111-4111-8111-111111111111", Lang: "python", Intent: intentJSON}
-	eval, intent, err := buildPointEvaluator(reqBody)
+	eval, intent, err := buildPointEvaluator(&reqBody, policy.Default().DefaultTimeoutMs)
 	if err != nil || eval == nil || intent == nil {
 		t.Fatalf("buildPointEvaluator(valid) err=%v eval=%v intent=%v", err, eval, intent)
 	}
-	if _, _, err := buildPointEvaluator(ExecuteRequest{ExecutionID: "other", Lang: "python", Intent: intentJSON}); err == nil {
+	if _, _, err := buildPointEvaluator(&ExecuteRequest{ExecutionID: "other", Lang: "python", Intent: intentJSON}, policy.Default().DefaultTimeoutMs); err == nil {
 		t.Fatal("expected execution_id mismatch error")
 	}
-	if _, _, err := buildPointEvaluator(ExecuteRequest{ExecutionID: "11111111-1111-4111-8111-111111111111", Lang: "bash", Intent: intentJSON}); err == nil {
+	if _, _, err := buildPointEvaluator(&ExecuteRequest{ExecutionID: "11111111-1111-4111-8111-111111111111", Lang: "bash", Intent: intentJSON}, policy.Default().DefaultTimeoutMs); err == nil {
 		t.Fatal("expected language mismatch error")
 	}
 }

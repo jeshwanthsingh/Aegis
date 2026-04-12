@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"aegis/internal/broker"
+	"aegis/internal/capabilities"
 	"aegis/internal/executor"
 	"aegis/internal/models"
 	"aegis/internal/observability"
@@ -29,13 +30,14 @@ import (
 )
 
 type ExecuteRequest struct {
-	ExecutionID string          `json:"execution_id,omitempty"`
-	Lang        string          `json:"lang"`
-	Code        string          `json:"code"`
-	TimeoutMs   int             `json:"timeout_ms"`
-	Profile     string          `json:"profile,omitempty"`
-	WorkspaceID string          `json:"workspace_id,omitempty"`
-	Intent      json.RawMessage `json:"intent,omitempty"`
+	ExecutionID  string                `json:"execution_id,omitempty"`
+	Lang         string                `json:"lang"`
+	Code         string                `json:"code"`
+	TimeoutMs    int                   `json:"timeout_ms"`
+	Profile      string                `json:"profile,omitempty"`
+	WorkspaceID  string                `json:"workspace_id,omitempty"`
+	Intent       json.RawMessage       `json:"intent,omitempty"`
+	Capabilities *capabilities.Request `json:"capabilities,omitempty"`
 }
 
 type ExecuteResponse struct {
@@ -74,9 +76,33 @@ var (
 	writeExecutionRecordFunc = writeExecutionRecord
 )
 
-func buildPointEvaluator(req ExecuteRequest) (*policyevaluator.Evaluator, *policycontract.IntentContract, error) {
-	if len(req.Intent) == 0 {
+func buildPointEvaluator(req *ExecuteRequest, defaultTimeoutMs int) (*policyevaluator.Evaluator, *policycontract.IntentContract, error) {
+	if req == nil {
 		return nil, nil, nil
+	}
+	if len(req.Intent) > 0 && req.Capabilities != nil && !req.Capabilities.IsZero() {
+		return nil, nil, &capabilities.InvalidRequestError{Message: "intent and capabilities cannot both be provided"}
+	}
+	if len(req.Intent) == 0 {
+		if req.Capabilities == nil || req.Capabilities.IsZero() {
+			return nil, nil, nil
+		}
+		executionID, err := chooseExecutionID(req.ExecutionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		timeoutSec := float64(defaultTimeoutMs) / 1000
+		if req.TimeoutMs > 0 {
+			timeoutSec = float64(req.TimeoutMs) / 1000
+		}
+		compiled, err := capabilities.Compile(executionID, req.Lang, timeoutSec, *req.Capabilities)
+		if err != nil {
+			return nil, nil, err
+		}
+		req.ExecutionID = executionID
+		req.Intent = compiled.Raw
+		eval := policyevaluator.New(compiled.Intent)
+		return eval, &compiled.Intent, nil
 	}
 	intent, err := policycontract.LoadIntentContractJSON(req.Intent)
 	if err != nil {
@@ -394,10 +420,15 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			return
 		}
 
-		pointEvaluator, intent, err := buildPointEvaluator(req)
+		pointEvaluator, intent, err := buildPointEvaluator(&req, pol.DefaultTimeoutMs)
 		if err != nil {
 			execStatus = "validation_error"
-			writeAPIError(w, http.StatusBadRequest, "invalid_intent_contract", err.Error(), nil)
+			errorCode := "invalid_intent_contract"
+			var invalidReq *capabilities.InvalidRequestError
+			if errors.As(err, &invalidReq) {
+				errorCode = "invalid_request"
+			}
+			writeAPIError(w, http.StatusBadRequest, errorCode, err.Error(), nil)
 			return
 		}
 		var divergenceEvaluator *policydivergence.Evaluator
@@ -706,10 +737,15 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			return
 		}
 
-		pointEvaluator, intent, err := buildPointEvaluator(req)
+		pointEvaluator, intent, err := buildPointEvaluator(&req, pol.DefaultTimeoutMs)
 		if err != nil {
 			execStatus = "validation_error"
-			writeAPIError(w, http.StatusBadRequest, "invalid_intent_contract", err.Error(), nil)
+			errorCode := "invalid_intent_contract"
+			var invalidReq *capabilities.InvalidRequestError
+			if errors.As(err, &invalidReq) {
+				errorCode = "invalid_request"
+			}
+			writeAPIError(w, http.StatusBadRequest, errorCode, err.Error(), nil)
 			return
 		}
 		var divergenceEvaluator *policydivergence.Evaluator

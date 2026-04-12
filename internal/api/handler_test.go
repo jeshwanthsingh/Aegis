@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"aegis/internal/broker"
+	"aegis/internal/capabilities"
 	"aegis/internal/executor"
 	"aegis/internal/models"
 	"aegis/internal/policy"
@@ -31,11 +32,11 @@ import (
 func TestBuildPointEvaluatorRejectsExecutionIDMismatch(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := buildPointEvaluator(ExecuteRequest{
+	_, _, err := buildPointEvaluator(&ExecuteRequest{
 		ExecutionID: "30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
 		Lang:        "python",
 		Intent:      json.RawMessage(`{"version":"v1","execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6c","workflow_id":"wf_1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":[],"write_paths":[],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}`),
-	})
+	}, policy.Default().DefaultTimeoutMs)
 	if err == nil {
 		t.Fatal("expected execution_id mismatch error")
 	}
@@ -44,10 +45,10 @@ func TestBuildPointEvaluatorRejectsExecutionIDMismatch(t *testing.T) {
 func TestBuildPointEvaluatorAcceptsValidIntent(t *testing.T) {
 	t.Parallel()
 
-	eval, intent, err := buildPointEvaluator(ExecuteRequest{
+	eval, intent, err := buildPointEvaluator(&ExecuteRequest{
 		Lang:   "python",
 		Intent: json.RawMessage(`{"version":"v1","execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","workflow_id":"wf_1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":["/workspace/out"],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}`),
-	})
+	}, policy.Default().DefaultTimeoutMs)
 	if err != nil {
 		t.Fatalf("buildPointEvaluator returned error: %v", err)
 	}
@@ -56,6 +57,51 @@ func TestBuildPointEvaluatorAcceptsValidIntent(t *testing.T) {
 	}
 	if intent.ExecutionID != "30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b" {
 		t.Fatalf("unexpected execution_id: %q", intent.ExecutionID)
+	}
+}
+
+func TestBuildPointEvaluatorCompilesCapabilitiesRequest(t *testing.T) {
+	t.Parallel()
+
+	req := ExecuteRequest{
+		Lang: "python",
+		Capabilities: &capabilities.Request{
+			NetworkDomains: []string{"api.example.com"},
+			Broker: &capabilities.BrokerRequest{
+				Delegations:  []capabilities.Delegation{{Name: "github", Resource: "https://api.github.com/user"}},
+				HTTPRequests: true,
+			},
+		},
+	}
+	eval, intent, err := buildPointEvaluator(&req, policy.Default().DefaultTimeoutMs)
+	if err != nil {
+		t.Fatalf("buildPointEvaluator returned error: %v", err)
+	}
+	if eval == nil || intent == nil {
+		t.Fatal("expected evaluator and compiled intent")
+	}
+	if req.ExecutionID == "" || len(req.Intent) == 0 {
+		t.Fatalf("expected compiled execution_id and intent, got execution_id=%q intent_len=%d", req.ExecutionID, len(req.Intent))
+	}
+	if !slices.Contains(intent.BrokerScope.AllowedActionTypes, "http_request") {
+		t.Fatalf("unexpected broker action types: %v", intent.BrokerScope.AllowedActionTypes)
+	}
+}
+
+func TestBuildPointEvaluatorRejectsIntentAndCapabilitiesTogether(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := buildPointEvaluator(&ExecuteRequest{
+		ExecutionID:  "30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
+		Lang:         "python",
+		Intent:       json.RawMessage(`{"version":"v1","execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","workflow_id":"wf_1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":[],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}`),
+		Capabilities: &capabilities.Request{NetworkDomains: []string{"api.example.com"}},
+	}, policy.Default().DefaultTimeoutMs)
+	if err == nil {
+		t.Fatal("expected mixed-form request rejection")
+	}
+	if !strings.Contains(err.Error(), "intent and capabilities cannot both be provided") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -230,6 +276,39 @@ func TestExecuteHandlerRejectsInvalidProfile(t *testing.T) {
 		t.Fatalf("unexpected status: got %d want %d body=%s", rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
 	if !strings.Contains(rr.Body.String(), "invalid compute profile") {
+		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestExecuteHandlerAcceptsCapabilitiesRequest(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"capabilities":{"network_domains":["api.example.com"],"broker":{"delegations":[{"name":"github","resource":"https://api.github.com/user"}],"http_requests":true}}}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"execution_id":"`) || !strings.Contains(body, `"receipt_path":"`) {
+		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
+func TestExecuteHandlerRejectsIntentAndCapabilitiesTogether(t *testing.T) {
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","lang":"python","code":"print(1)","timeout_ms":1000,"intent":{"version":"v1","execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","workflow_id":"wf_1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":[],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}},"capabilities":{"network_domains":["api.example.com"]}}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"invalid_request"`) || !strings.Contains(rr.Body.String(), "intent and capabilities cannot both be provided") {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
 	}
 }

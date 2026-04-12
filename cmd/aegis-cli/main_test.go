@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -169,6 +170,69 @@ func TestRunStreamPrintsProofBundleChunk(t *testing.T) {
 		if !strings.Contains(stdout.String(), needle) {
 			t.Fatalf("stdout missing %q: %s", needle, stdout.String())
 		}
+	}
+}
+
+func TestRunSendsCapabilitiesRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/execute" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		capabilities, ok := req["capabilities"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing capabilities payload: %#v", req)
+		}
+		broker, ok := capabilities["broker"].(map[string]any)
+		if !ok || broker["http_requests"] != true {
+			t.Fatalf("unexpected broker payload: %#v", capabilities["broker"])
+		}
+		domains, ok := capabilities["network_domains"].([]any)
+		if !ok || len(domains) != 1 || domains[0] != "api.example.com" {
+			t.Fatalf("unexpected network domains: %#v", capabilities["network_domains"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"execution_id": "exec_caps", "exit_code": 0, "exit_reason": "completed"})
+	}))
+	defer server.Close()
+
+	t.Setenv("AEGIS_URL", server.URL)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runMain(&stdout, &stderr, []string{
+		"run",
+		"--lang", "python",
+		"--code", "print(1)",
+		"--network-domain", "api.example.com",
+		"--allow-http-request",
+		"--broker-delegation", "github=https://api.github.com/user",
+	})
+	if code != 0 {
+		t.Fatalf("runMain exit=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+}
+
+func TestRunRejectsIntentAndCapabilitiesTogether(t *testing.T) {
+	intentFile := filepath.Join(t.TempDir(), "intent.json")
+	if err := os.WriteFile(intentFile, []byte(`{"version":"v1"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runMain(&stdout, &stderr, []string{
+		"run",
+		"--lang", "python",
+		"--code", "print(1)",
+		"--intent-file", intentFile,
+		"--allow-http-request",
+	})
+	if code == 0 {
+		t.Fatal("expected mixed-form run rejection")
+	}
+	if !strings.Contains(stderr.String(), "--intent-file cannot be combined with capability flags") {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
 }
 
