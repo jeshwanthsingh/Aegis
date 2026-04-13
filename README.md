@@ -1,37 +1,28 @@
 # Aegis
 
+[![Tier 1 CI](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml)
+[![Security Policy](https://img.shields.io/badge/security-policy-blue)](SECURITY.md)
+
 **Aegis runs untrusted code in Firecracker microVMs, brokers dangerous actions through explicit policy, and gives you receipts you can verify after execution.**
 
 Aegis is for code you should not trust with your host: agent-generated tools, brokered upstream access, and execution flows where logs are not enough.
 
 ## Start Here
 
-- [Canonical Demo](docs/canonical-demo.md)
-- [Quickstart](docs/quickstart.md)
-- [Proof Pipeline](docs/proof-pipeline.md)
-- [Security Posture](SECURITY.md)
+- [Quickstart](docs/quickstart.md): first source-checkout path for a new operator
+- [Architecture](docs/architecture.md): runtime components, control flow, and trust boundaries
+- [API](docs/api.md) / [OpenAPI](docs/openapi.json): HTTP surface and schema
+- [MCP Server](docs/mcp_server.md): MCP tools and client wiring
+- [Canonical Demo](docs/canonical-demo.md): product demo after the runtime is already healthy
+- [Security](SECURITY.md): security model, limitations, and reporting guidance
 
-## Requires
+## Prerequisites
 
 - Linux with `/dev/kvm`
-- PostgreSQL running locally
-- valid PostgreSQL credentials
-- `python3-venv` and `python3-pip`
-- `sudo` access
-
-## PostgreSQL Note
-
-The default local config assumes:
-
-```text
-postgres://postgres:postgres@localhost/aegis?sslmode=disable
-```
-
-If your local PostgreSQL credentials differ, `scripts/install.sh` and `aegis setup` can fail. Either align the local `postgres` password with that default or set `AEGIS_DB_URL` / `DB_URL` explicitly.
-
-## Why It Exists
-
-Running untrusted code is not just a sandboxing problem. You need a real isolation boundary, explicit policy over what the code can do, and proof of what the runtime allowed, denied, and observed. Aegis exists for that shape of problem.
+- PostgreSQL running and reachable
+- valid database credentials
+- `python3-venv` and `python3-pip` for Python SDK examples
+- `sudo` access for parts of install/bootstrap
 
 ## Run This First
 
@@ -42,21 +33,22 @@ bash scripts/install.sh
 aegis setup
 aegis doctor
 aegis serve
-# then in another terminal
-python3 scripts/run_canonical_demo.py
 ```
 
-That is the first-run path we actually tested on Ubuntu. `scripts/install.sh` is effectively required for most first-time source-checkout users because it downloads release assets, builds binaries, prepares the guest image, and initializes the database.
+For most first-time source-checkout users, `scripts/install.sh` is effectively required. It fetches runtime assets, prepares the guest image, builds the orchestrator binary, and gets the local database/bootstrap path into a usable state before `aegis setup`, `aegis doctor`, and `aegis serve`.
 
-The canonical demo assumes `aegis serve` is already running. Broker-related paths can still fail unless broker credential bindings are configured.
+The canonical demo is a second step after the runtime is healthy, not the first command for a stranger evaluating the repo.
 
-The demo shows:
+### First-run Notes
 
-- an allowed governed action
-- a denied direct egress attempt
-- receipt verification proving both outcomes
+- PostgreSQL defaults assume a standard local setup such as `postgres://postgres:postgres@localhost/aegis?sslmode=disable`.
+- If your local PostgreSQL credentials differ, set `AEGIS_DB_URL` or `DB_URL` explicitly before running setup.
+- A custom repo-local `.aegis/config.yaml` can cause confusing failures. If setup behaves strangely, remove `.aegis/` and rerun `aegis setup`.
+- The repo-local MCP binary may need a manual build: `go build -o .aegis/bin/aegis-mcp ./cmd/aegis-mcp`.
 
-For the full onboarding details and caveats, use [Quickstart](docs/quickstart.md).
+## Why It Exists
+
+Running untrusted code is not just a sandboxing problem. You need a real isolation boundary, explicit policy over what the code can do, and proof of what the runtime allowed, denied, and observed. Aegis exists for that shape of problem.
 
 ## What This Is
 
@@ -73,6 +65,19 @@ For the full onboarding details and caveats, use [Quickstart](docs/quickstart.md
 - not host attestation
 - not HSM/KMS-backed signing custody
 - not a generic dev sandbox with nicer branding
+
+## Real proof: blocked exfiltration
+
+Without Aegis, a simple script can read data and attempt an outbound request.
+
+With Aegis, the direct egress path is denied and the runtime emits a signed receipt that can be verified independently after the run.
+
+Key fields from an actual MCP-driven proof:
+
+- `denial_marker=direct_egress_denied`
+- `denial_rule_id=governance.direct_egress_disabled`
+- `target=tcp://127.0.0.1:8081`
+- `verification=verified`
 
 ## Source Checkout Quickstart
 
@@ -134,6 +139,8 @@ For most first-time source-checkout users, `scripts/install.sh` is the practical
 
 ## Architecture
 
+Aegis keeps policy, brokerage, and proof generation on the host side while untrusted code runs inside a Firecracker guest. The result is a runtime where the execution boundary and the evidence path stay explicit.
+
 ```mermaid
 flowchart LR
     subgraph Clients
@@ -174,7 +181,7 @@ flowchart LR
     BROKER -->|host-mediated delegation| GUEST
 ```
 
-Trust boundaries:
+### Trust boundaries
 
 - host and guest are separated by a Firecracker microVM boundary
 - secrets stay on the host side and are exposed only through the broker policy surface
@@ -182,6 +189,25 @@ Trust boundaries:
 - verification is separate from execution so downstream systems can validate what happened
 
 More detail: [docs/architecture.md](docs/architecture.md)
+
+## Project Structure
+
+```text
+.
+├── cmd/            CLI, MCP server, and orchestrator entrypoints
+├── internal/       host runtime packages: API, broker, policy, executor, pool, receipt
+├── guest-runner/   guest-side execution runner used inside the microVM
+├── guest-proxy/    guest-side proxy path for host-mediated flows
+├── sdk/            Python and TypeScript client SDKs
+├── scripts/        install, bootstrap, demo, smoke, and hardening scripts
+├── docs/           quickstart, architecture, API, MCP, demo, and warm-pool docs
+├── assets/         kernel and rootfs assets used by local runtime flows
+├── configs/        default and validation policy files
+├── db/             database schema and bootstrap assets
+├── ui/             local proving-ground UI assets
+├── tests/          repo-level scenario and regression coverage
+└── .aegis/         repo-local binaries and config created during setup
+```
 
 ## When to use Aegis
 
@@ -225,18 +251,20 @@ Not built yet:
 - broader multi-tenant orchestration
 - alternate runtime backends such as gVisor
 
-## Documentation index
+## Documentation
 
-- [docs/quickstart.md](docs/quickstart.md): canonical source-checkout onboarding path
-- [docs/architecture.md](docs/architecture.md): component model and trust boundaries
-- [docs/api.md](docs/api.md): HTTP API behavior and examples
-- [docs/openapi.json](docs/openapi.json): OpenAPI description of the current HTTP surface
-- [docs/mcp_server.md](docs/mcp_server.md): MCP server tools, schema, and client setup
-- [docs/canonical-demo.md](docs/canonical-demo.md): canonical product demo command, proof claims, and optional add-ons
-- [docs/warm_pool.md](docs/warm_pool.md): warm pool v1 behavior, observability, and caveats
-- [SECURITY.md](SECURITY.md): security model, threat model, limitations, and disclosure guidance
-- [sdk/python/README.md](sdk/python/README.md): Python SDK reference
-- [sdk/typescript/README.md](sdk/typescript/README.md): TypeScript SDK reference
+| Topic | Path |
+| --- | --- |
+| Quickstart | [docs/quickstart.md](docs/quickstart.md) |
+| Architecture | [docs/architecture.md](docs/architecture.md) |
+| API | [docs/api.md](docs/api.md) |
+| OpenAPI | [docs/openapi.json](docs/openapi.json) |
+| MCP server | [docs/mcp_server.md](docs/mcp_server.md) |
+| Canonical demo | [docs/canonical-demo.md](docs/canonical-demo.md) |
+| Warm pool | [docs/warm_pool.md](docs/warm_pool.md) |
+| Security | [SECURITY.md](SECURITY.md) |
+| Python SDK | [sdk/python/README.md](sdk/python/README.md) |
+| TypeScript SDK | [sdk/typescript/README.md](sdk/typescript/README.md) |
 
 ## Example usage
 
@@ -257,13 +285,19 @@ verification = result.verify_receipt()
 print(verification.verified, verification.execution_id)
 ```
 
-For a stronger second-step proof after first success, run:
+### Canonical Demo (secondary)
 
 ```bash
 python3 scripts/run_canonical_demo.py
 ```
 
-That assumes `aegis serve` is already running. It is the canonical product demo path, not the first command for a new user. See [docs/canonical-demo.md](docs/canonical-demo.md).
+This shows:
+
+- governed allow
+- denied direct egress
+- receipt verification
+
+Note: broker-related steps require additional configuration. See [docs/canonical-demo.md](docs/canonical-demo.md).
 
 ### TypeScript SDK
 
@@ -308,3 +342,15 @@ The MCP wrapper stays intentionally thin. It does not bypass the HTTP API or the
 - Some alternatives are local dev sandboxes first.
 - Some alternatives are agent platforms first.
 - Aegis is for the slice of the problem where isolation, policy, and post-run verification all matter at once.
+
+## Contributing
+
+There is no standalone `CONTRIBUTING.md` in this repo yet. Until there is one, follow [AGENTS.md](AGENTS.md), keep changes narrow, and include the smallest verification that proves the behavior you changed.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the current security model, trust boundaries, limitations, and vulnerability-reporting guidance.
+
+## License
+
+This repo does not currently include a top-level `LICENSE` file, so this README does not advertise a license badge or claim a license that is not present in the checkout.
