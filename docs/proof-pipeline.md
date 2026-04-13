@@ -45,7 +45,7 @@ Runner assumptions:
 
 What it runs:
 
-- `python3 scripts/run_canonical_demo.py --serve`
+- `python3 scripts/run_canonical_demo.py --serve --with-warm-path --with-workspace`
 - `python3 scripts/run_red_team_fault_matrix.py`
 
 What it proves:
@@ -63,3 +63,8 @@ What it must not be confused with:
 - Tier 1 is fast confidence only
 - Tier 2 is the real proof lane
 - hosted CI is not allowed to claim Tier 2 coverage
+
+The default public-facing canonical demo is narrower than the Tier 2 proof lane. Use:
+
+- [canonical-demo.md](canonical-demo.md) for the default product story
+- `--with-warm-path` and `--with-workspace` only for secondary proof coverage

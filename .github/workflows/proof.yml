@@ -98,7 +98,7 @@ jobs:
           go build -buildvcs=false -o .aegis/bin/aegis ./cmd/aegis-cli
 
       - name: Canonical demo proof
-        run: python3 scripts/run_canonical_demo.py --serve
+        run: python3 scripts/run_canonical_demo.py --serve --with-warm-path --with-workspace
 
       - name: Stop canonical proof runtime
         run: |

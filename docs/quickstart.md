@@ -162,7 +162,7 @@ After the first successful source-checkout run, use the stronger proof harness:
 python3 scripts/run_canonical_demo.py --serve
 ```
 
-That is the product proof path. It is not the first-run onboarding path.
+That is the canonical product demo path. It is not the first-run onboarding path. See [canonical-demo.md](canonical-demo.md).
 
 ## Optional broker path
 

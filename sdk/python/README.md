@@ -188,7 +188,7 @@ The stronger product proof path after first success is:
 python3 ../../scripts/run_canonical_demo.py --serve
 ```
 
-That is not the first-run onboarding path.
+That is the canonical product demo path, not the first-run onboarding path. See [../../docs/canonical-demo.md](../../docs/canonical-demo.md).
 
 Installed-package usage is also not the first-run onboarding path. It is the package-consumption path once the runtime is already understood.
 

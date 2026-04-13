@@ -301,13 +301,23 @@ class LocalRuntime:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the canonical Aegis demo / red-team harness.")
+    parser = argparse.ArgumentParser(description="Run the canonical Aegis demo harness.")
     parser.add_argument("--serve", action="store_true", help="Start a local repo-configured runtime when one is not already healthy.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to the repo-local Aegis config.")
     parser.add_argument("--base-url", default=os.environ.get("BASE_URL", DEFAULT_BASE_URL), help="Aegis API base URL.")
     parser.add_argument("--runtime-log", default=DEFAULT_RUNTIME_LOG, help="Log file for a runtime started by this script.")
     parser.add_argument("--warm-pool-size", type=int, default=DEFAULT_WARM_POOL_SIZE, help="Warm pool size override used only in --serve mode.")
     parser.add_argument("--broker-token", default=DEFAULT_BROKER_TOKEN, help="Synthetic broker token used only in --serve mode for the loopback probe.")
+    parser.add_argument(
+        "--with-warm-path",
+        action="store_true",
+        help="Also prove cold-vs-warm dispatch as a secondary add-on instead of part of the default story.",
+    )
+    parser.add_argument(
+        "--with-workspace",
+        action="store_true",
+        help="Also prove persistent workspace continuity as a secondary add-on instead of part of the default story.",
+    )
     return parser.parse_args()
 
 
@@ -353,19 +363,31 @@ def main() -> int:
             runtime_ctx.__enter__()
             runtime_started_here = True
 
-        warm = run_cold_vs_warm(base_url, verify_cmd)
-        allowed = warm["cold"]
+        allowed = run_governed_allow(base_url, verify_cmd)
         denied = run_governed_deny(base_url, verify_cmd)
-        workspace = run_workspace_flow(base_url, verify_cmd)
+        sections = ["governed_action"]
+        warm: dict[str, ExecutionResult] | None = None
+        workspace: dict[str, ExecutionResult] | None = None
+
+        if args.with_warm_path:
+            warm = run_cold_vs_warm(base_url, verify_cmd)
+            sections.append("cold_vs_warm")
+
+        if args.with_workspace:
+            workspace = run_workspace_flow(base_url, verify_cmd)
+            sections.append("workspace_continuity")
 
         print("status=passed")
-        print("sections=governed_action,workspace_continuity,cold_vs_warm")
+        print("story=allowed_governed_action,denied_direct_egress,receipt_verification")
+        print(f"sections={','.join(sections)}")
         print(f"allowed_execution_id={allowed.execution_id}")
         print(f"denied_execution_id={denied.execution_id}")
-        print(f"workspace_write_execution_id={workspace['write'].execution_id}")
-        print(f"workspace_read_execution_id={workspace['read'].execution_id}")
-        print(f"cold_execution_id={warm['cold'].execution_id}")
-        print(f"warm_execution_id={warm['warm'].execution_id}")
+        if warm is not None:
+            print(f"cold_execution_id={warm['cold'].execution_id}")
+            print(f"warm_execution_id={warm['warm'].execution_id}")
+        if workspace is not None:
+            print(f"workspace_write_execution_id={workspace['write'].execution_id}")
+            print(f"workspace_read_execution_id={workspace['read'].execution_id}")
         print(f"runtime_started_here={str(runtime_started_here).lower()}")
         return 0
     finally:

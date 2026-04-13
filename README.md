@@ -247,6 +247,7 @@ Not built yet:
 - [docs/api.md](docs/api.md): HTTP API behavior and examples
 - [docs/openapi.json](docs/openapi.json): OpenAPI description of the current HTTP surface
 - [docs/mcp_server.md](docs/mcp_server.md): MCP server tools, schema, and client setup
+- [docs/canonical-demo.md](docs/canonical-demo.md): canonical product demo command, proof claims, and optional add-ons
 - [docs/warm_pool.md](docs/warm_pool.md): warm pool v1 behavior, observability, and caveats
 - [SECURITY.md](SECURITY.md): security model, threat model, limitations, and disclosure guidance
 - [sdk/python/README.md](sdk/python/README.md): Python SDK reference
@@ -273,7 +274,7 @@ For a stronger second-step proof after first success, run:
 python3 scripts/run_canonical_demo.py --serve
 ```
 
-That is the proof harness path, not the first-run onboarding path.
+That is the canonical product demo path, not the first-run onboarding path. See [docs/canonical-demo.md](docs/canonical-demo.md).
 
 ### MCP: isolated execution tool
 
