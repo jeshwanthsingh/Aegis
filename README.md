@@ -1,6 +1,6 @@
 # Aegis
 
-**Aegis runs untrusted code in Firecracker microVMs and gives you receipts you can verify after execution.**
+**Aegis runs untrusted code in Firecracker microVMs, brokers dangerous actions through explicit policy, and gives you receipts you can verify after execution.**
 
 Aegis is for code you should not trust with your host: agent-generated tools, brokered upstream access, and execution flows where logs are not enough.
 
@@ -49,25 +49,13 @@ If you need first-run host setup instead of the product demo path, start with [Q
 
 For a source checkout, the primary onboarding path is:
 
-1. install host prerequisites
-2. `aegis setup`
-3. `aegis doctor`
-4. `aegis serve`
-5. run one SDK example
-6. `aegis receipt verify`
-
-The shortest honest version is:
-
 ```bash
-# optional automation only; not the primary truth surface
-bash scripts/install.sh
-
 aegis setup
 aegis doctor
 aegis serve
 ```
 
-In a second shell, source-tree Python mode:
+Then run one SDK example and verify the emitted proof:
 
 ```bash
 cd sdk/python
@@ -76,51 +64,18 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
 python examples/run_code.py
-```
-
-Then verify the proof bundle printed by the example:
-
-```bash
 aegis receipt verify --proof-dir /path/to/proof-dir
 ```
 
-That path gives you:
-
-- a Firecracker-backed execution
-- a proof bundle on disk
-- a signed receipt
-- a verification result against the emitted proof
-
-For the full source-checkout path, caveats, and TypeScript source-tree mode, start with [docs/quickstart.md](docs/quickstart.md).
+For host prerequisites, asset expectations, caveats, and TypeScript source-tree mode, use [docs/quickstart.md](docs/quickstart.md).
 
 ## Distribution Posture
 
-Use Aegis through one of these paths:
+Primary path today: source checkout on Linux/KVM with release assets.
 
-### Primary public path
+Secondary path: Python or TypeScript SDK usage against an already running Aegis runtime.
 
-Source checkout on Linux/KVM with release assets.
-
-This is the primary supported public path today.
-
-### Secondary public path
-
-Consume the Python or TypeScript SDK packages against an already running Aegis runtime.
-
-### Not-primary
-
-These are not honest primary claims today:
-
-- `pip install aegis-sdk` and you are done
-- `npm install @aegis/sdk` and you are done
-- package-only usage that also bootstraps Firecracker, rootfs assets, database setup, and runtime readiness
-
-The SDKs are client packages for a running Aegis runtime. They are not the runtime distribution story by themselves.
-
-Current repo-coupled SDK version posture:
-
-- Python SDK version `0.1.0`
-- TypeScript SDK version `0.1.0`
+Not-primary: package-only claims that imply `pip install` or `npm install` also bootstraps the runtime. The SDKs are client packages for a running Aegis runtime, not the runtime distribution story by themselves.
 
 ## Release Assets And Checksums
 
@@ -134,12 +89,7 @@ Checksum contract:
 
 - `scripts/release-checksums.txt`
 
-`scripts/install.sh` is optional automation. It is not the primary truth surface. The primary truth surfaces remain:
-
-- `aegis setup`
-- `aegis doctor`
-- `aegis serve`
-- `aegis receipt verify`
+`scripts/install.sh` is optional automation, not the primary truth surface. The primary operator path is still `aegis setup`, `aegis doctor`, `aegis serve`, and `aegis receipt verify`.
 
 ## What Aegis gives you
 
@@ -290,20 +240,10 @@ Once the MCP server is registered, clients call:
 
 The MCP wrapper stays intentionally thin. It does not bypass the HTTP API or the receipt-verification path. See [docs/mcp_server.md](docs/mcp_server.md).
 
-## Comparison
+## Positioning
 
-These systems are not identical categories.
-
-Aegis is optimized for **evidence-producing isolated execution**. Some alternatives are managed cloud sandboxes, some are local sandbox products, and some are agent orchestration platforms first.
-
-| Capability | Aegis | E2B | Docker Sandboxes | Managed agents |
-| --- | --- | --- | --- | --- |
-| Primary focus | Execution evidence and isolated code execution | Managed cloud sandbox runtime | Local sandbox environments for agents and tools | Agent orchestration and hosted tool use |
-| Hardware-isolated execution | Yes, Firecracker microVMs | Varies by platform details; public docs position it as an isolated cloud sandbox | VM-backed/local sandbox environments per Docker sandbox docs | Varies; not the primary category contract |
-| Cryptographic execution receipts | Yes | Not a primary product surface | Not a primary product surface | Not a primary product surface |
-| Brokered secret-safe delegation | Yes | Varies | Varies | Varies by platform and tool model |
-| Self-hosted local runtime | Yes | No, managed cloud default | Yes | No, managed by provider |
-| MCP integration | Yes | Varies | Varies | Varies |
-| Warm-path startup optimization | Yes, warm pool v1 | Varies | Varies | Provider-managed and product-specific |
-
-The point of comparison is not “Aegis replaces every sandbox or agent platform.” The point is that Aegis is unusually centered on **verifiable isolated execution with proof artifacts** rather than sandboxing or agent orchestration alone.
+- Aegis is centered on self-hosted governed execution with verifiable proof artifacts.
+- Some alternatives are managed sandbox products first.
+- Some alternatives are local dev sandboxes first.
+- Some alternatives are agent platforms first.
+- Aegis is for the slice of the problem where isolation, policy, and post-run verification all matter at once.
