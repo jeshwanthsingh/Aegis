@@ -2,9 +2,16 @@
 
 **Aegis is an execution evidence platform — run untrusted code in hardware-isolated sandboxes and get cryptographic proof of what happened.**
 
-Aegis is built for code you should not trust with your host: agent-generated tools, brokered upstream access, and execution flows that need evidence, not just logs. It combines Firecracker microVM isolation, policy-governed runtime controls, divergence handling, cryptographic receipts, proof bundles, and operator-usable local delivery through an HTTP API, SDKs, and an MCP server.
+Aegis is built for code you should not trust with your host: agent-generated tools, brokered upstream access, and execution flows that need evidence, not just logs. It combines Firecracker microVM isolation, policy-governed runtime controls, and cryptographic receipts you can verify after execution.
 
-## Why Aegis exists
+## Start Here
+
+- [Canonical Demo](docs/canonical-demo.md)
+- [Quickstart](docs/quickstart.md)
+- [Proof Pipeline](docs/proof-pipeline.md)
+- [Security Posture](SECURITY.md)
+
+## Why It Exists
 
 Running untrusted code is not just a sandboxing problem.
 
@@ -17,53 +24,35 @@ You need:
 
 Aegis is the system for that shape of problem.
 
-## Public Consumption Matrix
+## Run This First
 
-Use Aegis through one of these paths:
+```bash
+python3 scripts/run_canonical_demo.py --serve
+```
 
-### Primary public path
+That is the shortest serious product proof in this repo. It shows:
 
-Source checkout on Linux/KVM with release assets:
+- an allowed governed action
+- a denied direct egress attempt
+- receipt verification proving both outcomes
 
-1. obtain the repo checkout
-2. obtain the required release assets:
-   - `firecracker`
-   - `vmlinux`
-   - `alpine-base.ext4`
-3. verify those assets against `scripts/release-checksums.txt`
-4. run `aegis setup`
-5. run `aegis doctor`
-6. run `aegis serve`
-7. run code through an SDK or API client
-8. run `aegis receipt verify`
+If you need first-run host setup instead of the product demo path, start with [Quickstart](docs/quickstart.md).
 
-This is the primary supported public path today.
+## What This Is
 
-### Secondary public path
+- a self-hosted execution evidence runtime
+- Firecracker-backed isolation for untrusted code
+- policy-governed external action instead of raw guest freedom
+- proof bundles and receipts that can be verified after execution
+- a local operator flow exposed through CLI, HTTP API, SDKs, and MCP
 
-Consume the Python or TypeScript SDK packages against an already running Aegis runtime.
+## What This Is Not
 
-This path assumes:
-
-- the Aegis runtime is already installed and understood
-- `aegis serve` is already running
-- you are consuming the SDK as a client, not using the SDK as a standalone Aegis installer
-
-### Not-yet-supported / not-primary
-
-These are not honest primary claims today:
-
-- `pip install aegis-sdk` and you are done
-- `npm install @aegis/sdk` and you are done
-- package-only usage that also bootstraps Firecracker, rootfs assets, database setup, and runtime readiness
-
-The SDKs are client packages for a running Aegis runtime. They are not the runtime distribution story by themselves.
-
-Current version posture:
-
-- this repo currently carries Python SDK version `0.1.0`
-- this repo currently carries TypeScript SDK version `0.1.0`
-- treat those as repo-coupled package versions for this checkout, not as evidence of separately supported public registry releases
+- not a package-only install story
+- not a hosted multi-tenant platform
+- not host attestation
+- not HSM/KMS-backed signing custody
+- not a generic dev sandbox with nicer branding
 
 ## Source Checkout Quickstart
 
@@ -113,6 +102,35 @@ That path gives you:
 
 For the full source-checkout path, caveats, and TypeScript source-tree mode, start with [docs/quickstart.md](docs/quickstart.md).
 
+## Distribution Posture
+
+Use Aegis through one of these paths:
+
+### Primary public path
+
+Source checkout on Linux/KVM with release assets.
+
+This is the primary supported public path today.
+
+### Secondary public path
+
+Consume the Python or TypeScript SDK packages against an already running Aegis runtime.
+
+### Not-primary
+
+These are not honest primary claims today:
+
+- `pip install aegis-sdk` and you are done
+- `npm install @aegis/sdk` and you are done
+- package-only usage that also bootstraps Firecracker, rootfs assets, database setup, and runtime readiness
+
+The SDKs are client packages for a running Aegis runtime. They are not the runtime distribution story by themselves.
+
+Current repo-coupled SDK version posture:
+
+- Python SDK version `0.1.0`
+- TypeScript SDK version `0.1.0`
+
 ## Release Assets And Checksums
 
 The source-checkout runtime path expects these release artifacts:
@@ -121,13 +139,9 @@ The source-checkout runtime path expects these release artifacts:
 - `vmlinux`
 - `alpine-base.ext4`
 
-The repo-local checksum file is:
+Checksum contract:
 
-```text
-scripts/release-checksums.txt
-```
-
-That file is the checksum contract for the release assets consumed by `scripts/install.sh`. If you use that installer path, make sure the checkout you are using matches the intended release asset set instead of mixing arbitrary repo state with arbitrary downloaded assets.
+- `scripts/release-checksums.txt`
 
 `scripts/install.sh` is optional automation. It is not the primary truth surface. The primary truth surfaces remain:
 
