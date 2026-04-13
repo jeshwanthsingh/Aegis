@@ -1,8 +1,8 @@
 # Aegis
 
-**Aegis is an execution evidence platform — run untrusted code in hardware-isolated sandboxes and get cryptographic proof of what happened.**
+**Aegis runs untrusted code in Firecracker microVMs and gives you receipts you can verify after execution.**
 
-Aegis is built for code you should not trust with your host: agent-generated tools, brokered upstream access, and execution flows that need evidence, not just logs. It combines Firecracker microVM isolation, policy-governed runtime controls, and cryptographic receipts you can verify after execution.
+Aegis is for code you should not trust with your host: agent-generated tools, brokered upstream access, and execution flows where logs are not enough.
 
 ## Start Here
 
@@ -13,16 +13,7 @@ Aegis is built for code you should not trust with your host: agent-generated too
 
 ## Why It Exists
 
-Running untrusted code is not just a sandboxing problem.
-
-You need:
-
-- a real isolation boundary between host and guest
-- explicit policy on files, network, process behavior, and delegated capabilities
-- secret-safe access to upstream systems without handing raw credentials to guest code
-- verifiable evidence of what ran, what was denied, and what the runtime observed
-
-Aegis is the system for that shape of problem.
+Running untrusted code is not just a sandboxing problem. You need a real isolation boundary, explicit policy over what the code can do, and proof of what the runtime allowed, denied, and observed. Aegis exists for that shape of problem.
 
 ## Run This First
 
