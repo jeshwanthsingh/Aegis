@@ -142,45 +142,13 @@ For most first-time source-checkout users, `scripts/install.sh` is the practical
 
 Aegis keeps policy, brokerage, and proof generation on the host side while untrusted code runs inside a Firecracker guest. The result is a runtime where the execution boundary and the evidence path stay explicit.
 
-```mermaid
-flowchart LR
-    subgraph Clients
-        PY[Python SDK]
-        TS[TypeScript SDK]
-        MCP[MCP client / Claude Code]
-        CLI[Aegis CLI]
-    end
-
-    PY --> API
-    TS --> API
-    CLI --> API
-    MCP --> MCPSRV
-    MCPSRV --> API
-
-    subgraph Host["Aegis host runtime"]
-        API[Aegis HTTP API]
-        ORCH[Orchestrator]
-        POL[Policy + divergence engines]
-        BROKER[Credential broker]
-        PROOF[Proof bundle writer]
-        VERIFY[Receipt verifier]
-    end
-
-    API --> ORCH
-    ORCH --> POL
-    ORCH --> BROKER
-    ORCH --> PROOF
-    PROOF --> VERIFY
-
-    subgraph VM["Firecracker microVM"]
-        GUEST[guest-runner]
-        CODE[Untrusted code]
-    end
-
-    ORCH -->|virtio-vsock| GUEST
-    GUEST --> CODE
-    BROKER -->|host-mediated delegation| GUEST
-```
+<p align="center">
+  <img
+    src="docs/architecture-diagram.png"
+    alt="Aegis architecture diagram showing clients entering the API and orchestrator, host-side governance and proof building, Firecracker guest execution, brokered egress, and denied direct egress."
+    width="1100"
+  />
+</p>
 
 ### Trust boundaries
 
