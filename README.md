@@ -11,6 +11,24 @@ Aegis is for code you should not trust with your host: agent-generated tools, br
 - [Proof Pipeline](docs/proof-pipeline.md)
 - [Security Posture](SECURITY.md)
 
+## Requires
+
+- Linux with `/dev/kvm`
+- PostgreSQL running locally
+- valid PostgreSQL credentials
+- `python3-venv` and `python3-pip`
+- `sudo` access
+
+## PostgreSQL Note
+
+The default local config assumes:
+
+```text
+postgres://postgres:postgres@localhost/aegis?sslmode=disable
+```
+
+If your local PostgreSQL credentials differ, `scripts/install.sh` and `aegis setup` can fail. Either align the local `postgres` password with that default or set `AEGIS_DB_URL` / `DB_URL` explicitly.
+
 ## Why It Exists
 
 Running untrusted code is not just a sandboxing problem. You need a real isolation boundary, explicit policy over what the code can do, and proof of what the runtime allowed, denied, and observed. Aegis exists for that shape of problem.
@@ -18,16 +36,27 @@ Running untrusted code is not just a sandboxing problem. You need a real isolati
 ## Run This First
 
 ```bash
-python3 scripts/run_canonical_demo.py --serve
+git clone https://github.com/jeshwanthsingh/Aegis.git
+cd Aegis
+bash scripts/install.sh
+aegis setup
+aegis doctor
+aegis serve
+# then in another terminal
+python3 scripts/run_canonical_demo.py
 ```
 
-That is the shortest serious product proof in this repo. It shows:
+That is the first-run path we actually tested on Ubuntu. `scripts/install.sh` is effectively required for most first-time source-checkout users because it downloads release assets, builds binaries, prepares the guest image, and initializes the database.
+
+The canonical demo assumes `aegis serve` is already running. Broker-related paths can still fail unless broker credential bindings are configured.
+
+The demo shows:
 
 - an allowed governed action
 - a denied direct egress attempt
 - receipt verification proving both outcomes
 
-If you need first-run host setup instead of the product demo path, start with [Quickstart](docs/quickstart.md).
+For the full onboarding details and caveats, use [Quickstart](docs/quickstart.md).
 
 ## What This Is
 
@@ -47,10 +76,11 @@ If you need first-run host setup instead of the product demo path, start with [Q
 
 ## Source Checkout Quickstart
 
-For a source checkout, the primary onboarding path is:
+For a first-time source checkout, use the `Run This First` block above.
+
+After the runtime is up, the minimal operator loop is:
 
 ```bash
-aegis setup
 aegis doctor
 aegis serve
 ```
@@ -59,7 +89,7 @@ Then run one SDK example and verify the emitted proof:
 
 ```bash
 cd sdk/python
-# Debian/Ubuntu: install python3-venv and python3-pip first if needed
+# Ubuntu: install python3-venv and python3-pip first if needed
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
@@ -89,7 +119,7 @@ Checksum contract:
 
 - `scripts/release-checksums.txt`
 
-`scripts/install.sh` is optional automation, not the primary truth surface. The primary operator path is still `aegis setup`, `aegis doctor`, `aegis serve`, and `aegis receipt verify`.
+For most first-time source-checkout users, `scripts/install.sh` is the practical bootstrap path. It is the step that downloads release assets, prepares the guest image, and initializes the database before `aegis setup`, `aegis doctor`, and `aegis serve`.
 
 ## What Aegis gives you
 
@@ -212,6 +242,10 @@ Not built yet:
 
 ### Python SDK: execute and verify
 
+Ubuntu prerequisite:
+
+- install `python3-venv` and `python3-pip`
+
 ```python
 from aegis import AegisClient
 
@@ -226,10 +260,17 @@ print(verification.verified, verification.execution_id)
 For a stronger second-step proof after first success, run:
 
 ```bash
-python3 scripts/run_canonical_demo.py --serve
+python3 scripts/run_canonical_demo.py
 ```
 
-That is the canonical product demo path, not the first-run onboarding path. See [docs/canonical-demo.md](docs/canonical-demo.md).
+That assumes `aegis serve` is already running. It is the canonical product demo path, not the first command for a new user. See [docs/canonical-demo.md](docs/canonical-demo.md).
+
+### TypeScript SDK
+
+Host prerequisites:
+
+- Node.js 20+ recommended
+- Node 18 may still work, but can emit engine warnings
 
 ### MCP: isolated execution tool
 
@@ -238,7 +279,27 @@ Once the MCP server is registered, clients call:
 - `aegis_execute` to run code through the existing Aegis runtime
 - `aegis_verify` to validate a prior proof bundle
 
+Build the MCP binary explicitly:
+
+```bash
+go build -o .aegis/bin/aegis-mcp ./cmd/aegis-mcp
+```
+
+Then run it against a live local runtime:
+
+```bash
+AEGIS_BASE_URL=http://localhost:8080 ./.aegis/bin/aegis-mcp
+```
+
+`aegis setup` and `scripts/install.sh` do not currently build `.aegis/bin/aegis-mcp` by default. After source changes, rebuild it or the MCP binary can become stale relative to current receipt formats and verifier behavior.
+
 The MCP wrapper stays intentionally thin. It does not bypass the HTTP API or the receipt-verification path. See [docs/mcp_server.md](docs/mcp_server.md).
+
+## Known Local Limitations
+
+- the guest image may not include tools like `curl`
+- some commands can fail due to process policy or child-process denial
+- broker flows require explicit credential configuration
 
 ## Positioning
 
