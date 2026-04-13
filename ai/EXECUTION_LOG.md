@@ -286,3 +286,14 @@ etwork.connect_disabled; real Claude Code validation after registering the serve
   - after reverting the temporary Python startup flags, WSL-local MCP execution `0eb3a8eb-dbce-4e5e-85ce-2d660faae437` still timed out with `State=D`, `wchan=__wait_on_buffer`, `syscall=217`
 - Skipped:
   - final acceptance validation for clean `/tmp` write/read and malicious `os.system("curl ...")`, because the runtime still cannot complete the baseline no-workspace Python MCP execution reliably on the current guest-runner branch
+
+## 2026-04-12 Docs architecture diagram refresh
+- Implemented:
+  - reviewed the updated `docs/architecture-diagram.png` and confirmed it is the only working-tree change
+  - prepared the repo for a docs-only commit by recording this session state
+- Verified:
+  - visually inspected `docs/architecture-diagram.png`
+  - `git -c safe.directory=C:/Users/Cellardoor/projects/Aegis status --short --branch` showed only `docs/architecture-diagram.png` modified on `main`
+  - `git -c safe.directory=C:/Users/Cellardoor/projects/Aegis diff --stat -- docs/architecture-diagram.png` confirmed a binary-only image replacement
+- Skipped:
+  - no code, API, or SDK validation, because this session only stages a documentation image update
