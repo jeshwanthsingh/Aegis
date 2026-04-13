@@ -1,6 +1,7 @@
 # Aegis
 
 [![Tier 1 CI](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/jeshwanthsingh/Aegis/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue)](SECURITY.md)
 
 **Aegis runs untrusted code in Firecracker microVMs, brokers dangerous actions through explicit policy, and gives you receipts you can verify after execution.**
@@ -353,4 +354,4 @@ See [SECURITY.md](SECURITY.md) for the current security model, trust boundaries,
 
 ## License
 
-This repo does not currently include a top-level `LICENSE` file, so this README does not advertise a license badge or claim a license that is not present in the checkout.
+Aegis is licensed under [Apache-2.0](LICENSE).
