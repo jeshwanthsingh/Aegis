@@ -117,7 +117,7 @@ func setupCmd(stdout io.Writer, stderr io.Writer, args []string) int {
 	printPathList(stdout, "created", report.Created)
 	printPathList(stdout, "reused", report.Reused)
 	fmt.Fprint(stdout, setup.RenderSummary(report.Results))
-	fmt.Fprintln(stdout, "Generated binaries live under .aegis/bin; rerun `go run ./cmd/aegis-cli setup` after source changes before relying on them.")
+	fmt.Fprintln(stdout, "Generated binaries live under .aegis/bin; rerun `aegis setup` after source changes so the repo-local binaries match current source.")
 	if report.ReadyForServe {
 		fmt.Fprintln(stdout, "Next step: aegis serve")
 		return 0

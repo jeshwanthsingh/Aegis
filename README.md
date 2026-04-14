@@ -44,8 +44,8 @@ The canonical demo is a second step after the runtime is healthy, not the first 
 
 - PostgreSQL defaults assume a standard local setup such as `postgres://postgres:postgres@localhost/aegis?sslmode=disable`.
 - If your local PostgreSQL credentials differ, set `AEGIS_DB_URL` or `DB_URL` explicitly before running setup.
-- A custom repo-local `.aegis/config.yaml` can cause confusing failures. If setup behaves strangely, remove `.aegis/` and rerun `aegis setup`.
-- The repo-local MCP binary may need a manual build: `go build -o .aegis/bin/aegis-mcp ./cmd/aegis-mcp`.
+- `scripts/install.sh` now builds the canonical repo-local binaries in `~/aegis/.aegis/bin` and links `~/.local/bin/aegis` back to that repo-local CLI.
+- `aegis setup` builds the repo-local MCP binary at `.aegis/bin/aegis-mcp` and surfaces PATH mismatches if `aegis` resolves somewhere else.
 
 ## Why It Exists
 
@@ -126,6 +126,8 @@ Checksum contract:
 - `scripts/release-checksums.txt`
 
 For most first-time source-checkout users, `scripts/install.sh` is the practical bootstrap path. It is the step that downloads release assets, prepares the guest image, and initializes the database before `aegis setup`, `aegis doctor`, and `aegis serve`.
+
+For the minimal repo-native blocked-exfil proof after the runtime is healthy, use [docs/demo-exfiltration.md](docs/demo-exfiltration.md).
 
 ## What Aegis gives you
 
@@ -282,7 +284,9 @@ Once the MCP server is registered, clients call:
 - `aegis_execute` to run code through the existing Aegis runtime
 - `aegis_verify` to validate a prior proof bundle
 
-Build the MCP binary explicitly:
+`aegis setup` builds the repo-local MCP binary at `.aegis/bin/aegis-mcp`.
+
+Manual rebuild if you changed MCP source and want to force it immediately:
 
 ```bash
 go build -o .aegis/bin/aegis-mcp ./cmd/aegis-mcp
@@ -294,7 +298,7 @@ Then run it against a live local runtime:
 AEGIS_BASE_URL=http://localhost:8080 ./.aegis/bin/aegis-mcp
 ```
 
-`aegis setup` and `scripts/install.sh` do not currently build `.aegis/bin/aegis-mcp` by default. After source changes, rebuild it or the MCP binary can become stale relative to current receipt formats and verifier behavior.
+After source changes, rerun `aegis setup` to rebuild the repo-local CLI, orchestrator, and MCP binaries from current source.
 
 The MCP wrapper stays intentionally thin. It does not bypass the HTTP API or the receipt-verification path. See [docs/mcp_server.md](docs/mcp_server.md).
 

@@ -81,10 +81,12 @@ func tempRepoRoot(t *testing.T) string {
 	mustMkdir(t, filepath.Join(root, "guest-runner"))
 	mustMkdir(t, filepath.Join(root, "cmd", "orchestrator"))
 	mustMkdir(t, filepath.Join(root, "cmd", "aegis-cli"))
+	mustMkdir(t, filepath.Join(root, "cmd", "aegis-mcp"))
 	mustWrite(t, filepath.Join(root, "go.mod"), "module aegis\n\ngo 1.22.5\n")
 	mustWrite(t, filepath.Join(root, "go.sum"), "")
 	mustWrite(t, filepath.Join(root, "cmd", "orchestrator", "main.go"), "package main\nfunc main() {}\n")
 	mustWrite(t, filepath.Join(root, "cmd", "aegis-cli", "main.go"), "package main\nfunc main() {}\n")
+	mustWrite(t, filepath.Join(root, "cmd", "aegis-mcp", "main.go"), "package main\nfunc main() {}\n")
 	mustWrite(t, filepath.Join(root, "assets", "vmlinux"), "kernel")
 	mustWrite(t, filepath.Join(root, "assets", "alpine-base.ext4"), "rootfs")
 	mustWrite(t, filepath.Join(root, "configs", "default-policy.yaml"), "allowed_languages: [bash]\n")
@@ -113,6 +115,7 @@ func TestEvaluateWarnsWhenAPIAuthUnset(t *testing.T) {
 	mustMkdir(t, filepath.Dir(cfg.Runtime.CLIBin))
 	mustWrite(t, cfg.Runtime.OrchestratorBin, "orchestrator")
 	mustWrite(t, cfg.Runtime.CLIBin, "cli")
+	mustWrite(t, config.MCPBinPath(repo), "mcp")
 	results := Evaluate(repo, cfg, BootstrapArtifacts{})
 	for _, result := range results {
 		if result.ID == "api-auth" {
@@ -132,6 +135,7 @@ func TestEvaluateFailsWhenOrchestratorBinaryIsStale(t *testing.T) {
 	mustMkdir(t, filepath.Dir(cfg.Runtime.CLIBin))
 	mustWrite(t, cfg.Runtime.OrchestratorBin, "orchestrator")
 	mustWrite(t, cfg.Runtime.CLIBin, "cli")
+	mustWrite(t, config.MCPBinPath(repo), "mcp")
 	staleTime := mustTime(t, filepath.Join(repo, "cmd", "orchestrator"))
 	older := staleTime.Add(-2 * time.Hour)
 	if err := os.Chtimes(cfg.Runtime.OrchestratorBin, older, older); err != nil {
@@ -147,6 +151,27 @@ func TestEvaluateFailsWhenOrchestratorBinaryIsStale(t *testing.T) {
 		}
 	}
 	t.Fatal("orchestrator-freshness result missing")
+}
+
+func TestEvaluateWarnsWhenAegisCommandPathIsNonCanonical(t *testing.T) {
+	repo := tempRepoRoot(t)
+	cfg := config.Default(repo)
+	mustMkdir(t, filepath.Dir(cfg.Runtime.OrchestratorBin))
+	mustMkdir(t, filepath.Dir(cfg.Runtime.CLIBin))
+	mustWrite(t, cfg.Runtime.OrchestratorBin, "orchestrator")
+	mustWrite(t, cfg.Runtime.CLIBin, "cli")
+	mustWrite(t, config.MCPBinPath(repo), "mcp")
+	t.Setenv("PATH", t.TempDir())
+	results := Evaluate(repo, cfg, BootstrapArtifacts{})
+	for _, result := range results {
+		if result.ID == "aegis-command" {
+			if result.Status != StatusWarn {
+				t.Fatalf("aegis-command status = %s", result.Status)
+			}
+			return
+		}
+	}
+	t.Fatal("aegis-command result missing")
 }
 
 func mustTime(t *testing.T, path string) time.Time {

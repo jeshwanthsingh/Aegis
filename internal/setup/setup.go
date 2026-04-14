@@ -54,6 +54,7 @@ type Options struct {
 
 type BootstrapArtifacts struct {
 	AegisBuilt        bool
+	MCPBuilt          bool
 	OrchestratorBuilt bool
 	GuestRunnerBuilt  bool
 	RootfsRebaked     bool
@@ -142,6 +143,12 @@ func Bootstrap(ctx context.Context, repoRoot string, cfg config.Config) (created
 	}
 	artifacts.AegisBuilt = cliBuilt
 
+	mcpBuilt, err := buildIfNeeded(ctx, repoRoot, goBin, config.MCPBinPath(repoRoot), []string{"./cmd/aegis-mcp"}, binarySourceRoots(repoRoot, "mcp"), nil)
+	if err != nil {
+		return created, reused, artifacts, err
+	}
+	artifacts.MCPBuilt = mcpBuilt
+
 	orchBuilt, err := buildIfNeeded(ctx, repoRoot, goBin, cfg.Runtime.OrchestratorBin, []string{"./cmd/orchestrator"}, binarySourceRoots(repoRoot, "orchestrator"), nil)
 	if err != nil {
 		return created, reused, artifacts, err
@@ -198,10 +205,13 @@ func Evaluate(repoRoot string, cfg config.Config, artifacts BootstrapArtifacts) 
 	results = append(results, fileCheck("policy", "Policy file", cfg.Runtime.PolicyPath, true, "Point runtime.policy_path at a valid policy YAML.")...)
 	results = append(results, fileCheck("orchestrator-bin", "Orchestrator binary", cfg.Runtime.OrchestratorBin, true, "Rerun aegis setup to build the orchestrator binary.")...)
 	results = append(results, fileCheck("cli-bin", "Aegis CLI binary", cfg.Runtime.CLIBin, false, "Rerun aegis setup to build the CLI binary.")...)
+	results = append(results, fileCheck("mcp-bin", "Aegis MCP binary", config.MCPBinPath(repoRoot), false, "Rerun aegis setup to build the repo-local MCP binary.")...)
 	results = append(results,
-		binaryFreshnessCheck("orchestrator-freshness", "Orchestrator freshness", cfg.Runtime.OrchestratorBin, binarySourceRoots(repoRoot, "orchestrator"), true, "Rerun `go run ./cmd/aegis-cli setup` to rebuild the repo-local orchestrator binary from current source."),
-		binaryFreshnessCheck("cli-freshness", "Aegis CLI freshness", cfg.Runtime.CLIBin, binarySourceRoots(repoRoot, "cli"), false, "Rerun `go run ./cmd/aegis-cli setup` before using .aegis/bin/aegis so the generated CLI matches current source."),
+		binaryFreshnessCheck("orchestrator-freshness", "Orchestrator freshness", cfg.Runtime.OrchestratorBin, binarySourceRoots(repoRoot, "orchestrator"), true, "Rerun `aegis setup` to rebuild the repo-local orchestrator binary from current source."),
+		binaryFreshnessCheck("cli-freshness", "Aegis CLI freshness", cfg.Runtime.CLIBin, binarySourceRoots(repoRoot, "cli"), false, "Rerun `aegis setup` before using the repo-local CLI so the generated binary matches current source."),
+		binaryFreshnessCheck("mcp-freshness", "Aegis MCP freshness", config.MCPBinPath(repoRoot), binarySourceRoots(repoRoot, "mcp"), false, "Rerun `aegis setup` to rebuild the repo-local MCP binary from current source."),
 	)
+	results = append(results, commandPathCheck("aegis-command", "`aegis` command path", "aegis", cfg.Runtime.CLIBin, "Ensure `aegis` resolves to the repo-local CLI under .aegis/bin, or rerun scripts/install.sh to relink it.")...)
 	results = append(results, fileCheck("signing-seed", "Receipt signing seed", cfg.Receipt.SeedFile, true, "Rerun aegis setup to generate a strict signing seed.")...)
 
 	if err := executor.InitWorkspacesDir(); err != nil {
@@ -411,6 +421,8 @@ func binarySourceRoots(repoRoot string, kind string) []string {
 	switch kind {
 	case "cli":
 		roots = append(roots, filepath.Join(repoRoot, "cmd", "aegis-cli"))
+	case "mcp":
+		roots = append(roots, filepath.Join(repoRoot, "cmd", "aegis-mcp"), filepath.Join(repoRoot, "internal", "mcp"))
 	case "orchestrator":
 		roots = append(roots, filepath.Join(repoRoot, "cmd", "orchestrator"))
 	case "guest-runner":
@@ -433,6 +445,60 @@ func binaryFreshnessCheck(id string, label string, target string, sourceRoots []
 		return CheckResult{ID: id, Label: label, Status: StatusFail, Detail: target + " is older than current source", Action: action, Blocking: blocking}
 	}
 	return CheckResult{ID: id, Label: label, Status: StatusOK, Detail: "generated binary matches current source timestamps", Blocking: blocking}
+}
+
+func commandPathCheck(id string, label string, name string, target string, action string) []CheckResult {
+	resolved, err := exec.LookPath(name)
+	if err != nil {
+		return []CheckResult{{
+			ID:       id,
+			Label:    label,
+			Status:   StatusWarn,
+			Detail:   fmt.Sprintf("%s is not on PATH; expected %s", name, target),
+			Action:   action,
+			Blocking: false,
+		}}
+	}
+	same, err := samePathTarget(resolved, target)
+	if err != nil {
+		return []CheckResult{{
+			ID:       id,
+			Label:    label,
+			Status:   StatusWarn,
+			Detail:   fmt.Sprintf("could not compare %s and %s: %v", resolved, target, err),
+			Action:   action,
+			Blocking: false,
+		}}
+	}
+	if !same {
+		return []CheckResult{{
+			ID:       id,
+			Label:    label,
+			Status:   StatusWarn,
+			Detail:   fmt.Sprintf("%s resolves to %s, not %s", name, resolved, target),
+			Action:   action,
+			Blocking: false,
+		}}
+	}
+	return []CheckResult{{
+		ID:       id,
+		Label:    label,
+		Status:   StatusOK,
+		Detail:   resolved,
+		Blocking: false,
+	}}
+}
+
+func samePathTarget(left string, right string) (bool, error) {
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", left, err)
+	}
+	rightInfo, err := os.Stat(right)
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", right, err)
+	}
+	return os.SameFile(leftInfo, rightInfo), nil
 }
 
 func findGoBinary() (string, error) {

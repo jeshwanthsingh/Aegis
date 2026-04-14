@@ -3,6 +3,13 @@ set -euo pipefail
 
 RELEASE_URL="https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNTIME_DIR="${RUNTIME_DIR:-$REPO_DIR/.aegis}"
+BIN_DIR="$RUNTIME_DIR/bin"
+CANONICAL_AEGIS_BIN="$BIN_DIR/aegis"
+CANONICAL_MCP_BIN="$BIN_DIR/aegis-mcp"
+CANONICAL_ORCH_BIN="$BIN_DIR/orchestrator"
+USER_LINK_DIR="${USER_LINK_DIR:-$HOME/.local/bin}"
+USER_AEGIS_LINK="$USER_LINK_DIR/aegis"
 GO_BIN=""
 DB_URL_DEFAULT="postgres://postgres:postgres@localhost/postgres?sslmode=disable"
 DB_URL="${DB_URL:-$DB_URL_DEFAULT}"
@@ -121,24 +128,36 @@ if ! command -v firecracker >/dev/null 2>&1; then
   verify_checksum "firecracker" /tmp/firecracker
   sudo install -m 0755 /tmp/firecracker /usr/local/bin/firecracker
 else
-  echo "firecracker already on PATH, skipping."
+	echo "firecracker already on PATH, skipping."
 fi
 
 cd "$REPO_DIR"
-if source_newer_than /tmp/aegis-bin cmd internal go.mod go.sum; then
+mkdir -p "$BIN_DIR"
+
+if source_newer_than "$CANONICAL_ORCH_BIN" cmd internal go.mod go.sum; then
   echo "Building orchestrator..."
-  "$GO_BIN" build -buildvcs=false -o /tmp/aegis-bin ./cmd/orchestrator
+  "$GO_BIN" build -buildvcs=false -o "$CANONICAL_ORCH_BIN" ./cmd/orchestrator
 else
   echo "orchestrator already up to date, skipping build."
 fi
 
-if source_newer_than /usr/local/bin/aegis cmd go.mod go.sum; then
+if source_newer_than "$CANONICAL_AEGIS_BIN" cmd internal go.mod go.sum; then
   echo "Building aegis-cli..."
-  "$GO_BIN" build -buildvcs=false -o /tmp/aegis-cli ./cmd/aegis-cli
-  sudo install -m 0755 /tmp/aegis-cli /usr/local/bin/aegis
+  "$GO_BIN" build -buildvcs=false -o "$CANONICAL_AEGIS_BIN" ./cmd/aegis-cli
 else
   echo "aegis-cli already up to date, skipping build."
 fi
+
+if source_newer_than "$CANONICAL_MCP_BIN" cmd internal go.mod go.sum; then
+  echo "Building aegis-mcp..."
+  "$GO_BIN" build -buildvcs=false -o "$CANONICAL_MCP_BIN" ./cmd/aegis-mcp
+else
+  echo "aegis-mcp already up to date, skipping build."
+fi
+
+echo "Linking $USER_AEGIS_LINK to $CANONICAL_AEGIS_BIN..."
+mkdir -p "$USER_LINK_DIR"
+ln -sfn "$CANONICAL_AEGIS_BIN" "$USER_AEGIS_LINK"
 
 if source_newer_than "$REPO_DIR/guest-runner/guest-runner" "$REPO_DIR/guest-runner" "$REPO_DIR/go.mod" "$REPO_DIR/go.sum"; then
   echo "Building guest-runner..."
@@ -155,8 +174,12 @@ if [ "$ROOTFS_BUILD_MODE" = "build" ]; then
   echo "Building Alpine rootfs..."
   "$REPO_DIR/scripts/build-alpine-rootfs.sh" --output "$ROOTFS_IMAGE_PATH" --backup-existing "$LEGACY_ROOTFS_BACKUP" --guest-runner "$REPO_DIR/guest-runner/guest-runner"
 else
-  download_if_missing "$RELEASE_URL/alpine-base.ext4" "$ROOTFS_IMAGE_PATH" "alpine-base.ext4"
-  verify_checksum "alpine-base.ext4" "$ROOTFS_IMAGE_PATH"
+  if [ -f "$ROOTFS_IMAGE_PATH" ]; then
+    echo "alpine-base.ext4 already present; skipping release checksum because the repo-local rootfs may already include a rebaked guest-runner."
+  else
+    download_if_missing "$RELEASE_URL/alpine-base.ext4" "$ROOTFS_IMAGE_PATH" "alpine-base.ext4"
+    verify_checksum "alpine-base.ext4" "$ROOTFS_IMAGE_PATH"
+  fi
 fi
 
 
@@ -164,10 +187,14 @@ echo "Baking guest-runner into rootfs..."
 "$REPO_DIR/scripts/rebake-guest-runner.sh"
 
 if [ -z "${PGPASSWORD:-}" ]; then
-  read -rsp "Enter PostgreSQL password for user 'postgres' (leave blank to use local auth/.pgpass): " PGPASSWORD_INPUT
-  echo ""
-  if [ -n "$PGPASSWORD_INPUT" ]; then
-    export PGPASSWORD="$PGPASSWORD_INPUT"
+  if [ -t 0 ]; then
+    read -rsp "Enter PostgreSQL password for user 'postgres' (leave blank to use local auth/.pgpass): " PGPASSWORD_INPUT
+    echo ""
+    if [ -n "$PGPASSWORD_INPUT" ]; then
+      export PGPASSWORD="$PGPASSWORD_INPUT"
+    fi
+  else
+    echo "PGPASSWORD unset and no interactive TTY detected; continuing with local auth/.pgpass."
   fi
 fi
 
@@ -186,6 +213,13 @@ echo ""
 echo "=== Aegis installed successfully ==="
 echo ""
 echo "This installer is optional automation, not the primary readiness gate."
+echo "Canonical repo-local binaries:"
+echo "  $CANONICAL_AEGIS_BIN"
+echo "  $CANONICAL_ORCH_BIN"
+echo "  $CANONICAL_MCP_BIN"
+echo "Shell command:"
+echo "  $USER_AEGIS_LINK -> $CANONICAL_AEGIS_BIN"
+echo ""
 echo "Use these next:"
 echo "  aegis setup"
 echo "  aegis doctor"
@@ -201,4 +235,4 @@ echo "Build a real Alpine/musl guest image with:"
 echo "  ./scripts/build-alpine-rootfs.sh"
 echo ""
 echo "Run with:"
-echo "  sudo env PATH=\$PATH /tmp/aegis-bin --db '$A_DB_URL' --assets-dir '$REPO_DIR/assets' [--rootfs-path /path/to/rootfs.ext4]"
+echo "  $CANONICAL_ORCH_BIN --db '$A_DB_URL' --assets-dir '$REPO_DIR/assets' [--rootfs-path /path/to/rootfs.ext4]"

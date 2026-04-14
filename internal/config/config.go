@@ -19,6 +19,7 @@ const (
 	DefaultConfigRelPath = ".aegis/config.yaml"
 	DefaultEnvExample    = ".aegis/env.example"
 	DefaultAegisBinRel   = ".aegis/bin/aegis"
+	DefaultMCPBinRel     = ".aegis/bin/aegis-mcp"
 	DefaultOrchBinRel    = ".aegis/bin/orchestrator"
 	DefaultSeedRel       = ".aegis/receipt_signing_seed.b64"
 	DefaultAPIURL        = "http://localhost:8080"
@@ -123,6 +124,10 @@ func ConfigPath(repoRoot string, explicit string) string {
 		return v
 	}
 	return filepath.Join(repoRoot, DefaultConfigRelPath)
+}
+
+func MCPBinPath(repoRoot string) string {
+	return filepath.Join(filepath.Clean(repoRoot), DefaultMCPBinRel)
 }
 
 func Ensure(repoRoot string, explicit string) (Config, string, bool, error) {

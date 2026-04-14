@@ -22,6 +22,9 @@ func TestEnsureCreatesStarterConfig(t *testing.T) {
 	if cfg.Runtime.RootfsPath != filepath.Join(repo, "assets", "alpine-base.ext4") {
 		t.Fatalf("unexpected rootfs path: %q", cfg.Runtime.RootfsPath)
 	}
+	if MCPBinPath(repo) != filepath.Join(repo, DefaultMCPBinRel) {
+		t.Fatalf("unexpected MCP bin path: %q", MCPBinPath(repo))
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)

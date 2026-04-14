@@ -106,6 +106,14 @@ Representative result fields:
 From the repo root:
 
 ```bash
+aegis setup
+```
+
+That builds the canonical repo-local MCP binary at `./.aegis/bin/aegis-mcp` alongside the repo-local CLI and orchestrator binaries.
+
+Manual rebuild if you need it immediately after MCP source changes:
+
+```bash
 go build -buildvcs=false -o ./.aegis/bin/aegis-mcp ./cmd/aegis-mcp
 ```
 

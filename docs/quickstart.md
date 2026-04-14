@@ -37,6 +37,8 @@ bash scripts/install.sh
 
 That script is convenience automation for a source checkout. It is not the primary truth surface. The primary truth surfaces are `aegis setup` and `aegis doctor`.
 
+It aligns the shell command with the repo-local runtime by building `~/aegis/.aegis/bin/{aegis,orchestrator,aegis-mcp}` and linking `~/.local/bin/aegis` back to `~/aegis/.aegis/bin/aegis`.
+
 Release assets expected for the source-checkout runtime path:
 
 - `firecracker`
