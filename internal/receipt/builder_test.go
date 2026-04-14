@@ -253,10 +253,39 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
 	summary := FormatSummary(receipt.Statement, true)
-	for _, needle := range []string{"verification=verified", "execution_id=exec_123", "result_class=denied", "signing_mode=dev", "key_source=dev_fallback", "attestation=absent", "divergence_verdict=kill_candidate", "artifact_count=0"} {
+	for _, needle := range []string{
+		"verification=verified",
+		"schema_version=v1",
+		"execution_id=exec_123",
+		"backend=firecracker",
+		"policy_digest=policy-digest",
+		"signer_key_id=" + signer.KeyID,
+		"signing_mode=dev",
+		"intent_digest=",
+		"trust_limitations=dev_signing_mode,fallback_dev_seed,host_attestation_absent",
+		"outcome=completed",
+		"exit_code=0",
+		"execution_status=none",
+		"result_class=denied",
+		"key_source=dev_fallback",
+		"attestation=absent",
+		"divergence_verdict=kill_candidate",
+		"artifact_count=0",
+	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
+	}
+}
+
+func TestBuildPredicateIncludesTopLevelPolicyDigest(t *testing.T) {
+	signer := mustDevSigner(t)
+	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receipt.Statement.Predicate.PolicyDigest != "policy-digest" {
+		t.Fatalf("policy digest = %q", receipt.Statement.Predicate.PolicyDigest)
 	}
 }
 
@@ -375,8 +404,8 @@ func TestBuildPredicateAddsNormalizedGovernedActionSummary(t *testing.T) {
 func testReceiptInput() Input {
 	started := time.Unix(1700000000, 0).UTC()
 	finished := started.Add(2 * time.Second)
-	pointAllow, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 1, EventType: models.EventProcessExec, CedarAction: models.ActionExec, Decision: models.DecisionAllow, Reason: "allowed"})
-	pointDeny, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 2, EventType: models.EventNetConnect, CedarAction: models.ActionConnect, Decision: models.DecisionDeny, Reason: "network disabled"})
+	pointAllow, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 1, EventType: models.EventProcessExec, CedarAction: models.ActionExec, Decision: models.DecisionAllow, Reason: "allowed", Metadata: map[string]string{"policy_digest": "policy-digest"}})
+	pointDeny, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 2, EventType: models.EventNetConnect, CedarAction: models.ActionConnect, Decision: models.DecisionDeny, Reason: "network disabled", Metadata: map[string]string{"policy_digest": "policy-digest"}})
 	divergence, _ := json.Marshal(models.PolicyDivergenceResult{ExecutionID: "exec_123", Backend: models.BackendFirecracker, StartedAt: started, UpdatedAt: finished, LastSeq: 2, CurrentVerdict: models.DivergenceKillCandidate, TriggeredRules: []models.DivergenceRuleHit{{RuleID: "network.connect_disabled", Category: "network", Severity: models.DivergenceSeverityKillCandidate, Message: "connect destination=127.0.0.1 attempted while allow_network=false", EventSeq: 2}}})
 	runtimeEvent, _ := json.Marshal(models.RuntimeEvent{ExecutionID: "exec_123", Backend: models.BackendFirecracker, Seq: 1, TsUnixNano: started.UnixNano(), Type: models.EventProcessExec, PID: 10, Exe: "/usr/bin/python3", Comm: "python3"})
 	governedAction, _ := json.Marshal(telemetry.GovernedActionData{

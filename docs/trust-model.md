@@ -53,11 +53,12 @@ Even with the host in the trust base, the current receipt still gives useful str
 - `execution_id` ties the receipt to one run
 - `started_at` and `finished_at` tie it to a concrete execution window
 - `backend` states the runtime backend used
+- `policy_digest` binds the canonical execution policy context for the run
 - `signer_key_id` identifies which local signer produced the receipt
 - `signing_mode` and `key_source` tell you whether the signer came from configured local seed material or a dev fallback
 - artifact `sha256` hashes bind the proof-bundle outputs that were signed
 - `intent_digest` binds the explicit execution intent when present
-- governed-action `policy_digest` values bind the policy material consulted for those actions
+- governed-action `policy_digest` values still bind the exact action-specific policy scope consulted for those actions
 - `denial_rule_id` and `denial_marker` explain why a direct action was denied
 - `trust.limitations` tells you which known trust gaps still apply
 

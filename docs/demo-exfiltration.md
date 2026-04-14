@@ -56,6 +56,21 @@ python3 scripts/demo_exfil_aegis.py
 
 The demo script runs receipt verification itself and prints the canonical verification lines.
 
+If you want to inspect the full trust-critical verifier output yourself, rerun:
+
+```bash
+cd ~/aegis
+aegis receipt verify --proof-dir /tmp/aegis/proofs/<execution-id>
+```
+
+Default verifier output now includes fields such as:
+
+- `policy_digest=...`
+- `signer_key_id=...`
+- `signing_mode=...`
+- `intent_digest=...`
+- `trust_limitations=...`
+
 Defaults:
 
 - receiver URL: `http://127.0.0.1:8081`

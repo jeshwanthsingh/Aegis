@@ -42,7 +42,25 @@ func TestReceiptVerifyCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("receiptVerify exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, needle := range []string{"verification=verified", "execution_id=exec_cli", "semantics_mode=explicit_v1", "result_class=completed", "signing_mode=dev", "key_source=dev_fallback", "artifact_count=2", "output-manifest.json"} {
+	for _, needle := range []string{
+		"verification=verified",
+		"schema_version=v1",
+		"execution_id=exec_cli",
+		"backend=firecracker",
+		"policy_digest=none",
+		"signer_key_id=" + signer.KeyID,
+		"signing_mode=dev",
+		"intent_digest=none",
+		"trust_limitations=dev_signing_mode,fallback_dev_seed,host_attestation_absent",
+		"outcome=completed",
+		"exit_code=0",
+		"execution_status=none",
+		"semantics_mode=explicit_v1",
+		"result_class=completed",
+		"key_source=dev_fallback",
+		"artifact_count=2",
+		"output-manifest.json",
+	} {
 		if !strings.Contains(stdout.String(), needle) {
 			t.Fatalf("stdout missing %q: %s", needle, stdout.String())
 		}

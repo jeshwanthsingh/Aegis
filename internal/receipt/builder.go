@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"aegis/internal/governance"
 	"aegis/internal/models"
+	policycontract "aegis/internal/policy/contract"
 	"aegis/internal/telemetry"
 )
 
@@ -71,6 +73,7 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		SemanticsMode:      SemanticsModeExplicitV1,
 		ResultClass:        resultClass,
 		Denial:             denial,
+		PolicyDigest:       policyDigestForReceipt(input.IntentRaw, input.TelemetryEvents),
 		IntentDigest:       intentDigest,
 		IntentDigestAlgo:   intentAlgo,
 		EvidenceDigest:     evidenceDigest,
@@ -88,6 +91,35 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		SignerKeyID:        signer.KeyID,
 		Metadata:           metadata,
 	}, runtimeEventCount, nil
+}
+
+func policyDigestForReceipt(intentRaw []byte, events []telemetry.Event) string {
+	digests := map[string]struct{}{}
+	for _, event := range events {
+		if event.Kind != telemetry.KindPolicyPointDecision {
+			continue
+		}
+		var point models.PolicyPointDecision
+		if err := json.Unmarshal(event.Data, &point); err != nil {
+			continue
+		}
+		if digest := strings.TrimSpace(point.Metadata["policy_digest"]); digest != "" {
+			digests[digest] = struct{}{}
+		}
+	}
+	if len(digests) == 1 {
+		for digest := range digests {
+			return digest
+		}
+	}
+	if len(intentRaw) == 0 {
+		return ""
+	}
+	intent, err := policycontract.LoadIntentContractJSON(intentRaw)
+	if err != nil {
+		return ""
+	}
+	return governance.DigestIntent(intent)
 }
 
 func buildSubjects(artifacts []Artifact) []StatementSubject {

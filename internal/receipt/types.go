@@ -108,6 +108,7 @@ type ExecutionReceiptPredicate struct {
 	SemanticsMode      SemanticsMode          `json:"semantics_mode,omitempty"`
 	ResultClass        ResultClass            `json:"result_class"`
 	Denial             *DenialSummary         `json:"denial,omitempty"`
+	PolicyDigest       string                 `json:"policy_digest,omitempty"`
 	IntentDigest       string                 `json:"intent_digest,omitempty"`
 	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
 	EvidenceDigest     string                 `json:"evidence_digest"`

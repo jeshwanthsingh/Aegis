@@ -35,6 +35,7 @@ Current predicate fields implemented in `internal/receipt/types.go`:
 - `semantics_mode`
 - `result_class`
 - `denial`
+- `policy_digest`
 - `intent_digest`
 - `intent_digest_algo`
 - `evidence_digest`
@@ -75,13 +76,15 @@ Current predicate fields implemented in `internal/receipt/types.go`:
 
 ### Policy digest
 
-Current implementation gap:
+Current implementation:
 
-- there is no single top-level `policy_digest` field in the receipt predicate today
-- current receipts do include `policy_digest` on each governed action entry when that action went through the governance path
+- `predicate.policy_digest` is the top-level execution policy digest for the run
+- current implementation derives it from the evaluated intent policy context
+- governed actions still keep their own `policy_digest` when the exact consulted scope is action-specific
 
 Related current fields:
 
+- `predicate.policy_digest`
 - `predicate.intent_digest`
 - `predicate.governed_actions.actions[].policy_digest`
 - `predicate.governed_actions.normalized[].policy_digest`
@@ -177,17 +180,22 @@ Current examples:
 It currently surfaces:
 
 - `verification`
+- `schema_version`
 - `execution_id`
+- `backend`
+- `policy_digest`
+- `signer_key_id`
+- `intent_digest`
+- `signing_mode`
+- `trust_limitations`
 - `semantics_mode`
 - `result_class`
-- `backend`
-- `signing_mode`
 - `key_source`
 - `attestation`
-- `trust_limitations`
 - `started_at`
 - `finished_at`
-- `outcome` plus `exit_code`
+- `outcome`
+- `exit_code`
 - `divergence_verdict`
 - `rule_hits`
 - `artifact_count`
@@ -199,8 +207,5 @@ It currently surfaces:
 
 Current implementation gap:
 
-- `receipt.summary.txt` does not currently print a top-level `signer_key_id`
-- `receipt.summary.txt` does not currently print a top-level `intent_digest`
-- `receipt.summary.txt` does not currently print a top-level `policy_digest` because the predicate also lacks one
-
-Those values are still available in the signed JSON receipt where implemented.
+- the summary still does not print a digest algorithm field for `policy_digest`
+- per-governed-action `policy_digest` values remain separate from the top-level execution `policy_digest`

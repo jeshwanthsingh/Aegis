@@ -291,17 +291,23 @@ func FormatSummary(statement Statement, verified bool) string {
 	}
 	lines := []string{
 		"verification=" + verification,
+		"schema_version=" + statement.Predicate.Version,
 		"execution_id=" + statement.Predicate.ExecutionID,
-		"semantics_mode=" + string(statement.Predicate.SemanticsMode),
-		"result_class=" + string(statement.Predicate.ResultClass),
-		"backend=" + string(statement.Predicate.Backend),
-		"signing_mode=" + string(statement.Predicate.Trust.SigningMode),
-		"key_source=" + string(statement.Predicate.Trust.KeySource),
-		"attestation=" + statement.Predicate.Trust.Attestation,
-		"trust_limitations=" + trustLimitationsText(statement.Predicate.Trust),
 		"started_at=" + statement.Predicate.StartedAt.Format(time.RFC3339Nano),
 		"finished_at=" + statement.Predicate.FinishedAt.Format(time.RFC3339Nano),
-		fmt.Sprintf("outcome=%s exit_code=%d", statement.Predicate.Outcome.Reason, statement.Predicate.Outcome.ExitCode),
+		"backend=" + string(statement.Predicate.Backend),
+		"policy_digest=" + defaultSummaryValue(statement.Predicate.PolicyDigest),
+		"signer_key_id=" + defaultSummaryValue(statement.Predicate.SignerKeyID),
+		"signing_mode=" + string(statement.Predicate.Trust.SigningMode),
+		"intent_digest=" + defaultSummaryValue(statement.Predicate.IntentDigest),
+		"trust_limitations=" + trustLimitationsText(statement.Predicate.Trust),
+		"outcome=" + statement.Predicate.Outcome.Reason,
+		fmt.Sprintf("exit_code=%d", statement.Predicate.Outcome.ExitCode),
+		"execution_status=" + defaultSummaryValue(statement.Predicate.ExecutionStatus),
+		"semantics_mode=" + string(statement.Predicate.SemanticsMode),
+		"result_class=" + string(statement.Predicate.ResultClass),
+		"key_source=" + string(statement.Predicate.Trust.KeySource),
+		"attestation=" + statement.Predicate.Trust.Attestation,
 		"divergence_verdict=" + string(statement.Predicate.Divergence.Verdict),
 		"rule_hits=" + strings.Join(ruleIDs, ","),
 		fmt.Sprintf("artifact_count=%d", len(statement.Subject)),
@@ -309,9 +315,6 @@ func FormatSummary(statement Statement, verified bool) string {
 	}
 	if statement.Predicate.WorkspaceID != "" {
 		lines = append(lines, "workspace_id="+statement.Predicate.WorkspaceID)
-	}
-	if statement.Predicate.ExecutionStatus != "" {
-		lines = append(lines, "execution_status="+statement.Predicate.ExecutionStatus)
 	}
 	if statement.Predicate.Denial != nil {
 		lines = append(lines, "denial_class="+string(statement.Predicate.Denial.Class))
@@ -359,6 +362,13 @@ func FormatSummary(statement Statement, verified bool) string {
 		lines = append(lines, fmt.Sprintf("capability_count=%d", len(statement.Predicate.GovernedActions.Normalized)))
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func defaultSummaryValue(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "none"
+	}
+	return v
 }
 
 func hydrateArtifactPaths(paths *BundlePaths) error {

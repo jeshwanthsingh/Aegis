@@ -1,6 +1,6 @@
 # Aegis
 
-Aegis lets internal coding agents run code without giving them your machine, and produces signed host-side receipts showing what they tried to do.
+Aegis lets internal coding agents run code without giving them your machine, and produces signed host-side receipts recording what the host observed and enforced.
 
 ## Who it is for
 
