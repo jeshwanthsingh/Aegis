@@ -2,6 +2,8 @@
 
 Aegis ships an MCP stdio server so agent clients can call the local Aegis runtime without needing to know its HTTP or receipt-verification internals.
 
+The MCP path is secondary. The primary repo-native proof path is [demo-exfiltration.md](demo-exfiltration.md).
+
 The MCP layer is intentionally thin:
 
 - it does not embed the orchestrator
@@ -103,9 +105,10 @@ Representative result fields:
 
 ## Build
 
-From the repo root:
+From `~/aegis`:
 
 ```bash
+cd ~/aegis
 aegis setup
 ```
 
@@ -114,6 +117,7 @@ That builds the canonical repo-local MCP binary at `./.aegis/bin/aegis-mcp` alon
 Manual rebuild if you need it immediately after MCP source changes:
 
 ```bash
+cd ~/aegis
 go build -buildvcs=false -o ./.aegis/bin/aegis-mcp ./cmd/aegis-mcp
 ```
 
@@ -122,6 +126,7 @@ go build -buildvcs=false -o ./.aegis/bin/aegis-mcp ./cmd/aegis-mcp
 The server uses stdio only.
 
 ```bash
+cd ~/aegis
 AEGIS_BASE_URL=http://localhost:8080 ./.aegis/bin/aegis-mcp
 ```
 
@@ -152,5 +157,8 @@ This path was validated with Claude Code interoperability in the current repo st
 - the MCP server is a convenience distribution surface, not a separate trust boundary
 - execution still happens through the same Firecracker-backed Aegis runtime
 - verification still depends on the same proof bundle and receipt-verifier path
+- if the local host is compromised, MCP results and receipts can be dishonest for the same reason the base runtime can be dishonest
 - safe defaults are intentional: no network and no broker delegation unless requested
 - broker-backed flows still require the orchestrator to be started with the appropriate broker credential environment
+
+If `aegis_execute` fails because the runtime is down, start `aegis serve` first and use [troubleshooting.md](troubleshooting.md).

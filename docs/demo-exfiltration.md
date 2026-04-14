@@ -4,6 +4,12 @@ This is the primary repo-native Phase 1 proof.
 
 It uses the local HTTP API only. It does not use MCP.
 
+Run it from the canonical repo path:
+
+```bash
+cd ~/aegis
+```
+
 ## Expected outputs
 
 Without Aegis:
@@ -35,15 +41,20 @@ bash scripts/demo_exfil_baseline.sh
 In a third shell, bring up the repo-native runtime:
 
 ```bash
+cd ~/aegis
 aegis setup
+aegis doctor
 aegis serve
 ```
 
 Then run the Aegis-backed proof:
 
 ```bash
+cd ~/aegis
 python3 scripts/demo_exfil_aegis.py
 ```
+
+The demo script runs receipt verification itself and prints the canonical verification lines.
 
 Defaults:
 
@@ -51,3 +62,7 @@ Defaults:
 - Aegis base URL: `http://localhost:8080`
 
 Override them with `RECEIVER_URL` and `AEGIS_BASE_URL` when needed.
+
+If setup or runtime steps fail, use [troubleshooting.md](troubleshooting.md).
+
+For what the receipt does and does not prove, use [trust-model.md](trust-model.md).

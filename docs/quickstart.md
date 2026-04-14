@@ -1,205 +1,135 @@
 # Quickstart
 
-This is the canonical source-checkout onboarding path.
+This is the canonical first-run path for a stranger starting from a fresh source checkout.
 
-Public positioning:
+The goal is narrow: bring up the local runtime in `~/aegis`, run the repo-native blocked-exfil demo, and verify the result.
 
-- primary public path: source checkout on Linux/KVM with release assets, `aegis setup`, `aegis doctor`, `aegis serve`, one SDK example, and `aegis receipt verify`
-- secondary path: installed SDK package usage against an already running Aegis runtime
-- not-primary: package-only claims that sound like runtime install/bootstrap by themselves
-
-For a source checkout, follow this exact sequence:
-
-1. host prerequisites
-2. `aegis setup`
-3. `aegis doctor`
-4. `aegis serve`
-5. one SDK example
-6. `aegis receipt verify`
-
-## 0. Host prerequisites
+## Host prerequisites
 
 - Linux with `/dev/kvm`
-- Firecracker installed or configured in `.aegis/config.yaml`
 - PostgreSQL reachable from the configured database URL
-- cgroups v2 enabled
-- guest assets present in `assets/`
-- `mkfs.ext4` available from `e2fsprogs`
-- Python 3.10+ with `venv` and `pip` support for the canonical source-tree SDK example
+- Firecracker available on `PATH` or configured in `.aegis/config.yaml`
+- `sudo` for the parts of `scripts/install.sh` that install or prepare host dependencies
+- `python3` for the repo-native demo scripts
+- `python3-venv` and `python3-pip` only if you later want to run SDK examples
 
-WSL2 is useful for development, but native Linux is the intended local-serve target.
+## Clone into the canonical path
 
-Optional automation:
+```bash
+git clone https://github.com/jeshwanthsingh/Aegis.git ~/aegis
+cd ~/aegis
+```
+
+## Install
 
 ```bash
 bash scripts/install.sh
 ```
 
-That script is convenience automation for a source checkout. It is not the primary truth surface. The primary truth surfaces are `aegis setup` and `aegis doctor`.
+What this does in the current Phase 1 path:
 
-It aligns the shell command with the repo-local runtime by building `~/aegis/.aegis/bin/{aegis,orchestrator,aegis-mcp}` and linking `~/.local/bin/aegis` back to `~/aegis/.aegis/bin/aegis`.
+- fetches or validates release assets needed for local runtime startup
+- builds the canonical repo-local binaries in `~/aegis/.aegis/bin`
+- links `~/.local/bin/aegis` to `~/aegis/.aegis/bin/aegis`
+- rebakes `guest-runner` into the repo-local rootfs image
+- initializes or reapplies the local schema at the configured Postgres URL
 
-Release assets expected for the source-checkout runtime path:
-
-- `firecracker`
-- `vmlinux`
-- `alpine-base.ext4`
-
-Checksum contract:
-
-- `scripts/release-checksums.txt`
-
-If you use `scripts/install.sh`, it validates those artifacts against the repo-local checksum file above. Keep the checkout and release asset set aligned. Do not assume any random checkout and any random release asset bundle are meant to go together.
-
-## 1. Bootstrap from the source checkout
+## Setup
 
 ```bash
 aegis setup
 ```
 
-`aegis setup` is idempotent. It creates repo-local config and generated binaries, prepares proof and workspace directories, and prints the authoritative readiness report for what is present or missing on this host.
+This is the canonical repo-native bootstrap step. It creates or reuses `.aegis/config.yaml`, builds repo-local binaries, and prints the readiness report.
 
-## 2. Verify readiness before serving
+Expected Phase 1 signals:
+
+- `Aegis CLI binary: /home/.../aegis/.aegis/bin/aegis`
+- `Aegis MCP binary: /home/.../aegis/.aegis/bin/aegis-mcp`
+- `` `aegis` command path: /home/.../.local/bin/aegis ``
+
+## Doctor before serve
 
 ```bash
 aegis doctor
 ```
 
-`aegis doctor` is the readiness gate for the supported local-serve path. It checks host/runtime access, reaches the API when available, runs a self-test execution, and verifies the emitted receipt.
+Before the runtime is up, `aegis doctor` should honestly report that the runtime is unavailable. That is expected at this step.
 
-Before `aegis serve` is running, the runtime checks will tell you the server is not reachable yet. That is the handoff to the next step, not a cue to guess.
-
-## 3. Start the runtime
+## Serve
 
 ```bash
 aegis serve
 ```
 
-`aegis serve` prints the active config, API URL, warm-pool posture, broker-demo posture, auth posture, and receipt-signing posture before starting the HTTP server in the foreground.
+Leave `aegis serve` running in its own terminal.
 
-Default local URL:
+## Doctor after serve
 
-```text
-http://localhost:8080
-```
-
-After `aegis serve` is up, rerun:
+In another terminal:
 
 ```bash
 aegis doctor
 ```
 
-That is the first fully green readiness check before you move on to SDK examples.
+Expected Phase 1 outcome:
 
-## 4. Run one source-tree SDK example
+- `host_ready=PASS`
+- `runtime_ready=PASS`
+- `execution_path_ready=PASS`
+- `receipt_path_ready=PASS`
 
-Python is the canonical first example for a source checkout.
+## Run the repo-native exfil demo
 
-Source-tree Python mode:
-
-```bash
-cd sdk/python
-# Debian/Ubuntu: install python3-venv and python3-pip first if needed
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
-python examples/run_code.py
-```
-
-That example prints:
-
-- guest stdout
-- execution status
-- execution ID
-- proof directory
-
-## 5. Verify the emitted proof
-
-Use the `proof_dir` printed by the example:
+Open a second terminal for the receiver:
 
 ```bash
-aegis receipt verify --proof-dir /path/to/proof-dir
+cd ~/aegis
+python3 scripts/demo_receiver.py
 ```
 
-That is the end of the primary onboarding path.
-
-## Source checkout vs installed package usage
-
-Source checkout Python usage:
-
-- create the venv inside `sdk/python`
-- `pip install -e .`
-- run examples from `sdk/python/examples/...`
-
-Installed-package Python usage:
-
-- secondary path only
-- assumes a working Aegis runtime is already running elsewhere
-- import `aegis` in your own project after installing the package for your environment
-- not the primary path for a fresh repo checkout or first runtime bring-up
-
-Source checkout TypeScript usage:
+Open a third terminal for the baseline host-path exfil:
 
 ```bash
-cd sdk/typescript
-npm install
-npm run build
-node dist/examples/run_code.js
+cd ~/aegis
+bash scripts/demo_exfil_baseline.sh
 ```
 
-That path assumes Node.js and npm are already installed on the host.
+Expected baseline output:
 
-Installed-package TypeScript usage:
+- receiver prints `RECEIVED: TOP_SECRET=demo-key-123`
+- script prints `EXFIL_ATTEMPT_SENT`
 
-- secondary path only
-- assumes a working Aegis runtime is already running elsewhere
-- consume `@aegis/sdk` in your own project after installing the package for your environment
-- not the primary path for a fresh repo checkout or first runtime bring-up
-
-## Stronger second-step proof
-
-After the first successful source-checkout run, use the stronger proof harness:
+Then run the Aegis-backed proof:
 
 ```bash
-python3 scripts/run_canonical_demo.py --serve
+cd ~/aegis
+python3 scripts/demo_exfil_aegis.py
 ```
 
-That is the canonical product demo path. It is not the first-run onboarding path. See [canonical-demo.md](canonical-demo.md).
+Expected Aegis output:
 
-## Optional broker path
+- `EXFIL_FAILED`
+- `verification=verified`
+- `denial_marker=direct_egress_denied`
+- `denial_rule_id=governance.direct_egress_disabled`
 
-Broker flows require the orchestrator to be started from a shell where the broker credential environment is present. The broker path is policy-governed and proof-producing, but it is not auto-enabled by `aegis setup`.
+## Verify what that result means
 
-Reference examples:
+- The baseline script proved the host can send the secret directly to the local receiver.
+- The Aegis-backed script proved the same direct egress path was denied inside the Firecracker-backed runtime.
+- The receipt verification output proved the host wrote a signed execution record tying that denial to the execution ID and proof bundle.
 
-- `sdk/python/examples/broker_allowed.py`
-- `sdk/python/examples/broker_denied.py`
-- `sdk/typescript/examples/broker_allowed.ts`
-- `sdk/typescript/examples/broker_denied.ts`
+For the trust limits of that proof, read [trust-model.md](trust-model.md).
 
-## Common setup failures
+## If something is off
 
-- `/dev/kvm` missing or not writable
-  - enable KVM and add your user to the `kvm` group
-- Firecracker missing
-  - install Firecracker or set `runtime.firecracker_bin`
-- database connection fails
-  - start PostgreSQL and rerun `aegis setup`
-- cgroup parent not writable
-  - provide a writable delegated cgroup parent
-- networking demos fail
-  - ensure `ip`, `iptables`, `/dev/net/tun`, and the required privileges are available
+Use [troubleshooting.md](troubleshooting.md).
 
-## What this quickstart proves
+The explicit recovery path for stale repo-local state is:
 
-- Aegis can boot a Firecracker-backed execution path
-- a client can submit code through the supported public API
-- a proof bundle is written locally
-- the receipt can be verified after execution
-
-## What it does not prove
-
-- hosted multi-tenant readiness
-- host attestation
-- HSM/KMS-backed signing custody
-- universal warm-path coverage across all request shapes
+```bash
+cd ~/aegis
+rm -rf .aegis
+aegis setup
+```
