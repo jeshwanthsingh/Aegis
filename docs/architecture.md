@@ -4,50 +4,9 @@ Aegis is a local execution evidence platform. The runtime is split across a host
 
 ## System view
 
-```mermaid
-flowchart TD
-    subgraph Clients
-        CLI[Aegis CLI]
-        PY[Python SDK]
-        TS[TypeScript SDK]
-        MCPCLIENT[MCP client]
-    end
-
-    subgraph Host["Host runtime"]
-        API[HTTP API]
-        ORCH[Orchestrator]
-        POLICY[Policy evaluator]
-        DIV[Divergence evaluator]
-        BUS[Telemetry bus]
-        BROKER[Credential broker]
-        PROOF[Proof bundle writer]
-        VERIFY[Receipt verifier]
-        WARM[Warm pool v1]
-    end
-
-    subgraph VM["Firecracker microVM"]
-        GUEST[guest-runner]
-        CODE[Untrusted guest code]
-    end
-
-    CLI --> API
-    PY --> API
-    TS --> API
-    MCPCLIENT --> MCPWRAP[MCP wrapper]
-    MCPWRAP --> API
-
-    API --> ORCH
-    ORCH --> POLICY
-    ORCH --> DIV
-    ORCH --> BUS
-    ORCH --> BROKER
-    ORCH --> PROOF
-    ORCH --> WARM
-    PROOF --> VERIFY
-    ORCH -->|virtio-vsock| GUEST
-    GUEST --> CODE
-    BROKER -->|host-mediated requests| GUEST
-```
+<p align="center">
+  <img src="docs/architecture-diagram.png" alt="Aegis architecture: clients enter through API/orchestrator, host-side governance evaluates policy, Firecracker guest executes code, broker mediates credential access, direct egress is denied, and proof bundles are produced on the host." width="1100" />
+</p>
 
 ## Component responsibilities
 
