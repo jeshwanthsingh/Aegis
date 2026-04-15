@@ -22,7 +22,7 @@ Run code. Get output. Get a signed receipt. Keep a proof bundle.
 
 ## What this gives you
 
-Aegis is a self-hosted execution runtime for code you don't trust with your host. It is built for teams running AI agent workflows where isolation alone isn't enough — where you also need evidence of what happened, policy over what was allowed, and credential handling that doesn't leak secrets into the execution environment.
+Aegis is a self-hosted execution runtime for code you don't trust with your host. It is built for teams running AI agent workflows where isolation alone isn't enough - where you also need evidence of what happened, policy over what was allowed, and credential handling that doesn't leak secrets into the execution environment.
 
 - **Hardware-isolated execution.** Each run happens inside a Firecracker microVM with its own kernel. Not a container. Not a namespace. A VM boundary.
 - **Policy enforcement.** Cedar-based intent contracts define what code can read, write, connect to, and spawn. Violations are detected and enforced, not just logged.
