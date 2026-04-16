@@ -5,7 +5,7 @@ Aegis is a local execution evidence platform. The runtime is split across a host
 ## System view
 
 <p align="center">
-  <img src="docs/architecture-diagram.png" alt="Aegis architecture: clients enter through API/orchestrator, host-side governance evaluates policy, Firecracker guest executes code, broker mediates credential access, direct egress is denied, and proof bundles are produced on the host." width="1100" />
+  <img src="./architecture-diagram.png" alt="Aegis architecture: clients enter through API/orchestrator, host-side governance evaluates policy, Firecracker guest executes code, broker mediates credential access, direct egress is denied, and proof bundles are produced on the host." width="1100" />
 </p>
 
 ## Component responsibilities
@@ -123,3 +123,4 @@ It is not currently designed to be:
 - an attested trust fabric
 - an HSM/KMS-backed signing system
 - a general-purpose orchestration platform for every agent use case
+
