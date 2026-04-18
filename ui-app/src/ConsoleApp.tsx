@@ -27,6 +27,14 @@ const RECEIPT_FINISHED_FORMAT = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
+const RECEIPT_SELECTOR_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 type SectionId = "run" | "executions" | "receipts" | "demos";
 type DensityMode = "comfortable" | "compact";
 type ExecutionStatus = "idle" | "submitting" | "running" | "completed" | "failed";
@@ -148,6 +156,17 @@ function formatFinishedAt(value?: string) {
     return value;
   }
   return RECEIPT_FINISHED_FORMAT.format(date);
+}
+
+function formatReceiptSelectorFinishedAt(value?: string) {
+  if (!value) {
+    return "pending";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return RECEIPT_SELECTOR_TIME_FORMAT.format(date).replace(",", "");
 }
 
 function truncateMiddle(value?: string, keep = 10) {
@@ -1029,36 +1048,30 @@ function ExecutionsWorkspace({
       />
       <div className="resource-layout">
         <Surface title="Session executions" subtitle="Newest first. Select a row to inspect output and evidence.">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Execution</th>
-                <th>Demo</th>
-                <th>Status</th>
-                <th>Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {executions.map((execution) => (
-                <tr
+          <div className="execution-selector-list" role="list" aria-label="Session executions">
+            {executions.length === 0 ? <EmptyState text="No executions in this browser session yet." /> : null}
+            {executions.map((execution) => {
+              const result = statusLabel(execution);
+              const context = [execution.demoLabel, execution.language, execution.profile, formatTime(execution.updatedAt)].join(" · ");
+              return (
+                <button
                   key={execution.executionId}
-                  className={classNames(selectedExecution?.executionId === execution.executionId && "is-selected")}
+                  type="button"
+                  className={classNames("execution-selector-item", selectedExecution?.executionId === execution.executionId && "is-selected")}
+                  aria-pressed={selectedExecution?.executionId === execution.executionId}
                   onClick={() => onSelectExecution(execution.executionId)}
                 >
-                  <td>
-                    <div className="table-primary mono">{truncateMiddle(execution.executionId, 8)}</div>
-                    <div className="table-secondary">{execution.language} • {execution.profile}</div>
-                  </td>
-                  <td>{execution.demoLabel}</td>
-                  <td>
-                    <span className={classNames("status-badge", statusTone(statusLabel(execution)))}>{statusLabel(execution)}</span>
-                  </td>
-                  <td>{formatTime(execution.updatedAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {executions.length === 0 ? <EmptyState text="No executions in this browser session yet." /> : null}
+                  <div className="execution-selector-row">
+                    <div className="execution-selector-main">
+                      <div className="execution-selector-title mono">{truncateMiddle(execution.executionId, 6)}</div>
+                      <div className="execution-selector-context text-truncate">{context}</div>
+                    </div>
+                    <span className={classNames("status-badge", "execution-selector-badge", statusTone(result))}>{result}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </Surface>
 
         <div className="execution-detail-layout">
@@ -1185,43 +1198,36 @@ function ReceiptsWorkspace({
           subtitle="Newest finished receipts first."
           headerRight={<span className="surface-meta">{executions.length} receipts</span>}
         >
-          <table className="data-table receipt-table scan-table">
-            <thead>
-              <tr>
-                <th>Execution</th>
-                <th>Result</th>
-                <th>Finished</th>
-                <th>Profile</th>
-              </tr>
-            </thead>
-            <tbody>
-              {executions.map((execution) => {
-                const receipt = execution.receipt?.statement.predicate;
-                return (
-                  <tr
-                    key={execution.executionId}
-                    className={classNames(selectedExecution?.executionId === execution.executionId && "is-selected")}
-                    onClick={() => onSelectExecution(execution.executionId)}
-                  >
-                    <td>
-                      <div className="cell-stack">
-                        <div className="table-primary mono">{truncateMiddle(execution.executionId, 8)}</div>
-                        <div className="table-secondary text-truncate">{execution.demoLabel}</div>
+          <div className="receipt-selector-list" role="list" aria-label="Session receipts">
+            {executions.length === 0 ? <EmptyState text="No signed receipts are available in this browser session yet." /> : null}
+            {executions.map((execution) => {
+              const receipt = execution.receipt?.statement.predicate;
+              const result = receipt?.result_class || execution.status;
+              const profile = receipt?.runtime?.profile || receipt?.policy?.baseline.profile || execution.profile;
+              return (
+                <button
+                  key={execution.executionId}
+                  type="button"
+                  className={classNames("receipt-selector-item", selectedExecution?.executionId === execution.executionId && "is-selected")}
+                  aria-pressed={selectedExecution?.executionId === execution.executionId}
+                  onClick={() => onSelectExecution(execution.executionId)}
+                >
+                  <div className="receipt-selector-row">
+                    <div className="receipt-selector-main">
+                      <div className="receipt-selector-title mono">{truncateMiddle(execution.executionId, 6)}</div>
+                      <div className="receipt-selector-meta">
+                        <span>{formatReceiptSelectorFinishedAt(receipt?.finished_at)}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{profile}</span>
                       </div>
-                    </td>
-                    <td>
-                      <span className={classNames("status-badge", "is-compact", statusTone(receipt?.result_class || execution.status))}>
-                        {receipt?.result_class || execution.status}
-                      </span>
-                    </td>
-                    <td className="mono receipt-time-cell">{formatFinishedAt(receipt?.finished_at)}</td>
-                    <td className="mono">{receipt?.runtime?.profile || receipt?.policy?.baseline.profile || execution.profile}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {executions.length === 0 ? <EmptyState text="No signed receipts are available in this browser session yet." /> : null}
+                      <div className="receipt-selector-subtitle text-truncate">{execution.demoLabel}</div>
+                    </div>
+                    <span className={classNames("status-badge", "receipt-selector-badge", statusTone(result))}>{result}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </Surface>
 
         <Surface
@@ -1396,6 +1402,12 @@ function DemosWorkspace({
   const selectedTemplate = demos.find((demo) => demo.id === selectedDemo) || demos[0];
   const latestForDemo = lastExecutions.find((execution) => execution.demo === selectedTemplate.id) || null;
   const latestPredicate = latestForDemo?.receipt?.statement.predicate || null;
+  const latestStatus = latestForDemo ? statusLabel(latestForDemo) : "not run";
+  const latestFinished = latestPredicate?.finished_at
+    ? formatFinishedAt(latestPredicate.finished_at)
+    : latestForDemo
+      ? formatTime(latestForDemo.updatedAt)
+      : "not run";
   const latestByDemo = useMemo(() => {
     const map = new Map<DemoKey, ExecutionRecord>();
     for (const execution of lastExecutions) {
@@ -1409,97 +1421,121 @@ function DemosWorkspace({
   return (
     <section className="page-stack">
       <PageHeader
-        title="Demo Templates"
-        subtitle="Packaged operator workflows. Use the selector to inspect what each demo proves, then load it into Run."
+        title="Demos"
+        subtitle="Select a packaged demo, inspect what it proves and the evidence it should produce, then load it into Run."
       />
       <div className="demo-layout">
-        <Surface title="Packaged demos" subtitle="Three flows only: clean execution, denied exfil, brokered outbound.">
-          <table className="data-table demo-table scan-table">
-            <thead>
-              <tr>
-                <th>Demo</th>
-                <th>Language</th>
-                <th>Profile</th>
-                <th>Expected</th>
-                <th>Latest</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="demo-selector-panel">
+          <Surface title="Example browser" subtitle="Three packaged operator flows. Select one to inspect before running it.">
+            <div className="demo-selector-list" role="list" aria-label="Packaged demos">
               {demos.map((demo) => {
                 const latestExecution = latestByDemo.get(demo.id);
-                const latestStatus = latestExecution?.receipt?.statement.predicate.result_class || latestExecution?.status || "none";
+                const itemStatus = latestExecution ? statusLabel(latestExecution) : "not run";
                 return (
-                  <tr key={demo.id} className={classNames(selectedDemo === demo.id && "is-selected")} onClick={() => onSelectDemo(demo.id)}>
-                    <td>
-                      <div className="table-primary text-truncate">{demo.label}</div>
-                    </td>
-                    <td className="mono">{demo.lang}</td>
-                    <td className="mono">{demo.profile}</td>
-                    <td className="mono">{demo.expectedResult}</td>
-                    <td>
-                      {latestExecution ? (
-                        <span className={classNames("status-badge", "is-compact", statusTone(latestStatus))}>{latestStatus}</span>
-                      ) : (
-                        <span className="table-secondary">not run</span>
-                      )}
-                    </td>
-                  </tr>
+                  <button
+                    key={demo.id}
+                    type="button"
+                    className={classNames("demo-selector-item", selectedDemo === demo.id && "is-selected")}
+                    aria-pressed={selectedDemo === demo.id}
+                    onClick={() => onSelectDemo(demo.id)}
+                  >
+                    <div className="demo-selector-title-row">
+                      <span className="demo-selector-title">{demo.label}</span>
+                    </div>
+                    <div className="demo-selector-meta">
+                      <span>{demo.lang}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{demo.profile}</span>
+                    </div>
+                    <div className="demo-selector-summary" aria-label={`Expected ${demo.expectedResult}. Latest ${itemStatus}.`}>
+                      <span className="demo-selector-pair">
+                        <span className="demo-selector-key">Expected</span>
+                        <span className="demo-selector-value">{demo.expectedResult}</span>
+                      </span>
+                      <span className="demo-selector-pair">
+                        <span className="demo-selector-key">Latest</span>
+                        <span className="demo-selector-value">{itemStatus}</span>
+                      </span>
+                    </div>
+                  </button>
                 );
               })}
-            </tbody>
-          </table>
-        </Surface>
-
-        <Surface
-          title={selectedTemplate.label}
-          subtitle="Packaged demo detail, expected evidence, and latest session result for this template."
-          headerRight={
-            <button type="button" className="primary-button" onClick={() => onLoadIntoRun(selectedTemplate.id)}>
-              Load into run
-            </button>
-          }
-        >
-          <div className="demo-detail-layout">
-            <div className="page-stack">
-              <Subsection title="Purpose">
-                <p className="body-copy">{selectedTemplate.description}</p>
-              </Subsection>
-              <Subsection title="What it proves">
-                <BulletList items={selectedTemplate.proves} />
-              </Subsection>
-              <Subsection title="Expected evidence">
-                <BulletList items={selectedTemplate.expectedEvidence} />
-              </Subsection>
             </div>
+          </Surface>
+        </div>
 
-            <div className="page-stack">
-              <Subsection title="Template settings">
-                <DefinitionList
-                  items={[
-                    { label: "Language", value: selectedTemplate.lang },
-                    { label: "Profile", value: selectedTemplate.profile },
-                    { label: "Timeout", value: `${selectedTemplate.timeoutMs} ms` },
-                    { label: "Expected result", value: selectedTemplate.expectedResult },
-                  ]}
-                />
-              </Subsection>
-              <Subsection title="Latest session run">
-                {!latestForDemo ? (
-                  <EmptyState text="This demo has not been run in the current browser session." />
-                ) : (
-                  <DefinitionList
-                    items={[
-                      { label: "Execution", value: latestForDemo.executionId },
-                      { label: "Status", value: latestPredicate?.result_class || latestForDemo.status },
-                      { label: "Proof dir", value: latestForDemo.proofDir || "pending" },
-                      { label: "Policy digest", value: latestPredicate?.policy_digest || "none" },
-                    ]}
-                  />
-                )}
-              </Subsection>
+        <div className="demo-detail-panel">
+          <Surface
+            title={selectedTemplate.label}
+            subtitle="Readable example detail, expected evidence, and latest session context for this demo."
+            headerRight={
+              <button type="button" className="primary-button" onClick={() => onLoadIntoRun(selectedTemplate.id)}>
+                Load into run
+              </button>
+            }
+          >
+            <div className="demo-detail-layout">
+              <div className="demo-detail-main page-stack">
+                <Subsection title="Purpose">
+                  <div className="demo-detail-intro">
+                    <div className="demo-detail-summary">
+                      <div className="demo-detail-status">
+                        <span className="demo-detail-key">Expected result</span>
+                        <span className={classNames("status-badge", "is-compact", statusTone(selectedTemplate.expectedResult))}>
+                          {selectedTemplate.expectedResult}
+                        </span>
+                      </div>
+                      <div className="demo-detail-note">
+                        {latestForDemo ? `Latest session ${latestStatus} · ${latestFinished}` : "No session run in this browser yet."}
+                      </div>
+                    </div>
+                    <p className="body-copy">{selectedTemplate.description}</p>
+                  </div>
+                </Subsection>
+                <Subsection title="What it proves">
+                  <BulletList items={selectedTemplate.proves} />
+                </Subsection>
+                <Subsection title="Expected evidence">
+                  <BulletList items={selectedTemplate.expectedEvidence} />
+                </Subsection>
+              </div>
+
+              <aside className="demo-detail-rail">
+                <div className="demo-meta-panel">
+                  <Subsection title="Template settings">
+                    <DefinitionList
+                      compact
+                      items={[
+                        { label: "Language", value: selectedTemplate.lang },
+                        { label: "Profile", value: selectedTemplate.profile },
+                        { label: "Timeout", value: `${selectedTemplate.timeoutMs} ms` },
+                        { label: "Expected result", value: selectedTemplate.expectedResult },
+                      ]}
+                    />
+                  </Subsection>
+                </div>
+                <div className="demo-meta-panel">
+                  <Subsection title="Latest session run">
+                    {!latestForDemo ? (
+                      <EmptyState text="This demo has not been run in the current browser session." compact />
+                    ) : (
+                      <DefinitionList
+                        compact
+                        items={[
+                          { label: "Status", value: latestStatus },
+                          { label: "Finished", value: latestFinished },
+                          { label: "Execution", value: latestForDemo.executionId },
+                          { label: "Proof dir", value: latestForDemo.proofDir || "pending" },
+                          { label: "Policy digest", value: latestPredicate?.policy_digest || "none" },
+                        ]}
+                      />
+                    )}
+                  </Subsection>
+                </div>
+              </aside>
             </div>
-          </div>
-        </Surface>
+          </Surface>
+        </div>
       </div>
     </section>
   );
