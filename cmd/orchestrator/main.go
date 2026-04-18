@@ -132,29 +132,7 @@ func main() {
 		uiDir = "ui"
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", api.HandleHealth(pool, warmPool))
-	mux.HandleFunc("GET /v1/health", api.HandleHealth(pool, warmPool))
-	mux.HandleFunc("GET /ready", api.HandleReady(s, pool, warmPool))
-	mux.HandleFunc("GET /metrics", observability.HandleMetrics())
-	mux.HandleFunc("GET /v1/stats", api.WithAuth(apiKey, api.NewStatsHandler(stats, allowedOrigins)))
-	mux.HandleFunc("GET /v1/events/{exec_id}", api.WithAuth(apiKey, api.NewTelemetryHandler(registry, allowedOrigins)))
-	mux.HandleFunc("POST /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleCreateWorkspace()))
-	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
-	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath), workspaceRegistry)))
-	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath), workspaceRegistry)))
-	if info, err := os.Stat(uiDir); err == nil && info.IsDir() {
-		uiFS := http.FileServer(http.Dir(uiDir))
-		mux.Handle("GET /ui/", http.StripPrefix("/ui/", uiFS))
-		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, filepath.Join(uiDir, "index.html"))
-		})
-		observability.Info("ui_enabled", observability.Fields{"ui_dir": uiDir})
-	} else if err != nil {
-		observability.Warn("ui_disabled", observability.Fields{"ui_dir": uiDir, "error": err.Error()})
-	} else {
-		observability.Warn("ui_disabled", observability.Fields{"ui_dir": uiDir, "error": fmt.Sprintf("%s is not a directory", uiDir)})
-	}
+	mux := buildMux(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, workspaceRegistry, apiKey, allowedOrigins, uiDir, filepath.Base(*policyPath))
 
 	observability.Info("server_listen", observability.Fields{
 		"addr":         serverExposure.ListenAddr,
@@ -247,6 +225,33 @@ func isLoopbackListenAddr(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func buildMux(s *store.Store, pool *executor.Pool, warmPool *warmpool.Manager, pol *policy.Policy, assetsDir string, rootfsPath string, registry *api.BusRegistry, stats *api.StatsCounter, workspaceRegistry *api.WorkspaceRegistry, apiKey string, allowedOrigins []string, uiDir string, policyName string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", api.HandleHealth(pool, warmPool))
+	mux.HandleFunc("GET /v1/health", api.HandleHealth(pool, warmPool))
+	mux.HandleFunc("GET /ready", api.HandleReady(s, pool, warmPool))
+	mux.HandleFunc("GET /metrics", api.WithAuth(apiKey, observability.HandleMetrics()))
+	mux.HandleFunc("GET /v1/stats", api.WithAuth(apiKey, api.NewStatsHandler(stats, allowedOrigins)))
+	mux.HandleFunc("GET /v1/events/{exec_id}", api.WithAuth(apiKey, api.NewTelemetryHandler(registry, allowedOrigins)))
+	mux.HandleFunc("POST /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleCreateWorkspace()))
+	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
+	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, warmPool, pol, assetsDir, rootfsPath, registry, stats, policyName, workspaceRegistry)))
+	mux.HandleFunc("/v1/execute/stream", api.WithAuth(apiKey, api.NewStreamHandler(s, pool, warmPool, pol, assetsDir, rootfsPath, registry, stats, policyName, workspaceRegistry)))
+	if info, err := os.Stat(uiDir); err == nil && info.IsDir() {
+		uiFS := http.FileServer(http.Dir(uiDir))
+		mux.Handle("GET /ui/", http.StripPrefix("/ui/", uiFS))
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, filepath.Join(uiDir, "index.html"))
+		})
+		observability.Info("ui_enabled", observability.Fields{"ui_dir": uiDir})
+	} else if err != nil {
+		observability.Warn("ui_disabled", observability.Fields{"ui_dir": uiDir, "error": err.Error()})
+	} else {
+		observability.Warn("ui_disabled", observability.Fields{"ui_dir": uiDir, "error": fmt.Sprintf("%s is not a directory", uiDir)})
+	}
+	return mux
 }
 
 // reconcile cleans up orphaned scratch images and sockets from a previous crash.

@@ -2,11 +2,16 @@ package main
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"aegis/internal/api"
+	"aegis/internal/executor"
+	"aegis/internal/policy"
 	"aegis/internal/receipt"
 	"aegis/internal/store"
 	"aegis/internal/telemetry"
@@ -202,6 +207,46 @@ func TestParseAllowedOriginsAndLoopbackDetection(t *testing.T) {
 	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080"} {
 		if isLoopbackListenAddr(addr) {
 			t.Fatalf("expected %q to be treated as non-loopback", addr)
+		}
+	}
+}
+
+func TestBuildMuxProtectsSensitiveRoutesWithSharedAuth(t *testing.T) {
+	t.Parallel()
+
+	mux := buildMux(
+		nil,
+		executor.NewPool(1),
+		nil,
+		policy.Default(),
+		"",
+		"",
+		api.NewBusRegistry(),
+		api.NewStatsCounter(),
+		api.NewWorkspaceRegistry(),
+		"secret",
+		nil,
+		filepath.Join(t.TempDir(), "missing-ui"),
+		"test-policy",
+	)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/metrics"},
+		{method: http.MethodGet, path: "/v1/stats"},
+		{method: http.MethodGet, path: "/v1/events/11111111-1111-4111-8111-111111111111"},
+		{method: http.MethodPost, path: "/v1/workspaces/ws-demo"},
+		{method: http.MethodDelete, path: "/v1/workspaces/ws-demo"},
+		{method: http.MethodPost, path: "/v1/execute"},
+		{method: http.MethodPost, path: "/v1/execute/stream"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s status=%d want %d body=%s", tc.method, tc.path, rr.Code, http.StatusUnauthorized, rr.Body.String())
 		}
 	}
 }
