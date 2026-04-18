@@ -155,3 +155,53 @@ func TestReconcileRemovesUntrackedWarmOrphansWithoutReceipt(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateServerExposureAllowsLoopbackWithoutAuth(t *testing.T) {
+	t.Parallel()
+
+	cfg := serverExposureConfig{ListenAddr: "127.0.0.1:8080"}
+	if err := validateServerExposure(cfg); err != nil {
+		t.Fatalf("validateServerExposure(loopback): %v", err)
+	}
+}
+
+func TestValidateServerExposureRejectsNonLocalWithoutAuth(t *testing.T) {
+	t.Parallel()
+
+	cfg := serverExposureConfig{ListenAddr: "0.0.0.0:8080"}
+	if err := validateServerExposure(cfg); err == nil {
+		t.Fatal("expected non-local bind without auth to fail")
+	}
+}
+
+func TestValidateServerExposureRejectsWildcardCORSForNonLocalBind(t *testing.T) {
+	t.Parallel()
+
+	cfg := serverExposureConfig{
+		ListenAddr:     "0.0.0.0:8080",
+		APIKey:         "secret",
+		AllowedOrigins: []string{"*"},
+	}
+	if err := validateServerExposure(cfg); err == nil {
+		t.Fatal("expected wildcard CORS on non-local bind to fail")
+	}
+}
+
+func TestParseAllowedOriginsAndLoopbackDetection(t *testing.T) {
+	t.Parallel()
+
+	origins := parseAllowedOrigins(" https://b.example,https://a.example,https://b.example , ")
+	if len(origins) != 2 || origins[0] != "https://a.example" || origins[1] != "https://b.example" {
+		t.Fatalf("unexpected origins: %#v", origins)
+	}
+	for _, addr := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"} {
+		if !isLoopbackListenAddr(addr) {
+			t.Fatalf("expected %q to be treated as loopback", addr)
+		}
+	}
+	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080"} {
+		if isLoopbackListenAddr(addr) {
+			t.Fatalf("expected %q to be treated as non-loopback", addr)
+		}
+	}
+}

@@ -46,9 +46,9 @@ func (s *StatsCounter) Snapshot() Stats {
 }
 
 // NewStatsHandler returns an HTTP handler that serves the aggregate stats snapshot.
-func NewStatsHandler(counter *StatsCounter) http.HandlerFunc {
+func NewStatsHandler(counter *StatsCounter, allowedOrigins []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		applyAllowedOrigin(w, r, allowedOrigins)
 		writeJSON(w, http.StatusOK, counter.Snapshot())
 	}
 }

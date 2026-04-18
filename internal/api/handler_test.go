@@ -463,7 +463,7 @@ func TestTelemetryHandlerRejectsMalformedExecID(t *testing.T) {
 	req.SetPathValue("exec_id", "not-a-uuid")
 	rr := httptest.NewRecorder()
 
-	NewTelemetryHandler(registry).ServeHTTP(rr, req)
+	NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusBadRequest)
@@ -482,7 +482,7 @@ func TestTelemetryHandlerWaitsForFutureBusAndStreams(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry))
+	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry, nil))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -546,7 +546,7 @@ func TestTelemetryHandlerNotFoundAfterWait(t *testing.T) {
 		telemetryLookupPoll = 25 * time.Millisecond
 	})
 
-	NewTelemetryHandler(registry).ServeHTTP(rr, req)
+	NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusNotFound)
@@ -567,7 +567,7 @@ func TestTelemetryHandlerRejectsWhenTooManyWaiters(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry))
+	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry, nil))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -614,7 +614,7 @@ func TestTelemetryHandlerMissingExecutionUsesConfiguredWait(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	start := time.Now()
-	NewTelemetryHandler(registry).ServeHTTP(rr, req)
+	NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 	elapsed := time.Since(start)
 
 	if rr.Code != http.StatusNotFound {
@@ -643,7 +643,7 @@ func TestTelemetrySSEEventDecodesAsJSON(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		NewTelemetryHandler(registry).ServeHTTP(rr, req)
+		NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 		close(done)
 	}()
 
@@ -680,7 +680,7 @@ func TestTelemetryHandlerPreSubscribeStreamsDNSDeny(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry))
+	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry, nil))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 

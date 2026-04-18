@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +56,8 @@ func main() {
 	policyPath := flag.String("policy", "configs/default-policy.yaml", "path to policy yaml")
 	assetsDir := flag.String("assets-dir", "", "path to assets directory (vmlinux, rootfs images)")
 	rootfsPath := flag.String("rootfs-path", os.Getenv("AEGIS_ROOTFS_PATH"), "optional rootfs image override for migration/rollback")
+	listenAddr := flag.String("addr", envString("AEGIS_HTTP_ADDR", "127.0.0.1:8080"), "http listen address")
+	allowedOriginsFlag := flag.String("allowed-origins", envString("AEGIS_ALLOWED_ORIGINS", ""), "comma-separated allowed CORS origins for stats and events endpoints")
 	flag.Parse()
 
 	if err := os.MkdirAll("/tmp/aegis", 0o700); err != nil {
@@ -89,8 +93,26 @@ func main() {
 	observability.Info("policy_loaded", observability.Fields{"policy_path": *policyPath})
 
 	apiKey := os.Getenv("AEGIS_API_KEY")
+	allowedOrigins := parseAllowedOrigins(*allowedOriginsFlag)
+	serverExposure := serverExposureConfig{
+		ListenAddr:     *listenAddr,
+		APIKey:         apiKey,
+		AllowedOrigins: allowedOrigins,
+	}
+	if err := validateServerExposure(serverExposure); err != nil {
+		observability.Fatal("startup_failed", observability.Fields{
+			"step":         "validate_server_exposure",
+			"error":        err.Error(),
+			"listen_addr":  serverExposure.ListenAddr,
+			"local_only":   isLoopbackListenAddr(serverExposure.ListenAddr),
+			"cors_origins": strings.Join(serverExposure.AllowedOrigins, ","),
+		})
+	}
 	if apiKey == "" {
-		observability.Warn("auth_disabled", observability.Fields{"message": "AEGIS_API_KEY not set, running in unauthenticated dev mode"})
+		observability.Warn("auth_disabled_local_only", observability.Fields{
+			"message":     "AEGIS_API_KEY not set; unauthenticated mode is allowed only on loopback bind addresses",
+			"listen_addr": serverExposure.ListenAddr,
+		})
 	}
 
 	pool := executor.NewPool(envInt("AEGIS_WORKER_POOL_SIZE", 5))
@@ -115,8 +137,8 @@ func main() {
 	mux.HandleFunc("GET /v1/health", api.HandleHealth(pool, warmPool))
 	mux.HandleFunc("GET /ready", api.HandleReady(s, pool, warmPool))
 	mux.HandleFunc("GET /metrics", observability.HandleMetrics())
-	mux.HandleFunc("GET /v1/stats", api.NewStatsHandler(stats))
-	mux.HandleFunc("GET /v1/events/{exec_id}", api.NewTelemetryHandler(registry))
+	mux.HandleFunc("GET /v1/stats", api.WithAuth(apiKey, api.NewStatsHandler(stats, allowedOrigins)))
+	mux.HandleFunc("GET /v1/events/{exec_id}", api.WithAuth(apiKey, api.NewTelemetryHandler(registry, allowedOrigins)))
 	mux.HandleFunc("POST /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleCreateWorkspace()))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", api.WithAuth(apiKey, api.HandleDeleteWorkspace()))
 	mux.HandleFunc("/v1/execute", api.WithAuth(apiKey, api.NewHandler(s, pool, warmPool, pol, *assetsDir, *rootfsPath, registry, stats, filepath.Base(*policyPath), workspaceRegistry)))
@@ -134,8 +156,12 @@ func main() {
 		observability.Warn("ui_disabled", observability.Fields{"ui_dir": uiDir, "error": fmt.Sprintf("%s is not a directory", uiDir)})
 	}
 
-	observability.Info("server_listen", observability.Fields{"addr": ":8080"})
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	observability.Info("server_listen", observability.Fields{
+		"addr":         serverExposure.ListenAddr,
+		"local_only":   isLoopbackListenAddr(serverExposure.ListenAddr),
+		"cors_origins": allowedOrigins,
+	})
+	if err := http.ListenAndServe(serverExposure.ListenAddr, mux); err != nil {
 		observability.Fatal("server_stopped", observability.Fields{"error": err.Error()})
 	}
 }
@@ -150,6 +176,77 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func envString(name string, fallback string) string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	return raw
+}
+
+type serverExposureConfig struct {
+	ListenAddr     string
+	APIKey         string
+	AllowedOrigins []string
+}
+
+func validateServerExposure(cfg serverExposureConfig) error {
+	addr := strings.TrimSpace(cfg.ListenAddr)
+	if addr == "" {
+		return fmt.Errorf("listen address is required")
+	}
+	localOnly := isLoopbackListenAddr(addr)
+	if !localOnly && strings.TrimSpace(cfg.APIKey) == "" {
+		return fmt.Errorf("AEGIS_API_KEY is required for non-local listen address %q", addr)
+	}
+	if !localOnly {
+		for _, origin := range cfg.AllowedOrigins {
+			if origin == "*" {
+				return fmt.Errorf("wildcard CORS is not allowed for non-local listen address %q", addr)
+			}
+		}
+	}
+	return nil
+}
+
+func parseAllowedOrigins(raw string) []string {
+	seen := map[string]struct{}{}
+	var origins []string
+	for _, part := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(part)
+		if origin == "" {
+			continue
+		}
+		if _, ok := seen[origin]; ok {
+			continue
+		}
+		seen[origin] = struct{}{}
+		origins = append(origins, origin)
+	}
+	sort.Strings(origins)
+	return origins
+}
+
+func isLoopbackListenAddr(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // reconcile cleans up orphaned scratch images and sockets from a previous crash.

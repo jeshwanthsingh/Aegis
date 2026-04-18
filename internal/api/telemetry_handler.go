@@ -20,8 +20,10 @@ var (
 )
 
 // NewTelemetryHandler streams telemetry events for a specific execution ID as SSE.
-func NewTelemetryHandler(registry *BusRegistry) http.HandlerFunc {
+func NewTelemetryHandler(registry *BusRegistry, allowedOrigins []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		applyAllowedOrigin(w, r, allowedOrigins)
+
 		execID := r.PathValue("exec_id")
 		if execID == "" {
 			http.Error(w, `{"error":"execution not found"}`, http.StatusNotFound)
@@ -53,7 +55,6 @@ func NewTelemetryHandler(registry *BusRegistry) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 

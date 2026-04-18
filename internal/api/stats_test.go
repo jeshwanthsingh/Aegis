@@ -43,7 +43,7 @@ func TestStatsHandlerReturnsAggregatesAfterMultipleReceipts(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
 	rr := httptest.NewRecorder()
-	NewStatsHandler(counter).ServeHTTP(rr, req)
+	NewStatsHandler(counter, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusOK)
@@ -55,5 +55,33 @@ func TestStatsHandlerReturnsAggregatesAfterMultipleReceipts(t *testing.T) {
 	}
 	if got.TotalExecutions != 3 || got.TotalCompleted != 2 || got.TotalContained != 1 {
 		t.Fatalf("unexpected execution counters: %#v", got)
+	}
+}
+
+func TestStatsHandlerNoWildcardCORSByDefault(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rr := httptest.NewRecorder()
+
+	NewStatsHandler(NewStatsCounter(), nil).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unexpected CORS header: %q", got)
+	}
+}
+
+func TestStatsHandlerAllowsConfiguredOrigin(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+	req.Header.Set("Origin", "https://app.example")
+	rr := httptest.NewRecorder()
+
+	NewStatsHandler(NewStatsCounter(), []string{"https://app.example"}).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
+		t.Fatalf("unexpected CORS header: %q", got)
 	}
 }
