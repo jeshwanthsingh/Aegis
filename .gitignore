@@ -33,3 +33,10 @@ sdk/python/**/*.egg-info/
 sdk/python/**/*.egg-info/*
 sdk/python/**/__pycache__/
 sdk/python/**/__pycache__/*
+ui-app/node_modules/
+ui-app/.vite/
+ui-app/*.tsbuildinfo
+ui-app/vite.config.js
+ui-app/vite.config.d.ts
+ui-app/tailwind.config.js
+ui-app/tailwind.config.d.ts
