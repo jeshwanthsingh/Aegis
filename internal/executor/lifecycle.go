@@ -192,7 +192,7 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *tel
 }
 
 func CreateScratchDisk(uuid string) (string, error) {
-	path := fmt.Sprintf("/tmp/aegis/scratch-%s.ext4", uuid)
+	path := scratchDiskPath(uuid)
 	if err := createExt4Disk(path, 50); err != nil {
 		return "", err
 	}

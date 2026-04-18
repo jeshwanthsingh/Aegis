@@ -292,13 +292,23 @@ func acquireExecutionVM(ctx context.Context, warm *warmpool.Manager, execID stri
 	if shapeKey != "" {
 		vm, ok, claimReason, err := warm.ClaimFor(ctx, shapeKey)
 		if ok && err == nil {
-			vm.CgroupID = execID
-			return vm, "warm", "", nil
+			if err := vm.ClaimExecutionIdentity(execID); err != nil {
+				observability.Warn("warm_pool_claim_identity_rebind_failed", observability.Fields{"execution_id": execID, "asset_id": vm.AssetID, "error": err.Error()})
+				if teardownErr := teardownVMFunc(vm, bus); teardownErr != nil {
+					observability.Warn("warm_pool_claim_rebind_teardown_failed", observability.Fields{"execution_id": execID, "asset_id": vm.AssetID, "error": teardownErr.Error()})
+				}
+				fallbackReason = warmpool.FallbackClaimError
+				if warm != nil {
+					warm.RecordColdFallbackReason(fallbackReason)
+				}
+			} else {
+				return vm, "warm", "", nil
+			}
 		}
 		if err != nil {
 			fallbackReason = claimReason
 			observability.Warn("warm_pool_claim_failed", observability.Fields{"execution_id": execID, "error": err.Error(), "fallback_reason": fallbackReason})
-		} else {
+		} else if !ok {
 			fallbackReason = claimReason
 		}
 	} else if warm != nil {
@@ -306,7 +316,9 @@ func acquireExecutionVM(ctx context.Context, warm *warmpool.Manager, execID stri
 	}
 	vm, err := executor.NewVM(execID, req.WorkspaceID, pol, computeProfile, assetsDir, rootfsPath, bus)
 	if vm != nil {
-		vm.CgroupID = execID
+		if claimErr := vm.ClaimExecutionIdentity(execID); claimErr != nil {
+			return nil, "cold", fallbackReason, claimErr
+		}
 	}
 	return vm, "cold", fallbackReason, err
 }

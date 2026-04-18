@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -157,6 +158,113 @@ func TestWarmShapeDecision(t *testing.T) {
 	}
 	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "nano", WorkspaceID: "demo"}, warm, pol, "", ""); key != "" || reason != warmpool.FallbackWorkspace {
 		t.Fatalf("workspace-backed request should fall back with workspace reason, key=%q reason=%q", key, reason)
+	}
+}
+
+func TestAcquireExecutionVMWarmClaimRebindsExecutionIdentity(t *testing.T) {
+	pol := policy.Default()
+	warm := warmpool.NewWithHooks(warmpool.Config{
+		Size:   1,
+		MaxAge: time.Minute,
+	}, warmpool.Hooks{
+		Build: func(_ context.Context, assetID string) (*executor.VMInstance, error) {
+			if err := os.MkdirAll("/tmp/aegis", 0o700); err != nil {
+				return nil, err
+			}
+			scratch := filepath.Join("/tmp/aegis", "scratch-"+assetID+".ext4")
+			socket := filepath.Join("/tmp/aegis", "fc-"+assetID+".sock")
+			vsock := filepath.Join("/tmp/aegis", "vsock-"+assetID+".sock")
+			serial := filepath.Join("/tmp/aegis", "serial-"+assetID+".log")
+			for _, path := range []string{scratch, socket, vsock, serial} {
+				if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+					return nil, err
+				}
+			}
+			return &executor.VMInstance{
+				AssetID:       assetID,
+				UUID:          assetID,
+				CgroupID:      assetID,
+				ScratchPath:   scratch,
+				SocketPath:    socket,
+				VsockPath:     vsock,
+				SerialLogPath: serial,
+			}, nil
+		},
+		WaitReady: func(context.Context, *executor.VMInstance) error { return nil },
+		Pause:     func(context.Context, *executor.VMInstance) error { return nil },
+		Resume:    func(context.Context, *executor.VMInstance) error { return nil },
+	})
+	warm.Start()
+	t.Cleanup(func() {
+		if err := warm.Close(); err != nil {
+			t.Fatalf("warm.Close: %v", err)
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if warm.Status().Available == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if warm.Status().Available != 1 {
+		t.Fatalf("warm.Status().Available = %d, want 1", warm.Status().Available)
+	}
+
+	execID := "30454c31-dfdf-4b5f-ae7c-1bddbf09ad9f"
+	vm, dispatch, fallbackReason, err := acquireExecutionVM(context.Background(), warm, execID, ExecuteRequest{Lang: "python", Profile: "standard"}, pol, pol.Profiles["standard"], "", "", nil)
+	if err != nil {
+		t.Fatalf("acquireExecutionVM returned error: %v", err)
+	}
+	if dispatch != "warm" {
+		t.Fatalf("dispatch = %q, want warm", dispatch)
+	}
+	if fallbackReason != "" {
+		t.Fatalf("fallbackReason = %q, want empty", fallbackReason)
+	}
+	if vm == nil {
+		t.Fatal("expected claimed vm")
+	}
+	if vm.AssetID == "" {
+		t.Fatal("expected asset id to remain populated")
+	}
+	if vm.AssetID == execID {
+		t.Fatalf("AssetID = %q, want pooled asset identity distinct from execution identity", vm.AssetID)
+	}
+	if vm.UUID != execID {
+		t.Fatalf("UUID = %q, want %q", vm.UUID, execID)
+	}
+	if vm.CgroupID != execID {
+		t.Fatalf("CgroupID = %q, want %q", vm.CgroupID, execID)
+	}
+
+	wantScratch := filepath.Join("/tmp/aegis", "scratch-"+execID+".ext4")
+	wantSocket := filepath.Join("/tmp/aegis", "fc-"+execID+".sock")
+	wantVsock := filepath.Join("/tmp/aegis", "vsock-"+execID+".sock")
+	wantSerial := filepath.Join("/tmp/aegis", "serial-"+execID+".log")
+	if vm.ScratchPath != wantScratch || vm.SocketPath != wantSocket || vm.VsockPath != wantVsock || vm.SerialLogPath != wantSerial {
+		t.Fatalf("unexpected execution-owned paths: scratch=%q socket=%q vsock=%q serial=%q", vm.ScratchPath, vm.SocketPath, vm.VsockPath, vm.SerialLogPath)
+	}
+
+	for _, path := range []string{wantScratch, wantSocket, wantVsock, wantSerial} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected rebound path %s to exist: %v", path, err)
+		}
+		path := path
+		t.Cleanup(func() {
+			_ = os.Remove(path)
+		})
+	}
+	for _, oldPath := range []string{
+		filepath.Join("/tmp/aegis", "scratch-"+vm.AssetID+".ext4"),
+		filepath.Join("/tmp/aegis", "fc-"+vm.AssetID+".sock"),
+		filepath.Join("/tmp/aegis", "vsock-"+vm.AssetID+".sock"),
+		filepath.Join("/tmp/aegis", "serial-"+vm.AssetID+".log"),
+	} {
+		if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+			t.Fatalf("expected pooled-asset path %s to be gone, stat err=%v", oldPath, err)
+		}
 	}
 }
 

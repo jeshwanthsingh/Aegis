@@ -23,6 +23,7 @@ import (
 )
 
 type VMInstance struct {
+	AssetID        string
 	UUID           string
 	CgroupID       string
 	FirecrackerPID int
@@ -37,6 +38,22 @@ type VMInstance struct {
 }
 
 const scratchDir = "/tmp/aegis"
+
+func scratchDiskPath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("scratch-%s.ext4", id))
+}
+
+func firecrackerSocketPath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("fc-%s.sock", id))
+}
+
+func vsockSocketPath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("vsock-%s.sock", id))
+}
+
+func serialLogFilePath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("serial-%s.log", id))
+}
 
 func resolveFirecrackerBinary() string {
 	if bin := strings.TrimSpace(os.Getenv("AEGIS_FIRECRACKER_BIN")); bin != "" {
@@ -142,13 +159,13 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 		}
 	}
 
-	socketPath := fmt.Sprintf("%s/fc-%s.sock", scratchDir, uuid)
-	vsockPath := fmt.Sprintf("%s/vsock-%s.sock", scratchDir, uuid)
+	socketPath := firecrackerSocketPath(uuid)
+	vsockPath := vsockSocketPath(uuid)
 	kernelPath := filepath.Join(baseDir, "vmlinux")
 
 	cmd := exec.Command(resolveFirecrackerBinary(), "--api-sock", socketPath)
 	cmd.Env = []string{}
-	serialLogPath := fmt.Sprintf("%s/serial-%s.log", scratchDir, uuid)
+	serialLogPath := serialLogFilePath(uuid)
 	serialLog, _ := os.OpenFile(serialLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	cmd.Stdout = serialLog
 	cmd.Stderr = serialLog
@@ -163,6 +180,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	observability.Info("rootfs_selected", observability.Fields{"execution_id": uuid, "rootfs_path": rootfsPath})
 
 	vm := &VMInstance{
+		AssetID:        uuid,
 		UUID:           uuid,
 		CgroupID:       uuid,
 		FirecrackerPID: pid,
@@ -253,6 +271,89 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	vm.GuestCID = guestCID
 	return vm, nil
+}
+
+func (vm *VMInstance) ClaimExecutionIdentity(executionID string) error {
+	if vm == nil {
+		return errors.New("vm is nil")
+	}
+	executionID = strings.TrimSpace(executionID)
+	if executionID == "" {
+		return errors.New("execution identity is empty")
+	}
+	if vm.AssetID == "" {
+		vm.AssetID = vm.UUID
+	}
+	if vm.UUID == executionID {
+		vm.CgroupID = executionID
+		return nil
+	}
+
+	type renameStep struct {
+		label       string
+		currentPath *string
+		targetPath  string
+		required    bool
+	}
+
+	steps := []renameStep{
+		{label: "firecracker socket", currentPath: &vm.SocketPath, targetPath: firecrackerSocketPath(executionID), required: true},
+		{label: "vsock socket", currentPath: &vm.VsockPath, targetPath: vsockSocketPath(executionID), required: true},
+		{label: "serial log", currentPath: &vm.SerialLogPath, targetPath: serialLogFilePath(executionID), required: false},
+	}
+	if !vm.IsPersistent {
+		steps = append([]renameStep{{label: "scratch", currentPath: &vm.ScratchPath, targetPath: scratchDiskPath(executionID), required: true}}, steps...)
+	}
+
+	type renamedPath struct {
+		currentPath *string
+		from        string
+		to          string
+	}
+	renamed := make([]renamedPath, 0, len(steps))
+	rollback := func() {
+		for i := len(renamed) - 1; i >= 0; i-- {
+			_ = os.Rename(renamed[i].to, renamed[i].from)
+			*renamed[i].currentPath = renamed[i].from
+		}
+	}
+
+	for _, step := range steps {
+		if step.currentPath == nil {
+			continue
+		}
+		current := strings.TrimSpace(*step.currentPath)
+		target := strings.TrimSpace(step.targetPath)
+		if current == "" {
+			if step.required {
+				rollback()
+				return fmt.Errorf("%s path missing for execution claim", step.label)
+			}
+			*step.currentPath = target
+			continue
+		}
+		if target == "" || current == target {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			rollback()
+			return fmt.Errorf("prepare %s path: %w", step.label, err)
+		}
+		if err := os.Rename(current, target); err != nil {
+			if errors.Is(err, os.ErrNotExist) && !step.required {
+				*step.currentPath = target
+				continue
+			}
+			rollback()
+			return fmt.Errorf("rebind %s from %s to %s: %w", step.label, current, target, err)
+		}
+		*step.currentPath = target
+		renamed = append(renamed, renamedPath{currentPath: step.currentPath, from: current, to: target})
+	}
+
+	vm.UUID = executionID
+	vm.CgroupID = executionID
+	return nil
 }
 
 func (vm *VMInstance) Kill() error {
