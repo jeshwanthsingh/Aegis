@@ -129,6 +129,29 @@ func resolveCgroupMemoryMaxMB(defaultMB int) int {
 	return defaultMB
 }
 
+type EffectiveCgroupLimits struct {
+	MemoryMaxMB      int
+	MemoryHighMB     int
+	PidsMax          int
+	CPUMax           string
+	SwapMax          string
+	AppliedOverrides []string
+}
+
+func ResolveCgroupLimits(resources policy.ResourcePolicy) EffectiveCgroupLimits {
+	limits := EffectiveCgroupLimits{
+		MemoryMaxMB: resolveCgroupMemoryMaxMB(resources.MemoryMaxMB),
+		PidsMax:     resources.PidsMax,
+		CPUMax:      fmt.Sprintf("%d 100000", resources.CPUPercent*1000),
+		SwapMax:     "0",
+	}
+	limits.MemoryHighMB = limits.MemoryMaxMB / 2
+	if limits.MemoryMaxMB != resources.MemoryMaxMB {
+		limits.AppliedOverrides = append(limits.AppliedOverrides, "AEGIS_VM_MEMORY_MB")
+	}
+	return limits
+}
+
 type NetworkConfig struct {
 	TapName      string
 	SubnetCIDR   string
@@ -156,22 +179,22 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *tel
 		return fmt.Errorf("create cgroup dir: %w", err)
 	}
 
-	memoryMaxMB := resolveCgroupMemoryMaxMB(resources.MemoryMaxMB)
-	if memoryMaxMB != resources.MemoryMaxMB {
-		observability.Info("cgroup_memory_override", observability.Fields{"execution_id": uuid, "policy_memory_mb": resources.MemoryMaxMB, "effective_memory_mb": memoryMaxMB})
+	limits := ResolveCgroupLimits(resources)
+	if limits.MemoryMaxMB != resources.MemoryMaxMB {
+		observability.Info("cgroup_memory_override", observability.Fields{"execution_id": uuid, "policy_memory_mb": resources.MemoryMaxMB, "effective_memory_mb": limits.MemoryMaxMB})
 	}
 
-	limits := []struct {
+	writes := []struct {
 		file  string
 		value string
 	}{
-		{"memory.max", fmt.Sprintf("%dM", memoryMaxMB)},
-		{"memory.high", fmt.Sprintf("%dM", memoryMaxMB/2)},
-		{"pids.max", strconv.Itoa(resources.PidsMax)},
-		{"cpu.max", fmt.Sprintf("%d 100000", resources.CPUPercent*1000)},
-		{"memory.swap.max", "0"},
+		{"memory.max", fmt.Sprintf("%dM", limits.MemoryMaxMB)},
+		{"memory.high", fmt.Sprintf("%dM", limits.MemoryHighMB)},
+		{"pids.max", strconv.Itoa(limits.PidsMax)},
+		{"cpu.max", limits.CPUMax},
+		{"memory.swap.max", limits.SwapMax},
 	}
-	for _, w := range limits {
+	for _, w := range writes {
 		path := filepath.Join(cgPath, w.file)
 		if err := os.WriteFile(path, []byte(w.value), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", w.file, err)
@@ -182,11 +205,11 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *tel
 		return fmt.Errorf("write cgroup.procs: %w", err)
 	}
 	emitIfBus(bus, telemetry.KindCgroupConfigured, telemetry.CgroupConfiguredData{
-		MemoryMax:  limits[0].value,
-		MemoryHigh: limits[1].value,
-		PidsMax:    limits[2].value,
-		CpuMax:     limits[3].value,
-		SwapMax:    limits[4].value,
+		MemoryMax:  writes[0].value,
+		MemoryHigh: writes[1].value,
+		PidsMax:    writes[2].value,
+		CpuMax:     writes[3].value,
+		SwapMax:    writes[4].value,
 	})
 	return nil
 }

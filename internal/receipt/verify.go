@@ -175,6 +175,11 @@ func validateSemanticReceipt(statement Statement) error {
 	if predicate.ResultClass != ResultClassReconciled && strings.TrimSpace(predicate.ExecutionStatus) == "reconciled" {
 		return verificationError(FailureClassSemanticReceipt, "only reconciled receipts may use execution_status=reconciled")
 	}
+	if predicate.Runtime != nil {
+		if err := validateRuntimeEnvelope(predicate.Runtime); err != nil {
+			return verificationError(FailureClassSemanticReceipt, "runtime envelope invalid: %v", err)
+		}
+	}
 	if predicate.GovernedActions != nil {
 		if predicate.GovernedActions.Count != len(predicate.GovernedActions.Actions) {
 			return verificationError(FailureClassSemanticReceipt, "governed action raw count mismatch: count=%d actions=%d", predicate.GovernedActions.Count, len(predicate.GovernedActions.Actions))
@@ -204,6 +209,54 @@ func validateSemanticReceipt(statement Statement) error {
 			if total != predicate.GovernedActions.Count {
 				return verificationError(FailureClassSemanticReceipt, "normalized governed action count mismatch: normalized=%d raw=%d", total, predicate.GovernedActions.Count)
 			}
+		}
+	}
+	return nil
+}
+
+func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
+	if runtime == nil {
+		return nil
+	}
+	if runtime.VCPUCount < 0 {
+		return fmt.Errorf("vcpu_count must be >= 0")
+	}
+	if runtime.MemoryMB < 0 {
+		return fmt.Errorf("memory_mb must be >= 0")
+	}
+	for _, override := range runtime.AppliedOverrides {
+		if strings.TrimSpace(override) == "" {
+			return fmt.Errorf("applied_overrides must not contain blank values")
+		}
+	}
+	if runtime.Cgroup != nil {
+		if runtime.Cgroup.MemoryMaxMB < 0 {
+			return fmt.Errorf("cgroup memory_max_mb must be >= 0")
+		}
+		if runtime.Cgroup.MemoryHighMB < 0 {
+			return fmt.Errorf("cgroup memory_high_mb must be >= 0")
+		}
+		if runtime.Cgroup.MemoryHighMB > 0 && runtime.Cgroup.MemoryMaxMB > 0 && runtime.Cgroup.MemoryHighMB > runtime.Cgroup.MemoryMaxMB {
+			return fmt.Errorf("cgroup memory_high_mb cannot exceed memory_max_mb")
+		}
+		if runtime.Cgroup.PidsMax < 0 {
+			return fmt.Errorf("cgroup pids_max must be >= 0")
+		}
+	}
+	if runtime.Network != nil {
+		switch strings.TrimSpace(runtime.Network.Mode) {
+		case "none", "isolated", "allowlist":
+		default:
+			return fmt.Errorf("unexpected network mode: %s", runtime.Network.Mode)
+		}
+		if !runtime.Network.Enabled && runtime.Network.Mode != "none" {
+			return fmt.Errorf("disabled network must use mode none")
+		}
+		if runtime.Network.Enabled && runtime.Network.Mode == "none" {
+			return fmt.Errorf("enabled network cannot use mode none")
+		}
+		if runtime.Network.Mode != "allowlist" && len(runtime.Network.Presets) > 0 {
+			return fmt.Errorf("network presets require allowlist mode")
 		}
 	}
 	return nil

@@ -1,6 +1,7 @@
 package receipt
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -31,6 +32,12 @@ func TestBuildPredicateAndStatement(t *testing.T) {
 	}
 	if receipt.Statement.Predicate.PointDecisions.DenyCount != 1 {
 		t.Fatalf("unexpected point summary: %+v", receipt.Statement.Predicate.PointDecisions)
+	}
+	if receipt.Statement.Predicate.Runtime == nil {
+		t.Fatal("expected runtime envelope")
+	}
+	if receipt.Statement.Predicate.Runtime.Profile != "standard" || receipt.Statement.Predicate.Runtime.MemoryMB != 768 {
+		t.Fatalf("unexpected runtime envelope: %+v", receipt.Statement.Predicate.Runtime)
 	}
 }
 
@@ -271,10 +278,35 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		"attestation=absent",
 		"divergence_verdict=kill_candidate",
 		"artifact_count=0",
+		"runtime_profile=standard",
+		"runtime_vcpu_count=2",
+		"runtime_memory_mb=768",
+		"runtime_cgroup_memory_max_mb=896",
+		"runtime_network_mode=allowlist",
+		"runtime_broker_enabled=true",
+		"runtime_applied_overrides=AEGIS_VM_MEMORY_MB",
 	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
+	}
+}
+
+func TestVerifySignedReceiptRejectsInvalidRuntimeEnvelope(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.Runtime.Network.Mode = "broken"
+	payload, err := json.Marshal(signed.Statement)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	signed.Envelope.Payload = base64.StdEncoding.EncodeToString(payload)
+	signed.Envelope.Signatures[0].Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, pae(PayloadType, payload)))
+	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err == nil {
+		t.Fatal("expected invalid runtime envelope verification failure")
 	}
 }
 
@@ -435,6 +467,25 @@ func testReceiptInput() Input {
 		FinishedAt:      finished,
 		IntentRaw:       []byte(`{"version":"v1","execution_id":"exec_123"}`),
 		Outcome:         Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
+		Runtime: &RuntimeEnvelope{
+			Profile:   "standard",
+			VCPUCount: 2,
+			MemoryMB:  768,
+			Cgroup: &RuntimeCgroupEnvelope{
+				MemoryMaxMB:  896,
+				MemoryHighMB: 448,
+				PidsMax:      100,
+				CPUMax:       "50000 100000",
+				SwapMax:      "0",
+			},
+			Network: &RuntimeNetworkEnvelope{
+				Enabled: true,
+				Mode:    "allowlist",
+				Presets: []string{"npm", "pypi"},
+			},
+			Broker:           &RuntimeBrokerEnvelope{Enabled: true},
+			AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},
+		},
 		TelemetryEvents: []telemetry.Event{{ExecID: "exec_123", Kind: telemetry.KindRuntimeEvent, Data: runtimeEvent}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointAllow}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointDeny}, {ExecID: "exec_123", Kind: telemetry.KindPolicyDivergence, Data: divergence}, {ExecID: "exec_123", Kind: telemetry.KindGovernedAction, Data: governedAction}},
 		Attributes:      map[string]string{"mode": "test"},
 	}

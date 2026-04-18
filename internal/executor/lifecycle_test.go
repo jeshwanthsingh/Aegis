@@ -9,12 +9,31 @@ import (
 	"sync"
 	"testing"
 
+	"aegis/internal/policy"
 	"aegis/internal/telemetry"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
 
 var allowlistHookMu sync.Mutex
+
+func TestResolveCgroupLimitsUsesMemoryOverride(t *testing.T) {
+	t.Setenv("AEGIS_VM_MEMORY_MB", "768")
+
+	limits := ResolveCgroupLimits(policy.ResourcePolicy{MemoryMaxMB: 640, CPUPercent: 50, PidsMax: 100})
+	if limits.MemoryMaxMB != 768 {
+		t.Fatalf("MemoryMaxMB = %d, want 768", limits.MemoryMaxMB)
+	}
+	if limits.MemoryHighMB != 384 {
+		t.Fatalf("MemoryHighMB = %d, want 384", limits.MemoryHighMB)
+	}
+	if limits.PidsMax != 100 || limits.CPUMax != "50000 100000" || limits.SwapMax != "0" {
+		t.Fatalf("unexpected cgroup limits: %+v", limits)
+	}
+	if len(limits.AppliedOverrides) != 1 || limits.AppliedOverrides[0] != "AEGIS_VM_MEMORY_MB" {
+		t.Fatalf("unexpected overrides: %+v", limits.AppliedOverrides)
+	}
+}
 
 func TestBuildDNSResponseAllowedEmitsAllowAndRuleAddEvents(t *testing.T) {
 	t.Parallel()

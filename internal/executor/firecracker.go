@@ -23,18 +23,21 @@ import (
 )
 
 type VMInstance struct {
-	AssetID        string
-	UUID           string
-	CgroupID       string
-	FirecrackerPID int
-	SocketPath     string
-	VsockPath      string
-	ScratchPath    string
-	SerialLogPath  string
-	GuestCID       uint32
-	IsPersistent   bool
-	Network        *NetworkConfig
-	Cleanup        telemetry.CleanupDoneData
+	AssetID          string
+	UUID             string
+	CgroupID         string
+	FirecrackerPID   int
+	SocketPath       string
+	VsockPath        string
+	ScratchPath      string
+	SerialLogPath    string
+	GuestCID         uint32
+	IsPersistent     bool
+	Network          *NetworkConfig
+	Cleanup          telemetry.CleanupDoneData
+	VCPUCount        int
+	MemoryMB         int
+	AppliedOverrides []string
 }
 
 const scratchDir = "/tmp/aegis"
@@ -118,6 +121,23 @@ func resolveMemoryMB(profile policy.ComputeProfile) int {
 	return profile.MemoryMB
 }
 
+type EffectiveVMSpec struct {
+	VCPUCount        int
+	MemoryMB         int
+	AppliedOverrides []string
+}
+
+func ResolveVMSpec(profile policy.ComputeProfile) EffectiveVMSpec {
+	spec := EffectiveVMSpec{
+		VCPUCount: profile.VCPUCount,
+		MemoryMB:  resolveMemoryMB(profile),
+	}
+	if spec.MemoryMB != profile.MemoryMB {
+		spec.AppliedOverrides = append(spec.AppliedOverrides, "AEGIS_VM_MEMORY_MB")
+	}
+	return spec
+}
+
 func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*VMInstance, error) {
 	baseDir, err := resolveAssetsDir(assetsDir)
 	if err != nil {
@@ -179,22 +199,26 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	observability.Info("rootfs_selected", observability.Fields{"execution_id": uuid, "rootfs_path": rootfsPath})
 
+	vmSpec := ResolveVMSpec(profile)
+
 	vm := &VMInstance{
-		AssetID:        uuid,
-		UUID:           uuid,
-		CgroupID:       uuid,
-		FirecrackerPID: pid,
-		SocketPath:     socketPath,
-		VsockPath:      vsockPath,
-		ScratchPath:    scratchPath,
-		SerialLogPath:  serialLogPath,
-		IsPersistent:   isPersistent,
-		Network:        networkCfg,
+		AssetID:          uuid,
+		UUID:             uuid,
+		CgroupID:         uuid,
+		FirecrackerPID:   pid,
+		SocketPath:       socketPath,
+		VsockPath:        vsockPath,
+		ScratchPath:      scratchPath,
+		SerialLogPath:    serialLogPath,
+		IsPersistent:     isPersistent,
+		Network:          networkCfg,
+		VCPUCount:        vmSpec.VCPUCount,
+		MemoryMB:         vmSpec.MemoryMB,
+		AppliedOverrides: append([]string(nil), vmSpec.AppliedOverrides...),
 	}
 
-	memoryMB := resolveMemoryMB(profile)
-	if memoryMB != profile.MemoryMB {
-		observability.Info("vm_memory_override", observability.Fields{"execution_id": uuid, "profile_memory_mb": profile.MemoryMB, "effective_memory_mb": memoryMB})
+	if vmSpec.MemoryMB != profile.MemoryMB {
+		observability.Info("vm_memory_override", observability.Fields{"execution_id": uuid, "profile_memory_mb": profile.MemoryMB, "effective_memory_mb": vmSpec.MemoryMB})
 	}
 
 	client := unixClient(socketPath)
@@ -209,8 +233,8 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	}
 
 	if err := fcPUT(client, "http://localhost/machine-config", map[string]any{
-		"vcpu_count":   profile.VCPUCount,
-		"mem_size_mib": memoryMB,
+		"vcpu_count":   vmSpec.VCPUCount,
+		"mem_size_mib": vmSpec.MemoryMB,
 	}); err != nil {
 		return nil, fmt.Errorf("machine-config: %w", err)
 	}

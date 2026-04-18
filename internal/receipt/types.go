@@ -27,6 +27,7 @@ type Input struct {
 	FinishedAt      time.Time
 	IntentRaw       []byte
 	Outcome         Outcome
+	Runtime         *RuntimeEnvelope
 	TelemetryEvents []telemetry.Event
 	OutputArtifacts []Artifact
 	Attributes      map[string]string
@@ -96,6 +97,34 @@ type TrustPosture struct {
 	Limitations          []string    `json:"limitations,omitempty"`
 }
 
+type RuntimeEnvelope struct {
+	Profile          string                  `json:"profile,omitempty"`
+	VCPUCount        int                     `json:"vcpu_count,omitempty"`
+	MemoryMB         int                     `json:"memory_mb,omitempty"`
+	Cgroup           *RuntimeCgroupEnvelope  `json:"cgroup,omitempty"`
+	Network          *RuntimeNetworkEnvelope `json:"network,omitempty"`
+	Broker           *RuntimeBrokerEnvelope  `json:"broker,omitempty"`
+	AppliedOverrides []string                `json:"applied_overrides,omitempty"`
+}
+
+type RuntimeCgroupEnvelope struct {
+	MemoryMaxMB  int    `json:"memory_max_mb,omitempty"`
+	MemoryHighMB int    `json:"memory_high_mb,omitempty"`
+	PidsMax      int    `json:"pids_max,omitempty"`
+	CPUMax       string `json:"cpu_max,omitempty"`
+	SwapMax      string `json:"swap_max,omitempty"`
+}
+
+type RuntimeNetworkEnvelope struct {
+	Enabled bool     `json:"enabled"`
+	Mode    string   `json:"mode"`
+	Presets []string `json:"presets,omitempty"`
+}
+
+type RuntimeBrokerEnvelope struct {
+	Enabled bool `json:"enabled"`
+}
+
 type ExecutionReceiptPredicate struct {
 	Version            string                 `json:"version"`
 	ExecutionID        string                 `json:"execution_id"`
@@ -117,6 +146,7 @@ type ExecutionReceiptPredicate struct {
 	PointDecisions     PointDecisionSummary   `json:"point_decisions"`
 	Divergence         DivergenceSummary      `json:"divergence"`
 	Outcome            Outcome                `json:"outcome"`
+	Runtime            *RuntimeEnvelope       `json:"runtime,omitempty"`
 	Trust              TrustPosture           `json:"trust"`
 	Limitations        []string               `json:"limitations,omitempty"`
 	StartedAt          time.Time              `json:"started_at"`

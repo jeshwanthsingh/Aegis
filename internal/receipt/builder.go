@@ -82,6 +82,7 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		PointDecisions:     pointSummary,
 		Divergence:         divergenceSummary,
 		Outcome:            input.Outcome,
+		Runtime:            cloneRuntimeEnvelope(input.Runtime),
 		BrokerSummary:      brokerSummary,
 		GovernedActions:    governedSummary,
 		Trust:              trustPostureForSigner(signer),
@@ -91,6 +92,38 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		SignerKeyID:        signer.KeyID,
 		Metadata:           metadata,
 	}, runtimeEventCount, nil
+}
+
+func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
+	if runtime == nil {
+		return nil
+	}
+	cloned := &RuntimeEnvelope{
+		Profile:          runtime.Profile,
+		VCPUCount:        runtime.VCPUCount,
+		MemoryMB:         runtime.MemoryMB,
+		AppliedOverrides: append([]string(nil), runtime.AppliedOverrides...),
+	}
+	if runtime.Cgroup != nil {
+		cloned.Cgroup = &RuntimeCgroupEnvelope{
+			MemoryMaxMB:  runtime.Cgroup.MemoryMaxMB,
+			MemoryHighMB: runtime.Cgroup.MemoryHighMB,
+			PidsMax:      runtime.Cgroup.PidsMax,
+			CPUMax:       runtime.Cgroup.CPUMax,
+			SwapMax:      runtime.Cgroup.SwapMax,
+		}
+	}
+	if runtime.Network != nil {
+		cloned.Network = &RuntimeNetworkEnvelope{
+			Enabled: runtime.Network.Enabled,
+			Mode:    runtime.Network.Mode,
+			Presets: append([]string(nil), runtime.Network.Presets...),
+		}
+	}
+	if runtime.Broker != nil {
+		cloned.Broker = &RuntimeBrokerEnvelope{Enabled: runtime.Broker.Enabled}
+	}
+	return cloned
 }
 
 func policyDigestForReceipt(intentRaw []byte, events []telemetry.Event) string {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"aegis/internal/executor"
 	"aegis/internal/policy"
 	policycontract "aegis/internal/policy/contract"
 	"aegis/internal/receipt"
@@ -145,6 +146,46 @@ func TestReceiptAndExecutionHelpers(t *testing.T) {
 func TestEnforcementCallbackNilVM(t *testing.T) {
 	if enforcementCallback("exec-1", nil, nil) != nil {
 		t.Fatal("expected nil callback for nil VM")
+	}
+}
+
+func TestRuntimeEnvelopeForExecutionUsesEffectiveState(t *testing.T) {
+	vm := &executor.VMInstance{
+		VCPUCount:        2,
+		MemoryMB:         768,
+		AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},
+		Network: &executor.NetworkConfig{
+			Mode:    "allowlist",
+			Presets: []string{"pypi", "npm"},
+		},
+	}
+	cgroup := &executor.EffectiveCgroupLimits{
+		MemoryMaxMB:      896,
+		MemoryHighMB:     448,
+		PidsMax:          100,
+		CPUMax:           "50000 100000",
+		SwapMax:          "0",
+		AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},
+	}
+
+	runtime := runtimeEnvelopeForExecution(ExecuteRequest{Profile: "standard"}, vm, cgroup, true)
+	if runtime == nil {
+		t.Fatal("expected runtime envelope")
+	}
+	if runtime.Profile != "standard" || runtime.VCPUCount != 2 || runtime.MemoryMB != 768 {
+		t.Fatalf("unexpected runtime envelope core: %+v", runtime)
+	}
+	if runtime.Cgroup == nil || runtime.Cgroup.MemoryMaxMB != 896 || runtime.Cgroup.CPUMax != "50000 100000" {
+		t.Fatalf("unexpected cgroup envelope: %+v", runtime.Cgroup)
+	}
+	if runtime.Network == nil || !runtime.Network.Enabled || runtime.Network.Mode != "allowlist" {
+		t.Fatalf("unexpected network envelope: %+v", runtime.Network)
+	}
+	if runtime.Broker == nil || !runtime.Broker.Enabled {
+		t.Fatalf("unexpected broker envelope: %+v", runtime.Broker)
+	}
+	if got := strings.Join(runtime.AppliedOverrides, ","); got != "AEGIS_VM_MEMORY_MB" {
+		t.Fatalf("unexpected overrides: %q", got)
 	}
 }
 

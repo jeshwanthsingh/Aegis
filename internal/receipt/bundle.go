@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -323,6 +324,37 @@ func FormatSummary(statement Statement, verified bool) string {
 		}
 		if statement.Predicate.Denial.Marker != "" {
 			lines = append(lines, "denial_marker="+statement.Predicate.Denial.Marker)
+		}
+	}
+	if statement.Predicate.Runtime != nil {
+		lines = append(lines,
+			"runtime_profile="+defaultSummaryValue(statement.Predicate.Runtime.Profile),
+			fmt.Sprintf("runtime_vcpu_count=%d", statement.Predicate.Runtime.VCPUCount),
+			fmt.Sprintf("runtime_memory_mb=%d", statement.Predicate.Runtime.MemoryMB),
+		)
+		if statement.Predicate.Runtime.Cgroup != nil {
+			lines = append(lines,
+				fmt.Sprintf("runtime_cgroup_memory_max_mb=%d", statement.Predicate.Runtime.Cgroup.MemoryMaxMB),
+				fmt.Sprintf("runtime_cgroup_memory_high_mb=%d", statement.Predicate.Runtime.Cgroup.MemoryHighMB),
+				fmt.Sprintf("runtime_cgroup_pids_max=%d", statement.Predicate.Runtime.Cgroup.PidsMax),
+				"runtime_cgroup_cpu_max="+defaultSummaryValue(statement.Predicate.Runtime.Cgroup.CPUMax),
+				"runtime_cgroup_swap_max="+defaultSummaryValue(statement.Predicate.Runtime.Cgroup.SwapMax),
+			)
+		}
+		if statement.Predicate.Runtime.Network != nil {
+			lines = append(lines,
+				"runtime_network_mode="+defaultSummaryValue(statement.Predicate.Runtime.Network.Mode),
+				"runtime_network_enabled="+strconv.FormatBool(statement.Predicate.Runtime.Network.Enabled),
+			)
+			if len(statement.Predicate.Runtime.Network.Presets) > 0 {
+				lines = append(lines, "runtime_network_presets="+strings.Join(statement.Predicate.Runtime.Network.Presets, ","))
+			}
+		}
+		if statement.Predicate.Runtime.Broker != nil {
+			lines = append(lines, "runtime_broker_enabled="+strconv.FormatBool(statement.Predicate.Runtime.Broker.Enabled))
+		}
+		if len(statement.Predicate.Runtime.AppliedOverrides) > 0 {
+			lines = append(lines, "runtime_applied_overrides="+strings.Join(statement.Predicate.Runtime.AppliedOverrides, ","))
 		}
 	}
 	if statement.Predicate.BrokerSummary != nil {

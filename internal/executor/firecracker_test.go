@@ -3,6 +3,8 @@ package executor
 import (
 	"os"
 	"testing"
+
+	"aegis/internal/policy"
 )
 
 func TestVMInstanceClaimExecutionIdentityRenamesExecutionScopedResources(t *testing.T) {
@@ -114,5 +116,20 @@ func TestVMInstanceClaimExecutionIdentityPreservesPersistentWorkspacePath(t *tes
 	}
 	if vm.UUID != execID || vm.CgroupID != execID {
 		t.Fatalf("unexpected execution identity after persistent claim: UUID=%q CgroupID=%q want %q", vm.UUID, vm.CgroupID, execID)
+	}
+}
+
+func TestResolveVMSpecUsesMemoryOverride(t *testing.T) {
+	t.Setenv("AEGIS_VM_MEMORY_MB", "768")
+
+	spec := ResolveVMSpec(policy.ComputeProfile{VCPUCount: 2, MemoryMB: 512})
+	if spec.VCPUCount != 2 {
+		t.Fatalf("VCPUCount = %d, want 2", spec.VCPUCount)
+	}
+	if spec.MemoryMB != 768 {
+		t.Fatalf("MemoryMB = %d, want 768", spec.MemoryMB)
+	}
+	if len(spec.AppliedOverrides) != 1 || spec.AppliedOverrides[0] != "AEGIS_VM_MEMORY_MB" {
+		t.Fatalf("unexpected overrides: %+v", spec.AppliedOverrides)
 	}
 }
