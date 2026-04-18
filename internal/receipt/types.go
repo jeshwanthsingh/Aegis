@@ -26,6 +26,7 @@ type Input struct {
 	StartedAt       time.Time
 	FinishedAt      time.Time
 	IntentRaw       []byte
+	Policy          *PolicyEnvelope
 	Outcome         Outcome
 	Runtime         *RuntimeEnvelope
 	TelemetryEvents []telemetry.Event
@@ -125,6 +126,38 @@ type RuntimeBrokerEnvelope struct {
 	Enabled bool `json:"enabled"`
 }
 
+type PolicyIntentSource string
+
+const (
+	PolicyIntentSourceContract             PolicyIntentSource = "intent_contract"
+	PolicyIntentSourceCompiledCapabilities PolicyIntentSource = "compiled_capabilities"
+)
+
+type PolicyEnvelope struct {
+	Baseline BaselinePolicy      `json:"baseline"`
+	Intent   *IntentPolicyDigest `json:"intent,omitempty"`
+}
+
+type BaselinePolicy struct {
+	Language      string                 `json:"language"`
+	CodeSizeBytes int                    `json:"code_size_bytes"`
+	MaxCodeBytes  int                    `json:"max_code_bytes"`
+	TimeoutMs     int                    `json:"timeout_ms"`
+	MaxTimeoutMs  int                    `json:"max_timeout_ms"`
+	Profile       string                 `json:"profile,omitempty"`
+	Network       *BaselineNetworkPolicy `json:"network,omitempty"`
+}
+
+type BaselineNetworkPolicy struct {
+	Mode    string   `json:"mode"`
+	Presets []string `json:"presets,omitempty"`
+}
+
+type IntentPolicyDigest struct {
+	Digest string             `json:"digest"`
+	Source PolicyIntentSource `json:"source,omitempty"`
+}
+
 type ExecutionReceiptPredicate struct {
 	Version            string                 `json:"version"`
 	ExecutionID        string                 `json:"execution_id"`
@@ -140,6 +173,7 @@ type ExecutionReceiptPredicate struct {
 	PolicyDigest       string                 `json:"policy_digest,omitempty"`
 	IntentDigest       string                 `json:"intent_digest,omitempty"`
 	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
+	Policy             *PolicyEnvelope        `json:"policy,omitempty"`
 	EvidenceDigest     string                 `json:"evidence_digest"`
 	EvidenceDigestAlgo string                 `json:"evidence_digest_algo"`
 	RuntimeEventCount  int                    `json:"runtime_event_count"`

@@ -823,7 +823,7 @@ func installHandlerRuntimeStubs(t *testing.T) {
 		return &models.Result{Stdout: "ok\n", ExitCode: 0, ExitReason: "completed", DurationMs: 7, StdoutBytes: 3}, nil
 	}
 	startCgroupPollerFunc = func(context.Context, *telemetry.Bus, string, time.Duration) func() { return func() {} }
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		return receipt.SignedReceipt{}, receipt.BundlePaths{
 			ProofDir:      "/tmp/aegis/proofs/exec",
 			ReceiptPath:   "/tmp/aegis/proofs/exec/receipt.dsse.json",
@@ -963,7 +963,7 @@ func TestExecuteHandlerAuthFailure(t *testing.T) {
 
 func TestExecuteHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
@@ -1181,7 +1181,7 @@ func TestStreamHandlerInvalidBody(t *testing.T) {
 
 func TestStreamHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
@@ -1331,7 +1331,7 @@ func TestStreamHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}
@@ -1572,7 +1572,7 @@ func TestExecuteHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}

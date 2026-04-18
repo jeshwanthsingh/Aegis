@@ -189,6 +189,56 @@ func TestRuntimeEnvelopeForExecutionUsesEffectiveState(t *testing.T) {
 	}
 }
 
+func TestPolicyEvidenceForExecutionBareRun(t *testing.T) {
+	pol := policy.Default()
+	req := ExecuteRequest{
+		Lang:      "bash",
+		Code:      "echo hello",
+		TimeoutMs: 5000,
+		Profile:   "nano",
+	}
+	policyEvidence, err := policyEvidenceForExecution(req, pol, req.TimeoutMs)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+	if policyEvidence == nil {
+		t.Fatal("expected policy evidence")
+	}
+	if policyEvidence.Intent != nil {
+		t.Fatalf("expected no intent extension, got %+v", policyEvidence.Intent)
+	}
+	if policyEvidence.Baseline.Language != "bash" || policyEvidence.Baseline.CodeSizeBytes != len(req.Code) {
+		t.Fatalf("unexpected baseline policy: %+v", policyEvidence.Baseline)
+	}
+	if policyEvidence.Baseline.Network == nil || policyEvidence.Baseline.Network.Mode != "none" {
+		t.Fatalf("unexpected baseline network policy: %+v", policyEvidence.Baseline.Network)
+	}
+}
+
+func TestPolicyEvidenceForExecutionIntentExtendsBaseline(t *testing.T) {
+	pol := policy.Default()
+	req := ExecuteRequest{
+		Lang:      "python",
+		Code:      "print('hi')",
+		TimeoutMs: 4000,
+		Profile:   "standard",
+		Intent:    json.RawMessage(`{"version":"v1","execution_id":"11111111-1111-4111-8111-111111111111","workflow_id":"wf-1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":["/workspace/out"],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}`),
+	}
+	policyEvidence, err := policyEvidenceForExecution(req, pol, req.TimeoutMs)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+	if policyEvidence == nil || policyEvidence.Intent == nil {
+		t.Fatalf("expected intent policy extension: %+v", policyEvidence)
+	}
+	if policyEvidence.Intent.Source != receipt.PolicyIntentSourceContract {
+		t.Fatalf("unexpected intent source: %q", policyEvidence.Intent.Source)
+	}
+	if policyEvidence.Baseline.Profile != "standard" || policyEvidence.Baseline.TimeoutMs != 4000 {
+		t.Fatalf("unexpected baseline policy: %+v", policyEvidence.Baseline)
+	}
+}
+
 func TestGuestPidsLimit(t *testing.T) {
 	intent := &policycontract.IntentContract{ProcessScope: policycontract.ProcessScope{AllowShell: false}}
 	if got := guestPidsLimit("python", nil, 32); got != 8 {

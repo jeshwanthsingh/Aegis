@@ -39,6 +39,12 @@ func TestBuildPredicateAndStatement(t *testing.T) {
 	if receipt.Statement.Predicate.Runtime.Profile != "standard" || receipt.Statement.Predicate.Runtime.MemoryMB != 768 {
 		t.Fatalf("unexpected runtime envelope: %+v", receipt.Statement.Predicate.Runtime)
 	}
+	if receipt.Statement.Predicate.Policy == nil {
+		t.Fatal("expected policy envelope")
+	}
+	if receipt.Statement.Predicate.Policy.Baseline.Language != "python" || receipt.Statement.Predicate.Policy.Baseline.TimeoutMs != 5000 {
+		t.Fatalf("unexpected policy envelope: %+v", receipt.Statement.Predicate.Policy)
+	}
 }
 
 func TestDSSEEnvelopeGenerationAndVerify(t *testing.T) {
@@ -255,17 +261,29 @@ func TestBundleArtifactsIncludeManifestWithoutSweepingWorkspace(t *testing.T) {
 
 func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 	signer := mustDevSigner(t)
-	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	input := testReceiptInput()
+	receipt, err := BuildSignedReceipt(input, signer)
 	if err != nil {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
 	summary := FormatSummary(receipt.Statement, true)
+	expectedPolicyDigest := policyDigestForReceipt(input.Policy)
 	for _, needle := range []string{
 		"verification=verified",
 		"schema_version=v1",
 		"execution_id=exec_123",
 		"backend=firecracker",
-		"policy_digest=policy-digest",
+		"policy_digest=" + expectedPolicyDigest,
+		"policy_language=python",
+		"policy_code_size_bytes=11",
+		"policy_max_code_bytes=65536",
+		"policy_timeout_ms=5000",
+		"policy_max_timeout_ms=10000",
+		"policy_profile=standard",
+		"policy_network_mode=allowlist",
+		"policy_network_presets=npm,pypi",
+		"policy_intent_digest=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"policy_intent_source=intent_contract",
 		"signer_key_id=" + signer.KeyID,
 		"signing_mode=dev",
 		"intent_digest=",
@@ -310,14 +328,74 @@ func TestVerifySignedReceiptRejectsInvalidRuntimeEnvelope(t *testing.T) {
 	}
 }
 
-func TestBuildPredicateIncludesTopLevelPolicyDigest(t *testing.T) {
+func TestVerifySignedReceiptRejectsInvalidPolicyEnvelope(t *testing.T) {
 	signer := mustDevSigner(t)
-	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
 	if err != nil {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
-	if receipt.Statement.Predicate.PolicyDigest != "policy-digest" {
+	signed.Statement.Predicate.Policy.Baseline.TimeoutMs = 20000
+	payload, err := json.Marshal(signed.Statement)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	signed.Envelope.Payload = base64.StdEncoding.EncodeToString(payload)
+	signed.Envelope.Signatures[0].Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, pae(PayloadType, payload)))
+	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err == nil {
+		t.Fatal("expected invalid policy envelope verification failure")
+	}
+}
+
+func TestBuildPredicateIncludesTopLevelPolicyDigest(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receipt.Statement.Predicate.PolicyDigest != policyDigestForReceipt(input.Policy) {
 		t.Fatalf("policy digest = %q", receipt.Statement.Predicate.PolicyDigest)
+	}
+}
+
+func TestBuildPredicateBareExecutionIncludesBaselinePolicyDigest(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.IntentRaw = nil
+	input.Policy.Intent = nil
+	receiptValue, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receiptValue.Statement.Predicate.Policy == nil {
+		t.Fatal("expected policy envelope")
+	}
+	if receiptValue.Statement.Predicate.Policy.Intent != nil {
+		t.Fatalf("expected no intent policy extension, got %+v", receiptValue.Statement.Predicate.Policy.Intent)
+	}
+	if receiptValue.Statement.Predicate.PolicyDigest == "" {
+		t.Fatal("expected non-empty policy digest")
+	}
+	if receiptValue.Statement.Predicate.Policy.Baseline.Profile != "standard" {
+		t.Fatalf("unexpected baseline policy: %+v", receiptValue.Statement.Predicate.Policy.Baseline)
+	}
+}
+
+func TestBuildPredicatePolicyDigestChangesWhenBaselinePolicyChanges(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	first, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt(first): %v", err)
+	}
+	changed := testReceiptInput()
+	changed.Policy.Baseline.TimeoutMs = 7000
+	second, err := BuildSignedReceipt(changed, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt(second): %v", err)
+	}
+	if first.Statement.Predicate.PolicyDigest == second.Statement.Predicate.PolicyDigest {
+		t.Fatalf("expected policy digest to change when baseline policy changes: %q", first.Statement.Predicate.PolicyDigest)
 	}
 }
 
@@ -466,7 +544,25 @@ func testReceiptInput() Input {
 		StartedAt:       started,
 		FinishedAt:      finished,
 		IntentRaw:       []byte(`{"version":"v1","execution_id":"exec_123"}`),
-		Outcome:         Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
+		Policy: &PolicyEnvelope{
+			Baseline: BaselinePolicy{
+				Language:      "python",
+				CodeSizeBytes: 11,
+				MaxCodeBytes:  65536,
+				TimeoutMs:     5000,
+				MaxTimeoutMs:  10000,
+				Profile:       "standard",
+				Network: &BaselineNetworkPolicy{
+					Mode:    "allowlist",
+					Presets: []string{"npm", "pypi"},
+				},
+			},
+			Intent: &IntentPolicyDigest{
+				Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				Source: PolicyIntentSourceContract,
+			},
+		},
+		Outcome: Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
 		Runtime: &RuntimeEnvelope{
 			Profile:   "standard",
 			VCPUCount: 2,

@@ -10,6 +10,8 @@
     "execution_id",
     "backend",
     "result_class",
+    "policy_digest",
+    "policy",
     "evidence_digest",
     "evidence_digest_algo",
     "runtime_event_count",
@@ -77,6 +79,9 @@
     },
     "intent_digest_algo": {
       "$ref": "#/$defs/non_empty_string"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy_envelope"
     },
     "evidence_digest": {
       "$ref": "#/$defs/digest_hex"
@@ -241,6 +246,98 @@
         },
         "OutputTruncated": {
           "type": "boolean"
+        }
+      }
+    },
+    "policy_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline"
+      ],
+      "properties": {
+        "baseline": {
+          "$ref": "#/$defs/baseline_policy"
+        },
+        "intent": {
+          "$ref": "#/$defs/intent_policy_digest"
+        }
+      }
+    },
+    "baseline_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "language",
+        "code_size_bytes",
+        "max_code_bytes",
+        "timeout_ms",
+        "max_timeout_ms"
+      ],
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "code_size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_code_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profile": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "network": {
+          "$ref": "#/$defs/baseline_network_policy"
+        }
+      }
+    },
+    "baseline_network_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "isolated",
+            "allowlist"
+          ]
+        },
+        "presets": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "intent_policy_digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest_hex"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "intent_contract",
+            "compiled_capabilities"
+          ]
         }
       }
     },

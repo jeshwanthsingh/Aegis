@@ -314,6 +314,28 @@ func FormatSummary(statement Statement, verified bool) string {
 		fmt.Sprintf("artifact_count=%d", len(statement.Subject)),
 		"artifacts=" + strings.Join(subjects, "; "),
 	}
+	if statement.Predicate.Policy != nil {
+		lines = append(lines,
+			"policy_language="+defaultSummaryValue(statement.Predicate.Policy.Baseline.Language),
+			fmt.Sprintf("policy_code_size_bytes=%d", statement.Predicate.Policy.Baseline.CodeSizeBytes),
+			fmt.Sprintf("policy_max_code_bytes=%d", statement.Predicate.Policy.Baseline.MaxCodeBytes),
+			fmt.Sprintf("policy_timeout_ms=%d", statement.Predicate.Policy.Baseline.TimeoutMs),
+			fmt.Sprintf("policy_max_timeout_ms=%d", statement.Predicate.Policy.Baseline.MaxTimeoutMs),
+			"policy_profile="+defaultSummaryValue(statement.Predicate.Policy.Baseline.Profile),
+		)
+		if statement.Predicate.Policy.Baseline.Network != nil {
+			lines = append(lines, "policy_network_mode="+defaultSummaryValue(statement.Predicate.Policy.Baseline.Network.Mode))
+			if len(statement.Predicate.Policy.Baseline.Network.Presets) > 0 {
+				lines = append(lines, "policy_network_presets="+strings.Join(statement.Predicate.Policy.Baseline.Network.Presets, ","))
+			}
+		}
+		if statement.Predicate.Policy.Intent != nil {
+			lines = append(lines, "policy_intent_digest="+defaultSummaryValue(statement.Predicate.Policy.Intent.Digest))
+			if statement.Predicate.Policy.Intent.Source != "" {
+				lines = append(lines, "policy_intent_source="+string(statement.Predicate.Policy.Intent.Source))
+			}
+		}
+	}
 	if statement.Predicate.WorkspaceID != "" {
 		lines = append(lines, "workspace_id="+statement.Predicate.WorkspaceID)
 	}

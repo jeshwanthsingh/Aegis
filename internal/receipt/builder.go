@@ -11,9 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"aegis/internal/governance"
 	"aegis/internal/models"
-	policycontract "aegis/internal/policy/contract"
 	"aegis/internal/telemetry"
 )
 
@@ -73,9 +71,10 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		SemanticsMode:      SemanticsModeExplicitV1,
 		ResultClass:        resultClass,
 		Denial:             denial,
-		PolicyDigest:       policyDigestForReceipt(input.IntentRaw, input.TelemetryEvents),
+		PolicyDigest:       policyDigestForReceipt(input.Policy),
 		IntentDigest:       intentDigest,
 		IntentDigestAlgo:   intentAlgo,
+		Policy:             clonePolicyEnvelope(input.Policy),
 		EvidenceDigest:     evidenceDigest,
 		EvidenceDigestAlgo: "sha256",
 		RuntimeEventCount:  runtimeEventCount,
@@ -92,6 +91,35 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		SignerKeyID:        signer.KeyID,
 		Metadata:           metadata,
 	}, runtimeEventCount, nil
+}
+
+func clonePolicyEnvelope(policy *PolicyEnvelope) *PolicyEnvelope {
+	if policy == nil {
+		return nil
+	}
+	cloned := &PolicyEnvelope{
+		Baseline: BaselinePolicy{
+			Language:      policy.Baseline.Language,
+			CodeSizeBytes: policy.Baseline.CodeSizeBytes,
+			MaxCodeBytes:  policy.Baseline.MaxCodeBytes,
+			TimeoutMs:     policy.Baseline.TimeoutMs,
+			MaxTimeoutMs:  policy.Baseline.MaxTimeoutMs,
+			Profile:       policy.Baseline.Profile,
+		},
+	}
+	if policy.Baseline.Network != nil {
+		cloned.Baseline.Network = &BaselineNetworkPolicy{
+			Mode:    policy.Baseline.Network.Mode,
+			Presets: append([]string(nil), policy.Baseline.Network.Presets...),
+		}
+	}
+	if policy.Intent != nil {
+		cloned.Intent = &IntentPolicyDigest{
+			Digest: policy.Intent.Digest,
+			Source: policy.Intent.Source,
+		}
+	}
+	return cloned
 }
 
 func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
@@ -126,33 +154,16 @@ func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
 	return cloned
 }
 
-func policyDigestForReceipt(intentRaw []byte, events []telemetry.Event) string {
-	digests := map[string]struct{}{}
-	for _, event := range events {
-		if event.Kind != telemetry.KindPolicyPointDecision {
-			continue
-		}
-		var point models.PolicyPointDecision
-		if err := json.Unmarshal(event.Data, &point); err != nil {
-			continue
-		}
-		if digest := strings.TrimSpace(point.Metadata["policy_digest"]); digest != "" {
-			digests[digest] = struct{}{}
-		}
-	}
-	if len(digests) == 1 {
-		for digest := range digests {
-			return digest
-		}
-	}
-	if len(intentRaw) == 0 {
+func policyDigestForReceipt(policy *PolicyEnvelope) string {
+	if policy == nil {
 		return ""
 	}
-	intent, err := policycontract.LoadIntentContractJSON(intentRaw)
+	canonical, err := json.Marshal(clonePolicyEnvelope(policy))
 	if err != nil {
 		return ""
 	}
-	return governance.DigestIntent(intent)
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
 }
 
 func buildSubjects(artifacts []Artifact) []StatementSubject {

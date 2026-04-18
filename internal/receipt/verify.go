@@ -180,6 +180,14 @@ func validateSemanticReceipt(statement Statement) error {
 			return verificationError(FailureClassSemanticReceipt, "runtime envelope invalid: %v", err)
 		}
 	}
+	if predicate.Policy != nil {
+		if err := validatePolicyEnvelope(predicate.Policy); err != nil {
+			return verificationError(FailureClassSemanticReceipt, "policy envelope invalid: %v", err)
+		}
+		if strings.TrimSpace(predicate.PolicyDigest) == "" {
+			return verificationError(FailureClassSemanticReceipt, "policy_digest is required when policy evidence is present")
+		}
+	}
 	if predicate.GovernedActions != nil {
 		if predicate.GovernedActions.Count != len(predicate.GovernedActions.Actions) {
 			return verificationError(FailureClassSemanticReceipt, "governed action raw count mismatch: count=%d actions=%d", predicate.GovernedActions.Count, len(predicate.GovernedActions.Actions))
@@ -209,6 +217,54 @@ func validateSemanticReceipt(statement Statement) error {
 			if total != predicate.GovernedActions.Count {
 				return verificationError(FailureClassSemanticReceipt, "normalized governed action count mismatch: normalized=%d raw=%d", total, predicate.GovernedActions.Count)
 			}
+		}
+	}
+	return nil
+}
+
+func validatePolicyEnvelope(policy *PolicyEnvelope) error {
+	if policy == nil {
+		return nil
+	}
+	if strings.TrimSpace(policy.Baseline.Language) == "" {
+		return fmt.Errorf("baseline language is required")
+	}
+	if policy.Baseline.CodeSizeBytes < 0 {
+		return fmt.Errorf("baseline code_size_bytes must be >= 0")
+	}
+	if policy.Baseline.MaxCodeBytes <= 0 {
+		return fmt.Errorf("baseline max_code_bytes must be > 0")
+	}
+	if policy.Baseline.CodeSizeBytes > policy.Baseline.MaxCodeBytes {
+		return fmt.Errorf("baseline code_size_bytes cannot exceed max_code_bytes")
+	}
+	if policy.Baseline.TimeoutMs < 0 {
+		return fmt.Errorf("baseline timeout_ms must be >= 0")
+	}
+	if policy.Baseline.MaxTimeoutMs <= 0 {
+		return fmt.Errorf("baseline max_timeout_ms must be > 0")
+	}
+	if policy.Baseline.TimeoutMs > policy.Baseline.MaxTimeoutMs {
+		return fmt.Errorf("baseline timeout_ms cannot exceed max_timeout_ms")
+	}
+	if policy.Baseline.Network != nil {
+		switch strings.TrimSpace(policy.Baseline.Network.Mode) {
+		case "none", "isolated", "allowlist":
+		default:
+			return fmt.Errorf("unexpected baseline network mode: %s", policy.Baseline.Network.Mode)
+		}
+		if policy.Baseline.Network.Mode != "allowlist" && len(policy.Baseline.Network.Presets) > 0 {
+			return fmt.Errorf("baseline network presets require allowlist mode")
+		}
+	}
+	if policy.Intent != nil {
+		if strings.TrimSpace(policy.Intent.Digest) == "" {
+			return fmt.Errorf("intent digest is required when intent policy evidence is present")
+		}
+		switch policy.Intent.Source {
+		case "", PolicyIntentSourceContract, PolicyIntentSourceCompiledCapabilities:
+		default:
+			return fmt.Errorf("unexpected intent source: %s", policy.Intent.Source)
 		}
 	}
 	return nil

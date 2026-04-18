@@ -14,6 +14,7 @@ import (
 	"aegis/internal/broker"
 	"aegis/internal/capabilities"
 	"aegis/internal/executor"
+	"aegis/internal/governance"
 	"aegis/internal/models"
 	"aegis/internal/observability"
 	"aegis/internal/policy"
@@ -243,6 +244,48 @@ func runtimeEnvelopeForExecution(req ExecuteRequest, vm *executor.VMInstance, cg
 		runtime.AppliedOverrides = nil
 	}
 	return runtime
+}
+
+func policyEvidenceForExecution(req ExecuteRequest, pol *policy.Policy, timeoutMs int) (*receipt.PolicyEnvelope, error) {
+	if pol == nil {
+		return nil, nil
+	}
+	policyEvidence := &receipt.PolicyEnvelope{
+		Baseline: receipt.BaselinePolicy{
+			Language:      strings.TrimSpace(req.Lang),
+			CodeSizeBytes: len(req.Code),
+			MaxCodeBytes:  pol.MaxCodeBytes,
+			TimeoutMs:     timeoutMs,
+			MaxTimeoutMs:  pol.MaxTimeoutMs,
+			Profile:       strings.TrimSpace(req.Profile),
+		},
+	}
+	mode := strings.TrimSpace(pol.Network.Mode)
+	if mode == "" {
+		mode = "none"
+	}
+	presets := append([]string(nil), pol.Network.Presets...)
+	sort.Strings(presets)
+	policyEvidence.Baseline.Network = &receipt.BaselineNetworkPolicy{
+		Mode:    mode,
+		Presets: presets,
+	}
+	if len(req.Intent) == 0 {
+		return policyEvidence, nil
+	}
+	intent, err := policycontract.LoadIntentContractJSON(req.Intent)
+	if err != nil {
+		return nil, err
+	}
+	source := receipt.PolicyIntentSourceContract
+	if req.Capabilities != nil && !req.Capabilities.IsZero() {
+		source = receipt.PolicyIntentSourceCompiledCapabilities
+	}
+	policyEvidence.Intent = &receipt.IntentPolicyDigest{
+		Digest: governance.DigestIntent(intent),
+		Source: source,
+	}
+	return policyEvidence, nil
 }
 
 func mergeRuntimeOverrides(groups ...[]string) []string {
@@ -561,6 +604,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
 		}
+		req.TimeoutMs = timeoutMs
 		req.Profile = resolveRequestedProfile(req, pol)
 		computeProfile, ok := pol.Profiles[req.Profile]
 		if !ok {
@@ -571,6 +615,12 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
 			execStatus = "validation_error"
 			writeAPIError(w, http.StatusBadRequest, "validation_error", err.Error(), nil)
+			return
+		}
+		policyEvidence, err := policyEvidenceForExecution(req, pol, timeoutMs)
+		if err != nil {
+			execStatus = "validation_error"
+			writeAPIError(w, http.StatusBadRequest, "invalid_intent_contract", err.Error(), nil)
 			return
 		}
 
@@ -634,7 +684,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 				status = store.StatusTimedOut
 				outcome = "timeout"
 			}
-			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
+			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			proofPaths = actualProofPaths
 			if receiptErr != nil {
 				writeAPIError(w, http.StatusInternalServerError, "receipt_signing_failed", "receipt signing failed", errorDetails("execution_id", execID, "cause", receiptErr.Error()))
@@ -659,7 +709,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			exitReason = "sandbox_error"
 			errMsg, stderrDetail := enrichSandboxFailure(err, vm)
 			stderrData = stderrDetail
-			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: errMsg})
+			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: errMsg})
 			proofPaths = actualProofPaths
 			if receiptErr != nil {
 				writeAPIError(w, http.StatusInternalServerError, "receipt_signing_failed", "receipt signing failed", errorDetails("execution_id", execID, "cause", receiptErr.Error()))
@@ -704,7 +754,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 				execStatus = "sandbox_error"
 			}
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
+			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
 			proofPaths = actualProofPaths
 			if receiptErr != nil {
 				writeAPIError(w, http.StatusInternalServerError, "receipt_signing_failed", "receipt signing failed", errorDetails("execution_id", execID, "cause", receiptErr.Error()))
@@ -730,7 +780,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 				exitReason = "timeout"
 			}
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
+			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
 			proofPaths = actualProofPaths
 			if receiptErr != nil {
 				writeAPIError(w, http.StatusInternalServerError, "receipt_signing_failed", "receipt signing failed", errorDetails("execution_id", execID, "cause", receiptErr.Error()))
@@ -774,7 +824,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 				exitReason = "timeout"
 			}
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
+			_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: errMsg})
 			proofPaths = actualProofPaths
 			if receiptErr != nil {
 				writeAPIError(w, http.StatusInternalServerError, "receipt_signing_failed", "receipt signing failed", errorDetails("execution_id", execID, "cause", receiptErr.Error()))
@@ -794,7 +844,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		outputTruncated = result.OutputTruncated
 		stdoutData = result.Stdout
 		stderrData = result.Stderr
-		_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: status, StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes})
+		_, actualProofPaths, rec, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: status, StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes})
 		if receiptErr != nil {
 			execStatus = "sandbox_error"
 			writeAPIError(w, http.StatusInternalServerError, "receipt_signing_failed", "receipt signing failed", errorDetails("execution_id", execID, "cause", receiptErr.Error()))
@@ -887,6 +937,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		if timeoutMs == 0 {
 			timeoutMs = pol.DefaultTimeoutMs
 		}
+		req.TimeoutMs = timeoutMs
 		req.Profile = resolveRequestedProfile(req, pol)
 		computeProfile, ok := pol.Profiles[req.Profile]
 		if !ok {
@@ -897,6 +948,12 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		if err := pol.Validate(req.Lang, len(req.Code), timeoutMs); err != nil {
 			execStatus = "validation_error"
 			writeAPIError(w, http.StatusBadRequest, "validation_error", err.Error(), nil)
+			return
+		}
+		policyEvidence, err := policyEvidenceForExecution(req, pol, timeoutMs)
+		if err != nil {
+			execStatus = "validation_error"
+			writeAPIError(w, http.StatusBadRequest, "invalid_intent_contract", err.Error(), nil)
 			return
 		}
 
@@ -968,7 +1025,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 				exitReason = "timeout"
 				execStatus = "timeout"
 			}
-			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
+			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			if receiptErr != nil {
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
 				return
@@ -990,7 +1047,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			execStatus = "sandbox_error"
 			exitCode = -1
 			exitReason = "sandbox_error"
-			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: err.Error()})
+			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: err.Error()})
 			if receiptErr != nil {
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
 				return
@@ -1031,7 +1088,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 				execStatus = "timeout"
 			}
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
+			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			if receiptErr != nil {
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
 				return
@@ -1056,7 +1113,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 				exitReason = "timeout"
 			}
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
+			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			if receiptErr != nil {
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
 				return
@@ -1078,7 +1135,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			execStatus = "sandbox_error"
 			exitCode = -1
 			exitReason = "sandbox_error"
-			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: err.Error()})
+			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: err.Error()})
 			if receiptErr != nil {
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
 				return
@@ -1098,7 +1155,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			execStatus = "sandbox_error"
 			exitCode = -1
 			exitReason = "sandbox_error"
-			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: err.Error()})
+			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: "error", Status: store.StatusSandboxError, ErrorMsg: err.Error()})
 			if receiptErr != nil {
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
 				return
@@ -1123,7 +1180,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 				exitReason = "timeout"
 			}
 			bus.Emit(telemetry.KindExecExit, telemetry.ExecExitData{ExitCode: exitCode, Reason: exitReason})
-			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
+			_, _, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, Outcome: outcome, Status: status, ErrorMsg: err.Error()})
 			if receiptErr != nil {
 				writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
 				return
@@ -1142,7 +1199,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		outputTruncated = result.OutputTruncated
 		stdoutData = result.Stdout
 		stderrData = result.Stderr
-		_, proofPaths, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: status, DurationMs: time.Since(start).Milliseconds(), StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes})
+		_, proofPaths, _, receiptErr := finalizeExecution(s, stats, execID, start, req, intent, policyEvidence, vm, currentRuntimeEnvelope(), exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus, store.ExecutionRecord{ExecutionID: execID, Lang: req.Lang, ExitCode: result.ExitCode, Outcome: outcome, Status: status, DurationMs: time.Since(start).Milliseconds(), StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes})
 		if receiptErr != nil {
 			execStatus = "sandbox_error"
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: "receipt signing failed: " + receiptErr.Error()})
@@ -1179,7 +1236,7 @@ func proofChunk(execID string, proofPaths receipt.BundlePaths) models.GuestChunk
 	}
 }
 
-func emitSignedReceipt(execID string, startedAt time.Time, finishedAt time.Time, req ExecuteRequest, intent *policycontract.IntentContract, vm *executor.VMInstance, runtime *receipt.RuntimeEnvelope, executionStatus string, exitCode int, exitReason string, outputTruncated bool, stdoutData string, stderrData string, proofRoot string, bus *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+func emitSignedReceipt(execID string, startedAt time.Time, finishedAt time.Time, req ExecuteRequest, intent *policycontract.IntentContract, policyEvidence *receipt.PolicyEnvelope, vm *executor.VMInstance, runtime *receipt.RuntimeEnvelope, executionStatus string, exitCode int, exitReason string, outputTruncated bool, stdoutData string, stderrData string, proofRoot string, bus *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 	events := bus.Drain()
 	signer, signerErr := receipt.NewSignerFromEnv()
 	if signerErr != nil {
@@ -1198,6 +1255,7 @@ func emitSignedReceipt(execID string, startedAt time.Time, finishedAt time.Time,
 		StartedAt:       startedAt,
 		FinishedAt:      finishedAt,
 		IntentRaw:       cloneRawJSON(req.Intent),
+		Policy:          policyEvidence,
 		Outcome: receipt.Outcome{
 			ExitCode:           exitCode,
 			Reason:             exitReason,
@@ -1369,7 +1427,7 @@ func timedOut(ctx context.Context, deadline time.Time, err error) bool {
 	return !deadline.IsZero() && !time.Now().Before(deadline)
 }
 
-func finalizeExecution(s *store.Store, stats *StatsCounter, execID string, start time.Time, req ExecuteRequest, intent *policycontract.IntentContract, vm *executor.VMInstance, runtime *receipt.RuntimeEnvelope, exitCode int, exitReason string, outputTruncated bool, stdoutData string, stderrData string, proofRoot string, bus *telemetry.Bus, rec store.ExecutionRecord) (receipt.SignedReceipt, receipt.BundlePaths, store.ExecutionRecord, error) {
+func finalizeExecution(s *store.Store, stats *StatsCounter, execID string, start time.Time, req ExecuteRequest, intent *policycontract.IntentContract, policyEvidence *receipt.PolicyEnvelope, vm *executor.VMInstance, runtime *receipt.RuntimeEnvelope, exitCode int, exitReason string, outputTruncated bool, stdoutData string, stderrData string, proofRoot string, bus *telemetry.Bus, rec store.ExecutionRecord) (receipt.SignedReceipt, receipt.BundlePaths, store.ExecutionRecord, error) {
 	if vm != nil {
 		recordLifecycleStatus(s, execID, req.Lang, store.StatusFinalizing, "")
 	}
@@ -1403,7 +1461,7 @@ func finalizeExecution(s *store.Store, stats *StatsCounter, execID string, start
 	}
 
 	finishedAt := time.Now()
-	signedReceipt, proofPaths, receiptErr := emitSignedReceiptFunc(execID, start, finishedAt, req, intent, vm, runtime, rec.Status, exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus)
+	signedReceipt, proofPaths, receiptErr := emitSignedReceiptFunc(execID, start, finishedAt, req, intent, policyEvidence, vm, runtime, rec.Status, exitCode, exitReason, outputTruncated, stdoutData, stderrData, proofRoot, bus)
 	if receiptErr != nil {
 		if rec.ErrorMsg == "" {
 			rec.ErrorMsg = "receipt signing failed: " + receiptErr.Error()
