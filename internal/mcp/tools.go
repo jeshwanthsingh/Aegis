@@ -76,16 +76,18 @@ type VerifyArgs struct {
 }
 
 type VerifyToolResult struct {
-	OK              bool           `json:"ok"`
-	ExecutionID     string         `json:"execution_id,omitempty"`
-	ProofDir        string         `json:"proof_dir,omitempty"`
-	Verified        bool           `json:"verified"`
-	Verdict         string         `json:"verdict,omitempty"`
-	SigningMode     string         `json:"signing_mode,omitempty"`
-	KeySource       string         `json:"key_source,omitempty"`
-	Summary         string         `json:"summary,omitempty"`
-	VerificationErr string         `json:"verification_error,omitempty"`
-	Diagnostics     map[string]any `json:"diagnostics,omitempty"`
+	OK                bool           `json:"ok"`
+	ExecutionID       string         `json:"execution_id,omitempty"`
+	ProofDir          string         `json:"proof_dir,omitempty"`
+	Verified          bool           `json:"verified"`
+	ResultClass       string         `json:"result_class,omitempty"`
+	DivergenceVerdict string         `json:"divergence_verdict,omitempty"`
+	OutcomeReason     string         `json:"outcome_reason,omitempty"`
+	SigningMode       string         `json:"signing_mode,omitempty"`
+	KeySource         string         `json:"key_source,omitempty"`
+	Summary           string         `json:"summary,omitempty"`
+	VerificationErr   string         `json:"verification_error,omitempty"`
+	Diagnostics       map[string]any `json:"diagnostics,omitempty"`
 }
 
 type InvalidParamsError struct {
@@ -244,11 +246,13 @@ func (h *ToolHandler) Execute(ctx context.Context, args ExecuteArgs) (ExecuteToo
 	verifyResult, verifyErr := h.Verify(VerifyArgs{ExecutionID: resp.ExecutionID, ProofDir: resp.ProofDir})
 	if verifyErr == nil {
 		result.Receipt = map[string]any{
-			"verified":     verifyResult.Verified,
-			"verdict":      verifyResult.Verdict,
-			"signing_mode": verifyResult.SigningMode,
-			"key_source":   verifyResult.KeySource,
-			"summary":      verifyResult.Summary,
+			"verified":           verifyResult.Verified,
+			"result_class":       verifyResult.ResultClass,
+			"divergence_verdict": verifyResult.DivergenceVerdict,
+			"outcome_reason":     verifyResult.OutcomeReason,
+			"signing_mode":       verifyResult.SigningMode,
+			"key_source":         verifyResult.KeySource,
+			"summary":            verifyResult.Summary,
 		}
 		if verifyResult.Diagnostics != nil {
 			if divergence, ok := verifyResult.Diagnostics["divergence"].(map[string]any); ok {
@@ -306,7 +310,9 @@ func (h *ToolHandler) Verify(args VerifyArgs) (VerifyToolResult, error) {
 
 func enrichVerifyResult(result *VerifyToolResult, statement receipt.Statement) {
 	result.ExecutionID = statement.Predicate.ExecutionID
-	result.Verdict = string(statement.Predicate.Divergence.Verdict)
+	result.ResultClass = string(statement.Predicate.ResultClass)
+	result.DivergenceVerdict = string(statement.Predicate.Divergence.Verdict)
+	result.OutcomeReason = statement.Predicate.Outcome.Reason
 	result.SigningMode = string(statement.Predicate.Trust.SigningMode)
 	result.KeySource = string(statement.Predicate.Trust.KeySource)
 	result.Diagnostics = map[string]any{

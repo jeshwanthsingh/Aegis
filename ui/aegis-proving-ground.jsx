@@ -116,7 +116,10 @@ const EVENT_STYLES = {
   "cleanup.done:clean": { badge: "CLEAN", tone: "green" },
   "cleanup.done:dirty": { badge: "DIRTY", tone: "red" },
   "containment.receipt:completed": { badge: "COMPLETED", tone: "green" },
-  "containment.receipt:contained": { badge: "CONTAINED", tone: "gold" },
+  "containment.receipt:denied": { badge: "DENIED", tone: "gold" },
+  "containment.receipt:abnormal": { badge: "ABNORMAL", tone: "red" },
+  "containment.receipt:reconciled": { badge: "RECONCILED", tone: "slate" },
+  "containment.receipt:unknown": { badge: "RECEIPT", tone: "slate" },
   "guest.proc.sample:limit": { badge: "PIDS LIMIT", tone: "red" },
   "output.truncated": { badge: "TRUNCATED", tone: "amber" },
 };
@@ -171,6 +174,29 @@ function relativeTime(ts, startTs) {
 
 function prettyJson(value) {
   return JSON.stringify(value, null, 2);
+}
+
+function receiptPredicate(receipt) {
+  const predicate = receipt?.statement?.predicate;
+  return predicate && typeof predicate === "object" ? predicate : null;
+}
+
+function receiptTone(receipt) {
+  const resultClass = receiptPredicate(receipt)?.result_class;
+  switch (resultClass) {
+    case "completed":
+      return "green";
+    case "abnormal":
+      return "red";
+    case "denied":
+      return "gold";
+    default:
+      return "slate";
+  }
+}
+
+function receiptLabel(receipt) {
+  return String(receiptPredicate(receipt)?.result_class || "pending").toUpperCase();
 }
 
 function toneClasses(tone) {
@@ -254,15 +280,14 @@ function deriveEventPresentation(event) {
   }
 
   if (event.kind === "containment.receipt") {
-    const style =
-      event.data?.verdict === "completed"
-        ? EVENT_STYLES["containment.receipt:completed"]
-        : EVENT_STYLES["containment.receipt:contained"];
+    const predicate = receiptPredicate(event.data);
+    const resultClass = predicate?.result_class || "unknown";
+    const style = EVENT_STYLES[`containment.receipt:${resultClass}`] || EVENT_STYLES["containment.receipt:unknown"];
     return {
       key: `${event.kind}:${event.ts}`,
       badge: style.badge,
       tone: style.tone,
-      detail: `${event.data?.verdict || "unknown"} :: ${event.data?.exit?.reason || "n/a"}`,
+      detail: `${resultClass} :: ${predicate?.outcome?.reason || "n/a"}`,
     };
   }
 
@@ -301,19 +326,22 @@ function gaugeTone(pct) {
 }
 
 function summarizeReceipt(receipt) {
-  if (!receipt) {
+  const predicate = receiptPredicate(receipt);
+  if (!predicate) {
     return [];
   }
+  const outcome = predicate.outcome || {};
+  const divergence = predicate.divergence || {};
+  const trust = predicate.trust || {};
   return [
-    { label: "Verdict", value: String(receipt.verdict || "unknown").toUpperCase() },
-    { label: "Duration", value: `${receipt.duration_ms || 0} ms` },
-    { label: "Exit", value: `${receipt.exit?.reason || "unknown"} (${receipt.exit?.code ?? "?"})` },
-    { label: "Profile", value: receipt.policy?.profile || "unknown" },
-    { label: "DNS Total", value: receipt.network?.dns_queries_total ?? 0 },
-    { label: "DNS Allowed", value: receipt.network?.dns_queries_allowed ?? 0 },
-    { label: "DNS Denied", value: receipt.network?.dns_queries_denied ?? 0 },
-    { label: "Rules Added", value: receipt.network?.iptables_rules_added ?? 0 },
-    { label: "Cleanup", value: receipt.cleanup?.all_clean ? "ALL CLEAN" : "ISSUES" },
+    { label: "Result Class", value: String(predicate.result_class || "unknown").toUpperCase() },
+    { label: "Outcome", value: `${outcome.reason || "unknown"} (${outcome.exit_code ?? "?"})` },
+    { label: "Execution Status", value: predicate.execution_status || "unknown" },
+    { label: "Divergence", value: String(divergence.verdict || "unknown").toUpperCase() },
+    { label: "Runtime Events", value: predicate.runtime_event_count ?? 0 },
+    { label: "Signing", value: trust.signing_mode || "unknown" },
+    { label: "Key Source", value: trust.key_source || "unknown" },
+    { label: "Evidence Digest", value: predicate.evidence_digest ? `${String(predicate.evidence_digest).slice(0, 16)}...` : "missing" },
   ];
 }
 
@@ -548,9 +576,9 @@ function AegisProvingGround() {
   }
 
   const summaryStats = [
-    { label: "contained", value: stats?.total_contained ?? 0, tone: "text-emerald-300" },
-    { label: "escapes", value: stats?.escapes ?? 0, tone: "text-red-300" },
-    { label: "clean teardowns", value: stats?.clean_teardowns ?? 0, tone: "text-slate-200" },
+    { label: "executions", value: stats?.total_executions ?? 0, tone: "text-slate-100" },
+    { label: "completed", value: stats?.total_completed ?? 0, tone: "text-emerald-300" },
+    { label: "non-completed", value: stats?.total_contained ?? 0, tone: "text-amber-200" },
   ];
 
   const receiptSummary = summarizeReceipt(receipt);
@@ -605,7 +633,7 @@ function AegisProvingGround() {
                 </h1>
                 <div className="max-w-3xl text-sm leading-6 text-slate-300 md:text-base">
                   Firecracker microVM sandbox for AI-generated code. Trigger a real attack, watch the defense plane react,
-                  and read the containment receipt that closes the loop.
+                  and read the signed DSSE receipt that closes the loop.
                 </div>
                 <div className="flex flex-wrap items-center gap-3 text-xs uppercase tracking-[0.24em] text-slate-400">
                   <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 text-emerald-200">
@@ -846,14 +874,14 @@ function AegisProvingGround() {
                   <div className={`border bg-[#10131b]/90 p-4 ${receipt ? "receipt-pulse border-amber-400/20" : "border-white/10"}`}>
                     <div className="mb-3 flex items-center justify-between">
                       <div>
-                        <div className="text-xs uppercase tracking-[0.32em] text-slate-500">Containment Receipt</div>
+                        <div className="text-xs uppercase tracking-[0.32em] text-slate-500">Signed Receipt</div>
                         <div className="mt-1 font-['JetBrains_Mono'] text-lg font-semibold text-slate-100">
-                          {receipt ? "Execution closed with evidence" : "Awaiting receipt"}
+                          {receipt ? "Signed receipt emitted" : "Awaiting receipt"}
                         </div>
                       </div>
                       <StatusPill
-                        label={receipt ? String(receipt.verdict || "unknown").toUpperCase() : "PENDING"}
-                        tone={receipt ? (receipt.verdict === "completed" ? "green" : "gold") : "slate"}
+                        label={receipt ? receiptLabel(receipt) : "PENDING"}
+                        tone={receipt ? receiptTone(receipt) : "slate"}
                       />
                     </div>
 
@@ -868,19 +896,19 @@ function AegisProvingGround() {
 
                     <div className="mt-4 grid gap-4 lg:grid-cols-2">
                       <MiniBlock
-                        title="Policy"
+                        title="Predicate"
                         body={
-                          receipt
-                            ? `version: ${receipt.policy?.version || "unknown"}\nnetwork: ${receipt.policy?.network_mode || "none"}\nallowed: ${(receipt.policy?.allowed_domains || []).join(", ") || "none"}`
+                          receiptPredicate(receipt)
+                            ? `version: ${receiptPredicate(receipt)?.version || "unknown"}\nbackend: ${receiptPredicate(receipt)?.backend || "unknown"}\nworkspace: ${receiptPredicate(receipt)?.workspace_id || "none"}\nexecution_status: ${receiptPredicate(receipt)?.execution_status || "unknown"}\nresult_class: ${receiptPredicate(receipt)?.result_class || "unknown"}`
                             : "No receipt yet."
                         }
                       />
                       <MiniBlock
-                        title="Cleanup"
+                        title="Trust"
                         body={
-                          receipt
-                            ? `tap: ${receipt.cleanup?.tap_removed}\ncgroup: ${receipt.cleanup?.cgroup_removed}\nscratch: ${receipt.cleanup?.scratch_removed}\nsocket: ${receipt.cleanup?.socket_removed}\nall_clean: ${receipt.cleanup?.all_clean}`
-                            : "No cleanup data yet."
+                          receiptPredicate(receipt)
+                            ? `signing_mode: ${receiptPredicate(receipt)?.trust?.signing_mode || "unknown"}\nkey_source: ${receiptPredicate(receipt)?.trust?.key_source || "unknown"}\nattestation: ${receiptPredicate(receipt)?.trust?.attestation || "unknown"}\nlimitations: ${(receiptPredicate(receipt)?.limitations || []).join(", ") || "none"}`
+                            : "No signed receipt yet."
                         }
                       />
                     </div>

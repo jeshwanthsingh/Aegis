@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"aegis/internal/executor"
 	"aegis/internal/policy"
 	policycontract "aegis/internal/policy/contract"
 	"aegis/internal/receipt"
@@ -129,8 +128,8 @@ func TestReceiptAndExecutionHelpers(t *testing.T) {
 		t.Fatalf("cloneRawJSON mutated source: %s", string(raw))
 	}
 
-	if verdictFor(0, "completed") != "completed" || verdictFor(1, "failed") != "contained" {
-		t.Fatal("unexpected verdictFor results")
+	if containmentVerdictForOutcome(0, "completed") != "completed" || containmentVerdictForOutcome(1, "failed") != "contained" {
+		t.Fatal("unexpected containmentVerdictForOutcome results")
 	}
 	if outcome, reason, verdict := classifyExecutionResult(0, "divergence_terminated"); outcome != "contained" || reason != "terminated_on_divergence" || verdict != "contained" {
 		t.Fatalf("unexpected divergence classification: %s %s %s", outcome, reason, verdict)
@@ -143,38 +142,7 @@ func TestReceiptAndExecutionHelpers(t *testing.T) {
 	}
 }
 
-func TestPolicyAndCleanupHelpers(t *testing.T) {
-	if got := buildReceiptPolicy(nil, "v1", "default"); got.Version != "v1" || got.Profile != "default" {
-		t.Fatalf("nil policy receipt policy = %+v", got)
-	}
-
-	pol := &policy.Policy{
-		Network: policy.NetworkPolicy{
-			Mode:    "egress",
-			Presets: []string{"npm", "npm"},
-		},
-		Resources: policy.ResourcePolicy{
-			MemoryMaxMB: 256,
-			PidsMax:     32,
-			CPUPercent:  50,
-		},
-	}
-	got := buildReceiptPolicy(pol, "v2", "default")
-	if got.NetworkMode != "egress" || len(got.AllowedDomains) == 0 {
-		t.Fatalf("buildReceiptPolicy = %+v", got)
-	}
-
-	vm := &executor.VMInstance{}
-	vm.Cleanup.AllClean = true
-	vm.Cleanup.CgroupRemoved = true
-	cleanup := cleanupFromVM(vm)
-	if !cleanup.AllClean || !cleanup.CgroupRemoved {
-		t.Fatalf("cleanupFromVM = %+v", cleanup)
-	}
-	if zero := cleanupFromVM(nil); zero.AllClean {
-		t.Fatalf("cleanupFromVM(nil) = %+v", zero)
-	}
-
+func TestEnforcementCallbackNilVM(t *testing.T) {
 	if enforcementCallback("exec-1", nil, nil) != nil {
 		t.Fatal("expected nil callback for nil VM")
 	}

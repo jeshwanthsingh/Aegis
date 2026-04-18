@@ -823,8 +823,8 @@ func installHandlerRuntimeStubs(t *testing.T) {
 		return &models.Result{Stdout: "ok\n", ExitCode: 0, ExitReason: "completed", DurationMs: 7, StdoutBytes: 3}, nil
 	}
 	startCgroupPollerFunc = func(context.Context, *telemetry.Bus, string, time.Duration) func() { return func() {} }
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
-		return models.ContainmentReceipt{Verdict: "completed"}, receipt.BundlePaths{
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		return receipt.SignedReceipt{}, receipt.BundlePaths{
 			ProofDir:      "/tmp/aegis/proofs/exec",
 			ReceiptPath:   "/tmp/aegis/proofs/exec/receipt.dsse.json",
 			PublicKeyPath: "/tmp/aegis/proofs/exec/receipt.pub",
@@ -963,8 +963,8 @@ func TestExecuteHandlerAuthFailure(t *testing.T) {
 
 func TestExecuteHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
 	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -1181,8 +1181,8 @@ func TestStreamHandlerInvalidBody(t *testing.T) {
 
 func TestStreamHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
 	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -1331,9 +1331,9 @@ func TestStreamHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, nil
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}
 	writeExecutionRecordFunc = func(_ *store.Store, _ store.ExecutionRecord) error {
 		recordCount++
@@ -1572,9 +1572,9 @@ func TestExecuteHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, nil
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}
 	writeExecutionRecordFunc = func(_ *store.Store, _ store.ExecutionRecord) error {
 		recordCount++
@@ -1647,88 +1647,6 @@ func TestClaimExecutionBusAllowsDifferentExecutionIDsInParallel(t *testing.T) {
 	if len(seen) != len(execIDs) {
 		t.Fatalf("expected %d distinct execution ids, got %d", len(execIDs), len(seen))
 	}
-}
-
-func TestBuildReceiptNetworkAllowCase(t *testing.T) {
-	t.Parallel()
-
-	pol := policy.Default()
-	pol.Network.Mode = "allowlist"
-	pol.Network.Presets = []string{"pypi"}
-
-	summary := buildReceiptNetwork(pol, []telemetry.Event{
-		mustTelemetryEvent(t, telemetry.KindNetRuleAdd, telemetry.NetRuleData{Rule: "ACCEPT", Dst: "151.101.128.223", Ports: "80"}),
-		mustTelemetryEvent(t, telemetry.KindNetRuleAdd, telemetry.NetRuleData{Rule: "ACCEPT", Dst: "151.101.128.223", Ports: "443"}),
-		mustTelemetryEvent(t, telemetry.KindDNSQuery, telemetry.DNSQueryData{
-			Domain:   "pypi.org",
-			Action:   "allow",
-			Resolved: []string{"151.101.128.223"},
-		}),
-	})
-
-	if summary.DNSQueriesTotal != 1 || summary.DNSQueriesAllowed != 1 || summary.DNSQueriesDenied != 0 {
-		t.Fatalf("unexpected dns counts: %#v", summary)
-	}
-	if summary.IptablesRulesAdded != 2 {
-		t.Fatalf("unexpected rule count: %#v", summary)
-	}
-	if summary.NetworkMode != "allowlist" {
-		t.Fatalf("unexpected network mode: %#v", summary)
-	}
-	if !slices.Equal(summary.AllowedDomains, []string{"files.pythonhosted.org", "pypi.org", "pypi.python.org"}) {
-		t.Fatalf("unexpected allowed domains: %#v", summary.AllowedDomains)
-	}
-}
-
-func TestBuildReceiptNetworkDenyCase(t *testing.T) {
-	t.Parallel()
-
-	pol := policy.Default()
-	pol.Network.Mode = "allowlist"
-	pol.Network.Presets = []string{"pypi"}
-
-	summary := buildReceiptNetwork(pol, []telemetry.Event{
-		mustTelemetryEvent(t, telemetry.KindDNSQuery, telemetry.DNSQueryData{
-			Domain: "example.com",
-			Action: "deny",
-			Reason: "not in allowlist",
-		}),
-	})
-
-	if summary.DNSQueriesTotal != 1 || summary.DNSQueriesAllowed != 0 || summary.DNSQueriesDenied != 1 {
-		t.Fatalf("unexpected dns counts: %#v", summary)
-	}
-	if summary.IptablesRulesAdded != 0 {
-		t.Fatalf("unexpected rule count: %#v", summary)
-	}
-}
-
-func TestBuildReceiptNetworkNoNetworkCase(t *testing.T) {
-	t.Parallel()
-
-	pol := policy.Default()
-
-	summary := buildReceiptNetwork(pol, nil)
-
-	if summary.DNSQueriesTotal != 0 || summary.DNSQueriesAllowed != 0 || summary.DNSQueriesDenied != 0 || summary.IptablesRulesAdded != 0 {
-		t.Fatalf("unexpected counts: %#v", summary)
-	}
-	if summary.NetworkMode != "none" {
-		t.Fatalf("unexpected network mode: %#v", summary)
-	}
-	if len(summary.AllowedDomains) != 0 {
-		t.Fatalf("unexpected allowed domains: %#v", summary.AllowedDomains)
-	}
-}
-
-func mustTelemetryEvent(t *testing.T, kind string, data any) telemetry.Event {
-	t.Helper()
-
-	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal telemetry event: %v", err)
-	}
-	return telemetry.Event{Kind: kind, Data: raw}
 }
 
 func TestWithAuthMissingHeaderUsesErrorEnvelope(t *testing.T) {
