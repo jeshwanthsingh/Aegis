@@ -97,11 +97,16 @@ jobs:
           mkdir -p .aegis/bin
           go build -buildvcs=false -o .aegis/bin/aegis ./cmd/aegis-cli
 
-      - name: Canonical demo proof
-        run: python3 scripts/run_canonical_demo.py --serve --with-warm-path --with-workspace
-
-      - name: Stop canonical proof runtime
+      - name: Packaged demo proof
         run: |
+          ./scripts/demo_up.sh
+          ./scripts/demo_clean.sh
+          ./scripts/demo_exfil_denied.sh
+          ./scripts/demo_broker_success.sh
+
+      - name: Stop packaged demo runtime
+        run: |
+          ./scripts/demo_down.sh || true
           pkill -f "${GITHUB_WORKSPACE}/.aegis/bin/aegis serve" || true
           pkill -f "${GITHUB_WORKSPACE}/.aegis/bin/orchestrator --db " || true
           for _ in $(seq 1 20); do

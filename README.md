@@ -1,45 +1,55 @@
 # Aegis
 
-Aegis lets internal coding agents run code without giving them your machine, and produces signed host-side receipts recording what the host observed and enforced.
+Aegis is a single-host Firecracker/KVM execution runtime for untrusted agent-generated code. It runs code inside a microVM, applies coarse execution policy plus optional governed-action policy, and writes host-signed DSSE receipts with proof bundles.
 
-## Who it is for
+What it is today:
 
-Aegis is for teams that want internal agents to execute code, touch files, and attempt external actions without handing those agents direct host access.
+- Linux-only
+- single-host
+- KVM/Firecracker based
+- local demo or narrow internal-pilot oriented
+- host-signed receipt based, not host-attested
 
-## First run
+What it is not:
 
-Canonical repo path:
+- not a Mac or Windows product
+- not a hosted multi-tenant control plane
+- not a production-ready enterprise deployment
+- not a hardware attestation system
+
+## Canonical happy path
+
+This is the one setup path to lead with for a technical Linux user:
 
 ```bash
 git clone https://github.com/jeshwanthsingh/Aegis.git ~/aegis
 cd ~/aegis
-bash scripts/install.sh
-aegis setup
-aegis doctor
-aegis serve
+./scripts/demo_up.sh
+./scripts/demo_clean.sh
+./scripts/demo_exfil_denied.sh
+./scripts/demo_broker_success.sh
+./scripts/demo_down.sh
 ```
 
-Then run the repo-native blocked-exfil proof in a second terminal flow:
+What you need before `demo_up.sh` will work:
 
-```bash
-python3 scripts/demo_receiver.py
-bash scripts/demo_exfil_baseline.sh
-python3 scripts/demo_exfil_aegis.py
-```
+- Linux with `/dev/kvm` accessible to your user
+- Firecracker installed, or `AEGIS_FIRECRACKER_BIN` set to the binary path
+- PostgreSQL server binaries available: `initdb`, `pg_ctl`, `psql`
+- Go toolchain available
+- Aegis runtime assets already present:
+  - `assets/vmlinux`
+  - `assets/alpine-base.ext4`
 
-Use [docs/quickstart.md](docs/quickstart.md) for the full stranger-first path from clone to verified demo output.
+`demo_up.sh` starts the local runtime on `http://127.0.0.1:8080`, initializes a local Postgres cluster under `/tmp/aegis-demo`, runs `aegis setup`, and serves the minimal demo UI on the same localhost address.
 
 ## Docs
 
-- [Quickstart](docs/quickstart.md): clone, install, setup, doctor, serve, run the repo-native exfil demo, verify the result
-- [Demo Exfiltration](docs/demo-exfiltration.md): the primary repo-native Phase 1 proof
-- [Trust Model](docs/trust-model.md): what Aegis does and does not prove today
-- [Receipt Schema](docs/receipt-schema.md): the canonical receipt and proof fields
-- [Troubleshooting](docs/troubleshooting.md): common failures and exact recovery commands
-- [MCP Server](docs/mcp_server.md): how the repo-local MCP wrapper is built and run
+- [Local Setup](docs/setup-local.md): the one canonical Linux/KVM setup path, prerequisites, success signals, logs, proofs, and failure modes
+- [Demo Guide](docs/demo-guide.md): the three packaged demos, what each proves, what output to expect, and what receipt evidence to check
+- [Trust Model](docs/trust-model.md): what the current receipts and runtime do and do not prove
+- [Receipt Schema](docs/receipt-schema.md): the signed receipt contract
 
-## Trust and limitations
+## Scope and trust limits
 
-The host is in the trust base. There is no host attestation today. Receipt signing custody is local today. Receipts are signed host-side execution records, not a proof that a compromised host could not lie.
-
-Use [docs/trust-model.md](docs/trust-model.md) for the exact trust assumptions and [docs/receipt-schema.md](docs/receipt-schema.md) for what the receipt fields contribute to trust.
+The host is in the trust base. Receipts are signed execution records produced by the host. They are useful evidence, but they are not proof against a compromised host. The current local demo path is intentionally localhost-bound and single-host.

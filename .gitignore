@@ -14,6 +14,7 @@ assets/firecracker
 # Build artifacts and local logs
 *.log
 /tmp/
+build/
 
 # Local kernel/source dumps accidentally copied into repo
 linux-6.1.80/
@@ -33,6 +34,11 @@ sdk/python/**/*.egg-info/
 sdk/python/**/*.egg-info/*
 sdk/python/**/__pycache__/
 sdk/python/**/__pycache__/*
+__pycache__/
+*.pyc
+
+# Local TypeScript dependency trees
+sdk/typescript/node_modules/
 ui-app/node_modules/
 ui-app/.vite/
 ui-app/*.tsbuildinfo
@@ -40,3 +46,11 @@ ui-app/vite.config.js
 ui-app/vite.config.d.ts
 ui-app/tailwind.config.js
 ui-app/tailwind.config.d.ts
+
+# Internal working logs and agent notes are not product source
+ai/
+agent_logs/
+
+# The demo runtime serves the built UI bundle from /ui, so keep it trackable.
+!/ui/assets/
+!/ui/assets/**
