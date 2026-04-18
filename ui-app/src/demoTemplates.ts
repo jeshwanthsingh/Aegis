@@ -4,6 +4,9 @@ export interface DemoTemplate {
   id: DemoKey;
   label: string;
   description: string;
+  expectedResult: string;
+  proves: string[];
+  expectedEvidence: string[];
   lang: "bash" | "python" | "node";
   profile: "nano" | "standard" | "crunch";
   timeoutMs: number;
@@ -15,6 +18,16 @@ export const DEMOS: DemoTemplate[] = [
     id: "clean",
     label: "Clean Execution",
     description: "Simple contained execution with a signed receipt and no governed actions.",
+    expectedResult: "completed",
+    proves: [
+      "The runtime can execute code end to end and return a signed receipt.",
+      "Baseline execution policy is still bound even when no governed action is needed.",
+    ],
+    expectedEvidence: [
+      "stdout contains UI_DEMO_CLEAN_OK",
+      "receipt shows result_class=completed",
+      "policy digest and runtime envelope are present in the signed receipt",
+    ],
     lang: "bash",
     profile: "nano",
     timeoutMs: 5000,
@@ -24,6 +37,16 @@ export const DEMOS: DemoTemplate[] = [
     id: "exfil",
     label: "Exfil Denied",
     description: "Attempts a direct outbound connect and expects a signed denial path.",
+    expectedResult: "denied",
+    proves: [
+      "Direct network egress can be denied without relying on log interpretation.",
+      "The denial is carried into governed-action evidence and the signed receipt.",
+    ],
+    expectedEvidence: [
+      "stdout contains UI_DEMO_EXFIL_ATTEMPTED",
+      "governed action shows network_connect denied",
+      "receipt shows denial_marker=direct_egress_denied",
+    ],
     lang: "python",
     profile: "standard",
     timeoutMs: 8000,
@@ -46,6 +69,16 @@ print("UI_DEMO_EXFIL_ATTEMPTED")`,
     id: "broker",
     label: "Brokered Outbound",
     description: "Uses the guest broker proxy to fetch the local health endpoint through the governed path.",
+    expectedResult: "completed",
+    proves: [
+      "Outbound HTTP can succeed through the governed broker path.",
+      "The allowed brokered action is recorded as governed evidence instead of silent raw egress.",
+    ],
+    expectedEvidence: [
+      "stdout contains UI_DEMO_BROKER_OK",
+      "governed action shows http_request allowed",
+      "receipt shows broker_allowed_count=1",
+    ],
     lang: "bash",
     profile: "standard",
     timeoutMs: 8000,
