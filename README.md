@@ -1,25 +1,29 @@
 # Aegis
 
-Aegis is a single-host Firecracker/KVM execution runtime for untrusted agent-generated code. It runs code inside a microVM, applies coarse execution policy plus optional governed-action policy, and writes host-signed DSSE receipts with proof bundles.
+Aegis is a single-host Firecracker/KVM runtime for running untrusted agent-generated code on a Linux machine under a default-deny execution boundary and emitting host-signed DSSE receipts.
 
-What it is today:
+It exists for platform and security engineers who need a real local execution boundary, a governed outbound story, and reviewable execution evidence after a run. Today it is for Linux hosts you already trust. It is not a hosted service.
+
+## What Aegis Is Today
 
 - Linux-only
 - single-host
-- KVM/Firecracker based
-- local demo or narrow internal-pilot oriented
-- host-signed receipt based, not host-attested
+- Firecracker/KVM based
+- default-deny direct outbound with governed brokered paths
+- host-signed DSSE receipts with offline verification
+- packaged local demos plus a minimal operator UI
+- suitable for local validation and narrow internal pilots
 
-What it is not:
+## What Aegis Is Not
 
-- not a Mac or Windows product
-- not a hosted multi-tenant control plane
-- not a production-ready enterprise deployment
-- not a hardware attestation system
+- not a production-ready multi-tenant platform
+- not hardware attestation
+- not trustless verification
+- not a general agent governance cloud
+- not enterprise IAM
+- not Authority; that is future work, not a current product surface
 
-## Canonical happy path
-
-This is the one setup path to lead with for a technical Linux user:
+## Fastest Local Path
 
 ```bash
 git clone https://github.com/jeshwanthsingh/Aegis.git ~/aegis
@@ -27,29 +31,25 @@ cd ~/aegis
 ./scripts/demo_up.sh
 ./scripts/demo_clean.sh
 ./scripts/demo_exfil_denied.sh
-./scripts/demo_broker_success.sh
 ./scripts/demo_down.sh
 ```
 
-What you need before `demo_up.sh` will work:
+This path assumes Linux + KVM, Firecracker, PostgreSQL server binaries, Go, and the required runtime assets. For the exact tested baseline, asset source, and full demo sequence, use [setup-local.md](docs/setup-local.md) and [demo-guide.md](docs/demo-guide.md).
 
-- Linux with `/dev/kvm` accessible to your user
-- Firecracker installed, or `AEGIS_FIRECRACKER_BIN` set to the binary path
-- PostgreSQL server binaries available: `initdb`, `pg_ctl`, `psql`
-- Go toolchain available
-- Aegis runtime assets already present:
-  - `assets/vmlinux`
-  - `assets/alpine-base.ext4`
+## Packaged Demos
 
-`demo_up.sh` starts the local runtime on `http://127.0.0.1:8080`, initializes a local Postgres cluster under `/tmp/aegis-demo`, runs `aegis setup`, and serves the minimal demo UI on the same localhost address.
+- `./scripts/demo_clean.sh`: clean execution with a verified receipt
+- `./scripts/demo_exfil_denied.sh`: direct outbound attempt denied and recorded as governed-action denial evidence
+- `./scripts/demo_broker_success.sh`: brokered outbound HTTP allowed and recorded as governed-action allow evidence
 
-## Docs
+## Trust Scope
 
-- [Local Setup](docs/setup-local.md): the one canonical Linux/KVM setup path, prerequisites, success signals, logs, proofs, and failure modes
-- [Demo Guide](docs/demo-guide.md): the three packaged demos, what each proves, what output to expect, and what receipt evidence to check
-- [Trust Model](docs/trust-model.md): what the current receipts and runtime do and do not prove
-- [Receipt Schema](docs/receipt-schema.md): the signed receipt contract
+Receipts are host-signed execution records. `receipt verify` proves receipt integrity, artifact binding, and semantic consistency under the receipt verification key. It does not prove hardware attestation, host honesty, or multi-tenant cloud-grade isolation. The host and operator remain in the trust base.
 
-## Scope and trust limits
+## Read More
 
-The host is in the trust base. Receipts are signed execution records produced by the host. They are useful evidence, but they are not proof against a compromised host. The current local demo path is intentionally localhost-bound and single-host.
+- [Local Setup](docs/setup-local.md)
+- [Demo Guide](docs/demo-guide.md)
+- [Trust Model](docs/trust-model.md)
+- [Receipt Model](docs/receipt-model.md)
+- [MCP Server](docs/mcp_server.md)

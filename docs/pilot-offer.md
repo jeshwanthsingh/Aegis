@@ -1,6 +1,6 @@
 # Self-Hosted Pilot Offer
 
-Aegis lets internal coding agents run code without giving them your machine, and proves what they tried to do.
+Aegis lets internal coding agents run code on a single Linux host under a Firecracker/KVM boundary and leaves host-signed execution records afterward.
 
 This offer is for a narrow self-hosted pilot, not a broad platform rollout.
 
@@ -26,7 +26,7 @@ One or two policy paths only, chosen up front:
 
 - help bringing up `~/aegis` in a self-hosted environment
 - help wiring one coding-agent execution path to the local Aegis runtime
-- the canonical exfil demo running locally as a trust check before workflow rollout
+- the packaged local demo sequence running as a trust check before workflow rollout
 - direct support during pilot setup and during the evaluation window
 
 ## What success looks like
@@ -53,4 +53,4 @@ The pilot is successful if, by the end of the window, the design partner can:
 - one named owner from the coding-agent workflow team
 - agreement to keep the pilot to one workflow and one or two policy paths
 
-For the exact first-run path, use [quickstart.md](quickstart.md). For the canonical proof, use [demo-exfiltration.md](demo-exfiltration.md).
+For the exact first-run path, use [setup-local.md](setup-local.md). For the packaged demo sequence, use [demo-guide.md](demo-guide.md).

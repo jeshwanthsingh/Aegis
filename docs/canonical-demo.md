@@ -1,8 +1,8 @@
-# Canonical Demo
+# Canonical Demo (Deprecated)
 
-This file is no longer the canonical demo guide.
+Deprecated. Do not use this as the Aegis demo walkthrough.
 
-The older `python3 scripts/run_canonical_demo.py --serve` story is not the packaged demo path the repo now leads with. The current canonical demo flow is the three script-based demos documented in [demo-guide.md](demo-guide.md).
+The older harness-based walkthrough is not the packaged demo path the repo now leads with. The current canonical demo flow is the three script-based demos documented in [demo-guide.md](demo-guide.md).
 
 Use these commands instead:
 

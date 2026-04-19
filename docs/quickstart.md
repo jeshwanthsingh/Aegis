@@ -1,8 +1,8 @@
-# Quickstart
+# Quickstart (Deprecated)
 
-This file is no longer the canonical first-run guide.
+Deprecated. Do not use this as the Aegis first-run guide.
 
-The old `install.sh` / `aegis setup` / `aegis serve` / receiver-based exfil flow in this file was the source of setup drift. The current repo-local happy path is the packaged localhost demo flow.
+Older manual setup and contrast-demo guides were the source of setup drift. The current repo-local happy path is the packaged localhost demo flow.
 
 Use these docs instead:
 

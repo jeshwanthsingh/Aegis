@@ -2,7 +2,9 @@
 
 These are the three packaged Aegis demo flows.
 
-They are designed to make the current product story concrete without asking the user to dig through logs by hand:
+They are the only public demo path to lead with. Older manual and harness-based flows are secondary or deprecated.
+
+These scripts make the current product story concrete without asking the user to dig through logs by hand:
 
 - code runs inside the runtime
 - unsafe direct egress can be denied
@@ -49,6 +51,12 @@ receipt_summary=result_class=completed outcome=completed policy_digest=<digest>
 verification=verified
 ```
 
+Early caveat:
+
+- by default, `./.aegis/bin/aegis receipt verify --proof-dir ...` uses the bundle's `receipt.pub`
+- that proves internal bundle integrity under that key unless you separately pin a trusted signer
+- it is not host independence or hardware attestation
+
 Receipt evidence to look for:
 
 - `result_class=completed`
@@ -61,6 +69,7 @@ What verification proves:
 - the proof bundle artifacts hash correctly
 - the DSSE receipt signature verifies
 - the receipt semantics pass local verification
+- the bundle is internally consistent under the receipt verification key
 
 ## 2. Exfil Denied
 
@@ -93,6 +102,7 @@ verification=verified
 Receipt evidence to look for:
 
 - `result_class=denied`
+- `denial_rule_id=governance.direct_egress_disabled`
 - `denial_marker=direct_egress_denied`
 - `verification=verified`
 
@@ -103,6 +113,7 @@ What verification proves:
 - the denied execution produced a signed receipt
 - the denial marker is bound into the receipt verification output
 - the bundle and signature verify locally
+- the denial is represented both as top-level denial evidence and as a denied governed action
 
 Common note:
 
@@ -156,11 +167,13 @@ What verification proves:
 Each script prints a `proof_dir`. To inspect a run manually:
 
 ```bash
-.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<uuid>
-.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<uuid>
+./.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<uuid>
+./.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<uuid>
 ```
 
-Use `receipt show` to read the signed summary. Use `receipt verify` to rerun bundle, signature, and semantic checks.
+`receipt show` prints a sectioned review of the bundle, artifacts, execution result, governed actions, broker summary, and limitations.
+
+`receipt verify` prints a machine-readable key=value summary and reruns bundle, signature, and semantic checks. By default, `--proof-dir` verification uses the `receipt.pub` file inside that bundle. For the trust interpretation of those results, use [Trust Model](trust-model.md) and [Receipt Model](receipt-model.md).
 
 ## Optional UI Path
 

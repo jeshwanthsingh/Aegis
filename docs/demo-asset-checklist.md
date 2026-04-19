@@ -6,12 +6,12 @@ This is the minimum outreach package for a self-hosted Aegis pilot conversation.
 
 One static image with two labeled panes.
 
-- left pane: baseline host run showing `EXFIL_ATTEMPT_SENT` and receiver output `RECEIVED: TOP_SECRET=demo-key-123`
-- right pane: Aegis-backed run showing `EXFIL_FAILED` and the verifier lines `verification=verified`, `denial_marker=direct_egress_denied`, `denial_rule_id=governance.direct_egress_disabled`
+- left pane: packaged clean run showing `DEMO_CLEAN_OK` and `verification=verified`
+- right pane: packaged denied run showing `DEMO_EXFIL_ATTEMPTED`, `verification=verified`, `denial_marker=direct_egress_denied`, and `denial_rule_id=governance.direct_egress_disabled`
 
 Requirements:
 
-- use the repo-native demo only
+- use the packaged demo scripts only
 - keep terminal chrome visible enough to show this is local and self-hosted
 - crop tightly enough that the exact outputs are readable at slide size
 
@@ -38,12 +38,11 @@ Target length: 60-90 seconds.
 
 Sequence:
 
-1. show the local receiver waiting
-2. run the baseline script and show the secret arrive
-3. show `aegis serve` already running in `~/aegis`
-4. run `python3 scripts/demo_exfil_aegis.py`
-5. pause on the verifier output lines
-6. close with one sentence: same payload, different execution boundary, signed record afterward
+1. show `./scripts/demo_up.sh` succeeding
+2. run `./scripts/demo_clean.sh`
+3. run `./scripts/demo_exfil_denied.sh`
+4. pause on the verifier output lines
+5. close with one sentence: same runtime, clean path completes, direct outbound path is denied, signed record afterward
 
 ## 4. Concise live-demo flow
 
@@ -52,12 +51,12 @@ Target length: 5-7 minutes.
 Flow:
 
 1. state the wedge: internal coding agents, not general AI governance
-2. show the receiver and baseline exfil result
-3. show the canonical `~/aegis` runtime path
-4. run the Aegis-backed demo
-5. rerun `aegis receipt verify --proof-dir ...`
-6. explain what the receipt proves and what it does not prove
-7. stop after the trust boundary is clear
+2. run `./scripts/demo_up.sh`
+3. run `./scripts/demo_clean.sh`
+4. run `./scripts/demo_exfil_denied.sh`
+5. run `./scripts/demo_broker_success.sh`
+6. rerun `./.aegis/bin/aegis receipt verify --proof-dir ...`
+7. explain what the receipt proves and what it does not prove, then stop
 
 ## 5. Messaging guardrails
 

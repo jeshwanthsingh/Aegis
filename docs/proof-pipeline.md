@@ -48,6 +48,8 @@ What it runs:
 - `python3 scripts/run_canonical_demo.py --serve --with-warm-path --with-workspace`
 - `python3 scripts/run_red_team_fault_matrix.py`
 
+That older harness is CI-only coverage. It is not the public first-run guide.
+
 What it proves:
 
 - canonical product story still works end to end
@@ -66,5 +68,5 @@ What it must not be confused with:
 
 The default public-facing canonical demo is narrower than the Tier 2 proof lane. Use:
 
-- [canonical-demo.md](canonical-demo.md) for the default product story
+- [demo-guide.md](demo-guide.md) for the default product story
 - `--with-warm-path` and `--with-workspace` only for secondary proof coverage

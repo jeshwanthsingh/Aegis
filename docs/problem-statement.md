@@ -1,8 +1,8 @@
 # Problem Statement
 
-Aegis lets internal coding agents run code without giving them your machine, and proves what they tried to do.
+Aegis lets internal coding agents run code on a Linux host under a Firecracker/KVM boundary and leaves a signed host-side execution record afterward.
 
-Today that proof is a signed host-side execution record tied to a local proof bundle. It is useful, but it is not host attestation.
+Today that proof is a host-signed receipt tied to a local proof bundle. It is useful, but it is not host attestation.
 
 ## The problem
 
@@ -35,14 +35,15 @@ For this wedge, the buyer usually needs all three:
 - direct egress is denied by default
 - the run ends with a verifiable receipt, not just console logs
 
-## What the canonical exfil demo proves
+## What the packaged demos prove
 
-The repo-native demo shows the same payload in two conditions.
+The packaged demo path shows three concrete outcomes on the same localhost runtime:
 
-- without Aegis, the local receiver prints `RECEIVED: TOP_SECRET=demo-key-123`
-- with Aegis, the same egress attempt is denied and verification prints `verification=verified`, `denial_marker=direct_egress_denied`, and `denial_rule_id=governance.direct_egress_disabled`
+- clean execution completes and the receipt verifies
+- a direct outbound attempt is denied and verification surfaces `denial_marker=direct_egress_denied` and `denial_rule_id=governance.direct_egress_disabled`
+- a brokered outbound request succeeds and is recorded as governed-action allow evidence
 
-That proves a narrow but important point: Aegis can run untrusted coding-agent payloads in a Firecracker microVM, deny direct egress by default, and produce a signed record of the denied action and the execution that triggered it.
+That proves a narrow but important point: Aegis can run untrusted coding-agent payloads in a Firecracker microVM, deny direct egress by default, allow only declared governed outbound paths, and produce a signed record of what the host observed and enforced for that run.
 
 ## Why self-hosted execution control plus receipts matters
 
@@ -52,4 +53,4 @@ Receipts matter because they let the operator answer the question a security rev
 
 "What did the agent try to do, what was denied, and what signed record do you have for that run?"
 
-For the trust boundary and limits of that proof, use [trust-model.md](trust-model.md) and [receipt-schema.md](receipt-schema.md).
+For the current setup and demo path, use [setup-local.md](setup-local.md) and [demo-guide.md](demo-guide.md). For the trust boundary and receipt limits, use [trust-model.md](trust-model.md) and [receipt-model.md](receipt-model.md).

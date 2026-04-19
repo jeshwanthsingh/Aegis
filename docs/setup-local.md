@@ -2,7 +2,7 @@
 
 This is the one canonical local setup path for Aegis today.
 
-It is written for a technical Linux user who wants to run the real Firecracker/KVM-backed demo path on one host. It is not written for Mac, Windows, hosted, or multi-tenant deployment.
+It is written for a technical Linux user who wants to run the real Firecracker/KVM-backed demo path on one host, inspect the proof bundles it writes, and then tear the runtime down cleanly. It is not written for Mac, Windows, hosted, or multi-tenant deployment.
 
 ## Who This Is For
 
@@ -32,9 +32,22 @@ Use this path if all of these are true:
 - creates and migrates the local demo database
 - runs `go run ./cmd/aegis-cli setup --config .aegis/config.yaml`
 - starts the local orchestrator on `127.0.0.1:8080`
-- serves the current UI from the same localhost runtime
+- serves the current operator UI from the same localhost runtime
 
 It does not install system packages for you.
+
+## Tested Baseline
+
+This local path was last checked in the current repo environment with:
+
+- Ubuntu 24.04.4 LTS
+- Linux `6.17.0-20-generic`
+- `/dev/kvm` present and accessible to the current user
+- Go `1.25.9`
+- PostgreSQL server binaries `16.13`, resolved from `/usr/lib/postgresql/16/bin`
+- Firecracker `v1.7.0` at `/home/cellardoor72/.local/bin/firecracker`
+
+This is a checked baseline, not a broader support matrix. Other distro, kernel, PostgreSQL, Go, and Firecracker versions may work, but they are not documented here as verified.
 
 ## Prerequisites
 
@@ -53,6 +66,29 @@ You need all of these before the happy path below will work:
   - `assets/alpine-base.ext4`
 
 This doc does not claim Mac or Windows support. It does not claim that Aegis self-installs Firecracker, KVM, PostgreSQL, or VM assets.
+
+## Runtime Assets
+
+The canonical demo expects these files:
+
+- `assets/vmlinux`
+- `assets/alpine-base.ext4`
+
+Current public acquisition paths in this repo are:
+
+- optional release-asset path: `scripts/install.sh` downloads both files from `https://github.com/jeshwanthsingh/Aegis/releases/download/v1.0.0` and verifies them against `scripts/release-checksums.txt`
+- optional local rootfs build path: `./scripts/build-alpine-rootfs.sh --output assets/alpine-base.ext4`
+
+Important boundary:
+
+- `scripts/install.sh` is the current public asset-download path, but it is not the canonical bring-up path for the docs
+- this repo does not currently document a separate local `vmlinux` build path for the canonical demo
+- if you are not using the release asset path for `vmlinux`, the next places to inspect are `scripts/install.sh` and `scripts/release-checksums.txt`
+
+So the current state is:
+
+- rootfs acquisition is documented both as a release download and as a local build path
+- kernel acquisition is documented as a release download path, but not yet as a local build path
 
 ## Canonical Happy Path
 
@@ -77,6 +113,8 @@ http://127.0.0.1:8080
 ```
 
 The UI is served from that same localhost runtime. The CLI demo scripts use the same runtime.
+
+If the demo runtime is already healthy and owned by `/tmp/aegis-demo/state.json`, rerunning `./scripts/demo_up.sh` prints `status=running` and the current connection details instead of starting a second copy.
 
 ## What Success Looks Like
 
@@ -121,6 +159,13 @@ Important paths:
 
 The demo runtime binds to `127.0.0.1:8080` by default. This is intentionally localhost-only.
 
+The proof root stays empty until you run one of the packaged demo scripts. After any demo run, inspect a bundle with:
+
+```bash
+./.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<execution-id>
+./.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<execution-id>
+```
+
 ## Stop The Environment
 
 When you are done:
@@ -128,6 +173,8 @@ When you are done:
 ```bash
 ./scripts/demo_down.sh
 ```
+
+`demo_down.sh` stops the runtime and Postgres, but it leaves logs and proof bundles under `/tmp/aegis-demo` so you can inspect them afterward.
 
 Expected output shape:
 
@@ -204,6 +251,12 @@ demo error: rootfs image missing at /path/to/repo/assets/alpine-base.ext4
 ```
 
 The repo is missing the required runtime assets. This setup path assumes those files already exist.
+
+If you do not already have them:
+
+- use `scripts/install.sh` if you want the current public release-asset download path
+- use `./scripts/build-alpine-rootfs.sh --output assets/alpine-base.ext4` if you want to build the rootfs locally
+- for `vmlinux`, use the release asset path; a separate local kernel build path is not documented here yet
 
 ### Another runtime already owns `127.0.0.1:8080`
 
