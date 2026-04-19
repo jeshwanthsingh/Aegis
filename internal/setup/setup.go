@@ -281,12 +281,57 @@ func Evaluate(repoRoot string, cfg config.Config, artifacts BootstrapArtifacts) 
 		results = append(results, CheckResult{ID: "broker-env", Label: "Broker demo env", Status: StatusWarn, Detail: "missing: " + strings.Join(missingBroker, ", "), Action: "Export the broker env vars before running broker-capable demos.", Blocking: false})
 	}
 
-	detail := cfg.Receipt.SigningMode
-	if artifacts.SigningSeedKeyID != "" {
-		detail = fmt.Sprintf("%s (%s)", cfg.Receipt.SigningMode, artifacts.SigningSeedKeyID)
-	}
-	results = append(results, CheckResult{ID: "signing-mode", Label: "Signing posture", Status: StatusOK, Detail: detail, Blocking: true})
+	results = append(results, evaluateSigningPosture(cfg))
 	return results
+}
+
+func evaluateSigningPosture(cfg config.Config) CheckResult {
+	rawSeed, err := os.ReadFile(cfg.Receipt.SeedFile)
+	if err != nil {
+		return CheckResult{
+			ID:       "signing-mode",
+			Label:    "Signing posture",
+			Status:   StatusFail,
+			Detail:   err.Error(),
+			Action:   "Rerun aegis setup to generate a configured receipt signing seed.",
+			Blocking: true,
+		}
+	}
+	signer, err := receipt.NewSigner(receipt.SigningConfig{
+		Mode:    receipt.SigningMode(strings.TrimSpace(cfg.Receipt.SigningMode)),
+		SeedB64: strings.TrimSpace(string(rawSeed)),
+	})
+	if err != nil {
+		return CheckResult{
+			ID:       "signing-mode",
+			Label:    "Signing posture",
+			Status:   StatusFail,
+			Detail:   err.Error(),
+			Action:   "Use receipt.signing_mode=strict or explicit dev with a valid configured seed.",
+			Blocking: true,
+		}
+	}
+	detail := string(signer.Mode)
+	if signer.KeyID != "" {
+		detail = fmt.Sprintf("%s (%s)", signer.Mode, signer.KeyID)
+	}
+	if signer.Mode == receipt.SigningModeDev {
+		return CheckResult{
+			ID:       "signing-mode",
+			Label:    "Signing posture",
+			Status:   StatusWarn,
+			Detail:   detail + "; explicit non-production dev signing",
+			Action:   "Switch receipt.signing_mode to strict before sharing or relying on receipts outside local development.",
+			Blocking: false,
+		}
+	}
+	return CheckResult{
+		ID:       "signing-mode",
+		Label:    "Signing posture",
+		Status:   StatusOK,
+		Detail:   detail,
+		Blocking: true,
+	}
 }
 
 func EnsureSigningSeed(path string) (bool, string, error) {

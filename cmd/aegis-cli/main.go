@@ -225,14 +225,17 @@ func apiAuthStatus() string {
 }
 
 func signingStatus(cfg config.Config) string {
-	mode := strings.TrimSpace(cfg.Receipt.SigningMode)
+	mode := strings.ToLower(strings.TrimSpace(cfg.Receipt.SigningMode))
 	if mode == "" {
-		mode = "dev"
+		mode = "strict"
 	}
-	if strings.EqualFold(mode, "strict") {
-		return "strict (host seed file required)"
+	if mode == "strict" {
+		return "strict (configured seed required)"
 	}
-	return "dev fallback; not a production trust posture"
+	if mode == "dev" {
+		return "explicit dev mode (configured seed required; non-production receipts)"
+	}
+	return fmt.Sprintf("%s (configured seed required)", mode)
 }
 
 func collectWarnings(plan serve.Plan, checks []setup.CheckResult) []string {

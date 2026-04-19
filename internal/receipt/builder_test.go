@@ -63,7 +63,7 @@ func TestDSSEEnvelopeGenerationAndVerify(t *testing.T) {
 	if statement.Predicate.Trust.SigningMode != SigningModeDev {
 		t.Fatalf("unexpected signing mode: %q", statement.Predicate.Trust.SigningMode)
 	}
-	if statement.Predicate.Trust.KeySource != KeySourceDevFallback {
+	if statement.Predicate.Trust.KeySource != KeySourceConfiguredSeed {
 		t.Fatalf("unexpected key source: %q", statement.Predicate.Trust.KeySource)
 	}
 }
@@ -287,12 +287,12 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		"signer_key_id=" + signer.KeyID,
 		"signing_mode=dev",
 		"intent_digest=",
-		"trust_limitations=dev_signing_mode,fallback_dev_seed,host_attestation_absent",
+		"trust_limitations=dev_signing_mode,host_attestation_absent",
 		"outcome=completed",
 		"exit_code=0",
 		"execution_status=none",
 		"result_class=denied",
-		"key_source=dev_fallback",
+		"key_source=configured_seed",
 		"attestation=absent",
 		"divergence_verdict=kill_candidate",
 		"artifact_count=0",
@@ -589,7 +589,14 @@ func testReceiptInput() Input {
 
 func mustDevSigner(t *testing.T) *Signer {
 	t.Helper()
-	signer, err := NewSigner(SigningConfig{Mode: SigningModeDev})
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = 1
+	}
+	signer, err := NewSigner(SigningConfig{
+		Mode:    SigningModeDev,
+		SeedB64: base64.StdEncoding.EncodeToString(seed),
+	})
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
