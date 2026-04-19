@@ -223,8 +223,8 @@ func CreateScratchDisk(uuid string) (string, error) {
 }
 
 func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*NetworkConfig, error) {
-	mode := np.Mode
-	if mode == "" || mode == "none" {
+	mode := policy.NormalizeNetworkMode(np.Mode)
+	if mode == policy.NetworkModeNone {
 		return nil, nil
 	}
 
@@ -260,7 +260,7 @@ func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*
 		Direction: "outbound",
 	})
 
-	if mode == "allowlist" {
+	if mode == policy.NetworkModeAllowlist {
 		hosts, err := resolvePresetHosts(np.Presets)
 		if err != nil {
 			return nil, err
@@ -431,7 +431,8 @@ func teardownNetwork(cfg *NetworkConfig) error {
 		}
 	}
 
-	if cfg.Mode == "allowlist" {
+	mode := policy.NormalizeNetworkMode(cfg.Mode)
+	if mode == policy.NetworkModeAllowlist {
 		if cfg.dnsConn != nil {
 			if err := cfg.dnsConn.Close(); err != nil {
 				errs = append(errs, err)
@@ -444,7 +445,7 @@ func teardownNetwork(cfg *NetworkConfig) error {
 				}
 			}
 		}
-	} else if cfg.Mode == "isolated" {
+	} else if mode == policy.NetworkModeDirectWebEgress {
 		for _, port := range []string{"80", "443"} {
 			if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "--dport", port, "-j", "ACCEPT"); err != nil && !isMissingRule(err) {
 				errs = append(errs, err)
@@ -467,6 +468,11 @@ func teardownNetwork(cfg *NetworkConfig) error {
 func newNetworkConfig(execID string, np policy.NetworkPolicy) *NetworkConfig {
 	short := shortID(execID)
 	subnet, hostIP, guestIP := subnetForID(short)
+	mode := policy.NormalizeNetworkMode(np.Mode)
+	presets := append([]string(nil), np.Presets...)
+	if mode != policy.NetworkModeAllowlist {
+		presets = nil
+	}
 	return &NetworkConfig{
 		TapName:      "tap-" + short,
 		SubnetCIDR:   subnet,
@@ -474,8 +480,8 @@ func newNetworkConfig(execID string, np policy.NetworkPolicy) *NetworkConfig {
 		GuestIP:      guestIP,
 		GatewayIP:    hostIP,
 		GuestMAC:     "AA:FC:00:00:00:01",
-		Mode:         np.Mode,
-		Presets:      append([]string(nil), np.Presets...),
+		Mode:         mode,
+		Presets:      presets,
 		allowedHosts: map[string]struct{}{},
 		allowedIPs:   map[string]struct{}{},
 	}

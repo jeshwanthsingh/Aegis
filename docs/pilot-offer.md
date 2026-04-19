@@ -19,7 +19,7 @@ One workflow only. Example:
 
 One or two policy paths only, chosen up front:
 
-- required path: direct egress denied by default
+- required path: one configured workflow where direct egress is denied
 - optional second path: one governed action path already supported by the current runtime, such as one brokered credential-backed outbound dependency
 
 ## What the design partner gets
@@ -34,7 +34,7 @@ One or two policy paths only, chosen up front:
 The pilot is successful if, by the end of the window, the design partner can:
 
 - run one real internal coding-agent workflow through Aegis in its own environment
-- show that direct egress is denied by default for that workflow
+- show that direct egress is denied for that workflow
 - verify signed receipts and proof bundles for pilot executions
 - tell a reviewer what the receipt proves and what it does not prove
 

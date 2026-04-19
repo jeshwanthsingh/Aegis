@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	policycfg "aegis/internal/policy"
 )
 
 func TestReceiptPredicateMatchesSchema(t *testing.T) {
@@ -29,6 +31,29 @@ func TestReceiptPredicateMatchesSchema(t *testing.T) {
 	}
 	if err := validateSchemaValue(doc, schema, schema, "$"); err != nil {
 		t.Fatalf("predicate does not match schema: %v\npayload=%s", err, string(payload))
+	}
+}
+
+func TestReceiptPredicateMatchesSchemaWithDirectWebEgressMode(t *testing.T) {
+	schema := loadReceiptPredicateSchema(t)
+	input := testReceiptInput()
+	input.Policy.Baseline.Network.Mode = policycfg.NetworkModeDirectWebEgress
+	input.Runtime.Network.Mode = policycfg.NetworkModeDirectWebEgress
+
+	signed, err := BuildSignedReceipt(input, mustDevSigner(t))
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	payload, err := json.Marshal(signed.Statement.Predicate)
+	if err != nil {
+		t.Fatalf("Marshal predicate: %v", err)
+	}
+	var doc any
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		t.Fatalf("Unmarshal predicate: %v", err)
+	}
+	if err := validateSchemaValue(doc, schema, schema, "$"); err != nil {
+		t.Fatalf("predicate does not match schema with direct_web_egress: %v\npayload=%s", err, string(payload))
 	}
 }
 

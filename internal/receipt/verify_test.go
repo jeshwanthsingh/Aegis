@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	policycfg "aegis/internal/policy"
 )
 
 func TestVerifySignedReceiptRejectsMalformedEnvelopeAndStatement(t *testing.T) {
@@ -253,6 +255,28 @@ func TestVerifySignedReceiptSupportsLegacyDerivedSemantics(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(statement.Predicate.Limitations, ","), "legacy_semantics_derived") {
 		t.Fatalf("expected legacy semantics limitation, got %+v", statement.Predicate.Limitations)
+	}
+}
+
+func TestVerifySignedReceiptNormalizesLegacyIsolatedNetworkMode(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.Policy.Baseline.Network.Mode = policycfg.NetworkModeLegacyIsolated
+	signed.Statement.Predicate.Runtime.Network.Mode = policycfg.NetworkModeLegacyIsolated
+	reSignStatement(t, &signed, signer)
+
+	statement, err := VerifySignedReceipt(signed, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+	if statement.Predicate.Policy.Baseline.Network.Mode != policycfg.NetworkModeDirectWebEgress {
+		t.Fatalf("policy network mode = %q, want %q", statement.Predicate.Policy.Baseline.Network.Mode, policycfg.NetworkModeDirectWebEgress)
+	}
+	if statement.Predicate.Runtime.Network.Mode != policycfg.NetworkModeDirectWebEgress {
+		t.Fatalf("runtime network mode = %q, want %q", statement.Predicate.Runtime.Network.Mode, policycfg.NetworkModeDirectWebEgress)
 	}
 }
 

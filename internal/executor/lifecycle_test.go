@@ -197,6 +197,15 @@ func TestChooseUpstreamNameserversFallsBackToSystemdStub(t *testing.T) {
 	}
 }
 
+func TestNewNetworkConfigNormalizesLegacyIsolatedMode(t *testing.T) {
+	t.Parallel()
+
+	cfg := newNetworkConfig("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", policy.NetworkPolicy{Mode: policy.NetworkModeLegacyIsolated})
+	if cfg.Mode != policy.NetworkModeDirectWebEgress {
+		t.Fatalf("cfg.Mode = %q, want %q", cfg.Mode, policy.NetworkModeDirectWebEgress)
+	}
+}
+
 func testNetworkConfig(tapName string, allowedHosts ...string) *NetworkConfig {
 	cfg := &NetworkConfig{
 		TapName:      tapName,

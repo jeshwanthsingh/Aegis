@@ -7,7 +7,7 @@ They are the only public demo path to lead with. Older manual and harness-based 
 These scripts make the current product story concrete without asking the user to dig through logs by hand:
 
 - code runs inside the runtime
-- unsafe direct egress can be denied
+- unsafe direct egress can be denied on the packaged deny path
 - a governed outbound path can be allowed
 - each run produces a proof bundle
 - each proof bundle verifies
@@ -23,6 +23,8 @@ cd ~/aegis
 ```
 
 If the runtime is healthy, the scripts below will talk to `http://127.0.0.1:8080` and write proofs under `/tmp/aegis-demo/proofs`.
+
+These packaged demos prove specific configured paths. They do not imply that every networked execution is deny-all; for networked runs, read `policy_network_mode` and `runtime_network_mode` in the receipt summary.
 
 ## 1. Clean Execution
 

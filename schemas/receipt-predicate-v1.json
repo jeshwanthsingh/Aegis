@@ -313,6 +313,7 @@
           "type": "string",
           "enum": [
             "none",
+            "direct_web_egress",
             "isolated",
             "allowlist"
           ]
@@ -409,6 +410,7 @@
           "type": "string",
           "enum": [
             "none",
+            "direct_web_egress",
             "isolated",
             "allowlist"
           ]

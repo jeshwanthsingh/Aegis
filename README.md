@@ -1,6 +1,6 @@
 # Aegis
 
-Aegis is a single-host Firecracker/KVM runtime for running untrusted agent-generated code on a Linux machine under a default-deny execution boundary and emitting host-signed DSSE receipts.
+Aegis is a single-host Firecracker/KVM runtime for running untrusted agent-generated code on a Linux machine under a host-enforced execution boundary and emitting host-signed DSSE receipts.
 
 It exists for platform and security engineers who need a real local execution boundary, a governed outbound story, and reviewable execution evidence after a run. Today it is for Linux hosts you already trust. It is not a hosted service.
 
@@ -9,7 +9,7 @@ It exists for platform and security engineers who need a real local execution bo
 - Linux-only
 - single-host
 - Firecracker/KVM based
-- default-deny direct outbound with governed brokered paths
+- no network by default, plus explicit allowlist or direct public web egress modes and governed brokered paths
 - host-signed DSSE receipts with offline verification
 - packaged local demos plus a minimal operator UI
 - suitable for local validation and narrow internal pilots

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"aegis/internal/models"
+	policycfg "aegis/internal/policy"
 	"aegis/internal/telemetry"
 )
 
@@ -307,6 +308,28 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
+	}
+}
+
+func TestFormatSummaryNormalizesLegacyIsolatedNetworkMode(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.Policy.Baseline.Network.Mode = policycfg.NetworkModeLegacyIsolated
+	input.Runtime.Network.Mode = policycfg.NetworkModeLegacyIsolated
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := FormatSummary(receipt.Statement, true)
+	if !strings.Contains(summary, "policy_network_mode="+policycfg.NetworkModeDirectWebEgress) {
+		t.Fatalf("summary missing canonical policy network mode: %s", summary)
+	}
+	if !strings.Contains(summary, "runtime_network_mode="+policycfg.NetworkModeDirectWebEgress) {
+		t.Fatalf("summary missing canonical runtime network mode: %s", summary)
+	}
+	if strings.Contains(summary, "policy_network_mode="+policycfg.NetworkModeLegacyIsolated) || strings.Contains(summary, "runtime_network_mode="+policycfg.NetworkModeLegacyIsolated) {
+		t.Fatalf("summary still contains legacy isolated mode: %s", summary)
 	}
 }
 

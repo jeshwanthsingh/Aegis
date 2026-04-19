@@ -4,8 +4,16 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	NetworkModeNone            = "none"
+	NetworkModeLegacyIsolated  = "isolated"
+	NetworkModeDirectWebEgress = "direct_web_egress"
+	NetworkModeAllowlist       = "allowlist"
 )
 
 var NetworkPresets = map[string][]string{
@@ -58,6 +66,19 @@ type ResourcePolicy struct {
 	TimeoutMs   int `yaml:"timeout_ms"`
 }
 
+func NormalizeNetworkMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", NetworkModeNone:
+		return NetworkModeNone
+	case NetworkModeLegacyIsolated, NetworkModeDirectWebEgress:
+		return NetworkModeDirectWebEgress
+	case NetworkModeAllowlist:
+		return NetworkModeAllowlist
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
 func Default() *Policy {
 	return &Policy{
 		AllowedLanguages: []string{"python", "bash", "node"},
@@ -81,7 +102,7 @@ func Default() *Policy {
 		},
 		DefaultProfile: "nano",
 		Network: NetworkPolicy{
-			Mode:    "none",
+			Mode:    NetworkModeNone,
 			Presets: []string{},
 		},
 		Resources: ResourcePolicy{
@@ -105,6 +126,7 @@ func Load(path string) (*Policy, error) {
 	if err := yaml.Unmarshal(b, p); err != nil {
 		return nil, fmt.Errorf("unmarshal policy: %w", err)
 	}
+	p.Network.Mode = NormalizeNetworkMode(p.Network.Mode)
 	return p, nil
 }
 
@@ -121,10 +143,14 @@ func (p *Policy) Validate(lang string, codeLen int, timeoutMs int) error {
 	if timeoutMs > p.MaxTimeoutMs {
 		return fmt.Errorf("timeout_ms exceeds maximum of %d", p.MaxTimeoutMs)
 	}
+	p.Network.Mode = NormalizeNetworkMode(p.Network.Mode)
 	switch p.Network.Mode {
-	case "", "none", "isolated", "allowlist":
+	case NetworkModeNone, NetworkModeDirectWebEgress, NetworkModeAllowlist:
 	default:
 		return fmt.Errorf("network.mode not allowed: %s", p.Network.Mode)
+	}
+	if p.Network.Mode != NetworkModeAllowlist && len(p.Network.Presets) > 0 {
+		return fmt.Errorf("network presets require allowlist mode")
 	}
 	for _, preset := range p.Network.Presets {
 		if _, ok := NetworkPresets[preset]; !ok {

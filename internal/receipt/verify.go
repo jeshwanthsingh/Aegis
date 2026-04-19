@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	policycfg "aegis/internal/policy"
 )
 
 type VerificationFailureClass string
@@ -249,11 +251,11 @@ func validatePolicyEnvelope(policy *PolicyEnvelope) error {
 	}
 	if policy.Baseline.Network != nil {
 		switch strings.TrimSpace(policy.Baseline.Network.Mode) {
-		case "none", "isolated", "allowlist":
+		case policycfg.NetworkModeNone, policycfg.NetworkModeDirectWebEgress, policycfg.NetworkModeAllowlist:
 		default:
 			return fmt.Errorf("unexpected baseline network mode: %s", policy.Baseline.Network.Mode)
 		}
-		if policy.Baseline.Network.Mode != "allowlist" && len(policy.Baseline.Network.Presets) > 0 {
+		if policy.Baseline.Network.Mode != policycfg.NetworkModeAllowlist && len(policy.Baseline.Network.Presets) > 0 {
 			return fmt.Errorf("baseline network presets require allowlist mode")
 		}
 	}
@@ -301,17 +303,17 @@ func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
 	}
 	if runtime.Network != nil {
 		switch strings.TrimSpace(runtime.Network.Mode) {
-		case "none", "isolated", "allowlist":
+		case policycfg.NetworkModeNone, policycfg.NetworkModeDirectWebEgress, policycfg.NetworkModeAllowlist:
 		default:
 			return fmt.Errorf("unexpected network mode: %s", runtime.Network.Mode)
 		}
-		if !runtime.Network.Enabled && runtime.Network.Mode != "none" {
+		if !runtime.Network.Enabled && runtime.Network.Mode != policycfg.NetworkModeNone {
 			return fmt.Errorf("disabled network must use mode none")
 		}
-		if runtime.Network.Enabled && runtime.Network.Mode == "none" {
+		if runtime.Network.Enabled && runtime.Network.Mode == policycfg.NetworkModeNone {
 			return fmt.Errorf("enabled network cannot use mode none")
 		}
-		if runtime.Network.Mode != "allowlist" && len(runtime.Network.Presets) > 0 {
+		if runtime.Network.Mode != policycfg.NetworkModeAllowlist && len(runtime.Network.Presets) > 0 {
 			return fmt.Errorf("network presets require allowlist mode")
 		}
 	}
@@ -323,6 +325,20 @@ func applyLegacySemantics(statement *Statement) {
 		return
 	}
 	predicate := &statement.Predicate
+	if predicate.Policy != nil && predicate.Policy.Baseline.Network != nil {
+		mode := policycfg.NormalizeNetworkMode(predicate.Policy.Baseline.Network.Mode)
+		predicate.Policy.Baseline.Network.Mode = mode
+		if mode != policycfg.NetworkModeAllowlist {
+			predicate.Policy.Baseline.Network.Presets = nil
+		}
+	}
+	if predicate.Runtime != nil && predicate.Runtime.Network != nil {
+		mode := policycfg.NormalizeNetworkMode(predicate.Runtime.Network.Mode)
+		predicate.Runtime.Network.Mode = mode
+		if mode != policycfg.NetworkModeAllowlist {
+			predicate.Runtime.Network.Presets = nil
+		}
+	}
 	if predicate.GovernedActions != nil {
 		if predicate.GovernedActions.Count == 0 && len(predicate.GovernedActions.Actions) > 0 {
 			predicate.GovernedActions.Count = len(predicate.GovernedActions.Actions)

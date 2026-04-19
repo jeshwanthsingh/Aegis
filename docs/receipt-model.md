@@ -78,7 +78,13 @@ A brokered outbound success shows:
 - `broker_bindings_used=demo`
 - `governed_action_1=kind=http_request decision=allow ...`
 
-That is the current governed outbound model: direct egress stays denied, and allowed outbound behavior is recorded as a host-mediated governed action.
+That deny path is specific to the no-network or governed-demo configuration. The receipt also records the runtime network mode directly:
+
+- `none`: no guest NIC
+- `direct_web_egress`: direct public TCP 80/443 is allowed while private ranges, metadata, and guest DNS stay blocked
+- `allowlist`: DNS is intercepted and narrow outbound rules are opened only for declared allowlist destinations
+
+Older bundles may still carry the legacy label `isolated`; current verification normalizes that to `direct_web_egress` in reporting.
 
 ## How Verification Works
 

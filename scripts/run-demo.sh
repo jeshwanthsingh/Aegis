@@ -100,7 +100,7 @@ else
 fi
 
 echo ""
-echo "TEST 5: DNS Exfiltration Blocked (isolated/allowlist modes)"
+echo "TEST 5: DNS Exfiltration Blocked (direct_web_egress/allowlist modes)"
 echo "------------------------------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \
@@ -108,7 +108,7 @@ RESULT=$(curl -s -X POST $BASE \
 echo $RESULT | jq .
 
 echo ""
-echo "TEST 6: RFC1918 Blocked (isolated/allowlist modes)"
+echo "TEST 6: RFC1918 Blocked (direct_web_egress/allowlist modes)"
 echo "----------------------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \
@@ -116,7 +116,7 @@ RESULT=$(curl -s -X POST $BASE \
 echo $RESULT | jq .
 
 echo ""
-echo "TEST 7: Metadata Endpoint Blocked (isolated/allowlist modes)"
+echo "TEST 7: Metadata Endpoint Blocked (direct_web_egress/allowlist modes)"
 echo "--------------------------------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \
@@ -124,7 +124,7 @@ RESULT=$(curl -s -X POST $BASE \
 echo $RESULT | jq .
 
 echo ""
-echo "TEST 8: Port 443 Allowed (isolated mode)"
+echo "TEST 8: Port 443 Allowed (direct_web_egress mode)"
 echo "-----------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \

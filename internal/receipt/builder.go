@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"aegis/internal/models"
+	policycfg "aegis/internal/policy"
 	"aegis/internal/telemetry"
 )
 
@@ -108,9 +109,14 @@ func clonePolicyEnvelope(policy *PolicyEnvelope) *PolicyEnvelope {
 		},
 	}
 	if policy.Baseline.Network != nil {
+		mode := policycfg.NormalizeNetworkMode(policy.Baseline.Network.Mode)
+		presets := append([]string(nil), policy.Baseline.Network.Presets...)
+		if mode != policycfg.NetworkModeAllowlist {
+			presets = nil
+		}
 		cloned.Baseline.Network = &BaselineNetworkPolicy{
-			Mode:    policy.Baseline.Network.Mode,
-			Presets: append([]string(nil), policy.Baseline.Network.Presets...),
+			Mode:    mode,
+			Presets: presets,
 		}
 	}
 	if policy.Intent != nil {
@@ -142,10 +148,15 @@ func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
 		}
 	}
 	if runtime.Network != nil {
+		mode := policycfg.NormalizeNetworkMode(runtime.Network.Mode)
+		presets := append([]string(nil), runtime.Network.Presets...)
+		if mode != policycfg.NetworkModeAllowlist {
+			presets = nil
+		}
 		cloned.Network = &RuntimeNetworkEnvelope{
 			Enabled: runtime.Network.Enabled,
-			Mode:    runtime.Network.Mode,
-			Presets: append([]string(nil), runtime.Network.Presets...),
+			Mode:    mode,
+			Presets: presets,
 		}
 	}
 	if runtime.Broker != nil {

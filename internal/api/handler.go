@@ -220,9 +220,9 @@ func runtimeEnvelopeForExecution(req ExecuteRequest, vm *executor.VMInstance, cg
 	if vm.Network != nil {
 		presets := append([]string(nil), vm.Network.Presets...)
 		sort.Strings(presets)
-		mode := strings.TrimSpace(vm.Network.Mode)
-		if mode == "" {
-			mode = "none"
+		mode := policy.NormalizeNetworkMode(vm.Network.Mode)
+		if mode != policy.NetworkModeAllowlist {
+			presets = nil
 		}
 		runtime.Network = &receipt.RuntimeNetworkEnvelope{
 			Enabled: true,
@@ -260,12 +260,12 @@ func policyEvidenceForExecution(req ExecuteRequest, pol *policy.Policy, timeoutM
 			Profile:       strings.TrimSpace(req.Profile),
 		},
 	}
-	mode := strings.TrimSpace(pol.Network.Mode)
-	if mode == "" {
-		mode = "none"
-	}
+	mode := policy.NormalizeNetworkMode(pol.Network.Mode)
 	presets := append([]string(nil), pol.Network.Presets...)
 	sort.Strings(presets)
+	if mode != policy.NetworkModeAllowlist {
+		presets = nil
+	}
 	policyEvidence.Baseline.Network = &receipt.BaselineNetworkPolicy{
 		Mode:    mode,
 		Presets: presets,
