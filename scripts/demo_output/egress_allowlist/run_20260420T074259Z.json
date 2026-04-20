@@ -1,0 +1,7 @@
+{
+  "error": "expected broker_summary.allowed_count=1, got 0",
+  "reused_runtime": false,
+  "started_runtime": true,
+  "status": "fail",
+  "summary_path": "/home/cellardoor72/aegis/scripts/demo_output/egress_allowlist/run_20260420T074259Z.json"
+}

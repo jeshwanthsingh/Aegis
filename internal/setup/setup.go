@@ -61,6 +61,8 @@ type BootstrapArtifacts struct {
 	SigningSeedKeyID  string
 }
 
+var getcapOutputFunc = defaultGetcapOutput
+
 func Run(ctx context.Context, repoRoot string, explicitConfig string, opts Options) (Report, error) {
 	cfg, path, createdConfig, err := config.Ensure(repoRoot, explicitConfig)
 	if err != nil {
@@ -266,6 +268,12 @@ func Evaluate(repoRoot string, cfg config.Config, artifacts BootstrapArtifacts) 
 	} else {
 		results = append(results, CheckResult{ID: "network", Label: "TAP / network demos", Status: StatusWarn, Detail: strings.Join(networkDetail, ", "), Action: "Install the missing network prerequisites before running networked demos.", Blocking: false})
 	}
+	if result, ok := capabilityCheck("orchestrator-cap", "Orchestrator capability", "Orchestrator binary", cfg.Runtime.OrchestratorBin); ok {
+		results = append(results, result)
+	}
+	if result, ok := capabilityCheck("aegis-cap", "Aegis CLI capability", "Aegis CLI binary", cfg.Runtime.CLIBin); ok {
+		results = append(results, result)
+	}
 
 	missingBroker := []string{}
 	for _, envName := range cfg.Demo.BrokerEnv {
@@ -281,12 +289,57 @@ func Evaluate(repoRoot string, cfg config.Config, artifacts BootstrapArtifacts) 
 		results = append(results, CheckResult{ID: "broker-env", Label: "Broker demo env", Status: StatusWarn, Detail: "missing: " + strings.Join(missingBroker, ", "), Action: "Export the broker env vars before running broker-capable demos.", Blocking: false})
 	}
 
-	detail := cfg.Receipt.SigningMode
-	if artifacts.SigningSeedKeyID != "" {
-		detail = fmt.Sprintf("%s (%s)", cfg.Receipt.SigningMode, artifacts.SigningSeedKeyID)
-	}
-	results = append(results, CheckResult{ID: "signing-mode", Label: "Signing posture", Status: StatusOK, Detail: detail, Blocking: true})
+	results = append(results, evaluateSigningPosture(cfg))
 	return results
+}
+
+func evaluateSigningPosture(cfg config.Config) CheckResult {
+	rawSeed, err := os.ReadFile(cfg.Receipt.SeedFile)
+	if err != nil {
+		return CheckResult{
+			ID:       "signing-mode",
+			Label:    "Signing posture",
+			Status:   StatusFail,
+			Detail:   err.Error(),
+			Action:   "Rerun aegis setup to generate a configured receipt signing seed.",
+			Blocking: true,
+		}
+	}
+	signer, err := receipt.NewSigner(receipt.SigningConfig{
+		Mode:    receipt.SigningMode(strings.TrimSpace(cfg.Receipt.SigningMode)),
+		SeedB64: strings.TrimSpace(string(rawSeed)),
+	})
+	if err != nil {
+		return CheckResult{
+			ID:       "signing-mode",
+			Label:    "Signing posture",
+			Status:   StatusFail,
+			Detail:   err.Error(),
+			Action:   "Use receipt.signing_mode=strict or explicit dev with a valid configured seed.",
+			Blocking: true,
+		}
+	}
+	detail := string(signer.Mode)
+	if signer.KeyID != "" {
+		detail = fmt.Sprintf("%s (%s)", signer.Mode, signer.KeyID)
+	}
+	if signer.Mode == receipt.SigningModeDev {
+		return CheckResult{
+			ID:       "signing-mode",
+			Label:    "Signing posture",
+			Status:   StatusWarn,
+			Detail:   detail + "; explicit non-production dev signing",
+			Action:   "Switch receipt.signing_mode to strict before sharing or relying on receipts outside local development.",
+			Blocking: false,
+		}
+	}
+	return CheckResult{
+		ID:       "signing-mode",
+		Label:    "Signing posture",
+		Status:   StatusOK,
+		Detail:   detail,
+		Blocking: true,
+	}
 }
 
 func EnsureSigningSeed(path string) (bool, string, error) {
@@ -398,6 +451,57 @@ func fileCheck(id string, label string, path string, blocking bool, action strin
 		return []CheckResult{{ID: id, Label: label, Status: StatusOK, Detail: path, Blocking: blocking}}
 	}
 	return []CheckResult{{ID: id, Label: label, Status: StatusFail, Detail: path + " is missing", Action: action, Blocking: blocking}}
+}
+
+func capabilityCheck(id string, label string, binaryLabel string, path string) (CheckResult, bool) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return CheckResult{}, false
+	}
+	output, err := getcapOutputFunc(path)
+	if err != nil {
+		return CheckResult{
+			ID:       id,
+			Label:    label,
+			Status:   StatusWarn,
+			Detail:   fmt.Sprintf("Unable to determine capabilities for %s: %v", binaryLabel, err),
+			Action:   "Ensure `getcap` is installed, then rerun `aegis setup` or inspect the repo-local binaries manually before running networked demos.",
+			Blocking: false,
+		}, true
+	}
+	if !strings.Contains(output, "cap_net_admin") {
+		return CheckResult{
+			ID:       id,
+			Label:    label,
+			Status:   StatusWarn,
+			Detail:   fmt.Sprintf("%s is missing cap_net_admin. Networked demos will fail. To fix, run: make setcap", binaryLabel),
+			Blocking: false,
+		}, true
+	}
+	return CheckResult{
+		ID:       id,
+		Label:    label,
+		Status:   StatusOK,
+		Detail:   output,
+		Blocking: false,
+	}, true
+}
+
+func defaultGetcapOutput(path string) (string, error) {
+	tool, err := exec.LookPath("getcap")
+	if err != nil {
+		return "", fmt.Errorf("getcap not found in PATH")
+	}
+	cmd := exec.Command(tool, path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed != "" {
+			return "", fmt.Errorf("%v: %s", err, trimmed)
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func statusResult(id, label string, ok bool, detail, action string, blocking bool) CheckResult {

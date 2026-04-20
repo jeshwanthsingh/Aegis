@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	policycfg "aegis/internal/policy"
 )
 
 type VerificationFailureClass string
@@ -175,6 +177,19 @@ func validateSemanticReceipt(statement Statement) error {
 	if predicate.ResultClass != ResultClassReconciled && strings.TrimSpace(predicate.ExecutionStatus) == "reconciled" {
 		return verificationError(FailureClassSemanticReceipt, "only reconciled receipts may use execution_status=reconciled")
 	}
+	if predicate.Runtime != nil {
+		if err := validateRuntimeEnvelope(predicate.Runtime); err != nil {
+			return verificationError(FailureClassSemanticReceipt, "runtime envelope invalid: %v", err)
+		}
+	}
+	if predicate.Policy != nil {
+		if err := validatePolicyEnvelope(predicate.Policy); err != nil {
+			return verificationError(FailureClassSemanticReceipt, "policy envelope invalid: %v", err)
+		}
+		if strings.TrimSpace(predicate.PolicyDigest) == "" {
+			return verificationError(FailureClassSemanticReceipt, "policy_digest is required when policy evidence is present")
+		}
+	}
 	if predicate.GovernedActions != nil {
 		if predicate.GovernedActions.Count != len(predicate.GovernedActions.Actions) {
 			return verificationError(FailureClassSemanticReceipt, "governed action raw count mismatch: count=%d actions=%d", predicate.GovernedActions.Count, len(predicate.GovernedActions.Actions))
@@ -209,11 +224,128 @@ func validateSemanticReceipt(statement Statement) error {
 	return nil
 }
 
+func validatePolicyEnvelope(policy *PolicyEnvelope) error {
+	if policy == nil {
+		return nil
+	}
+	if strings.TrimSpace(policy.Baseline.Language) == "" {
+		return fmt.Errorf("baseline language is required")
+	}
+	if policy.Baseline.CodeSizeBytes < 0 {
+		return fmt.Errorf("baseline code_size_bytes must be >= 0")
+	}
+	if policy.Baseline.MaxCodeBytes <= 0 {
+		return fmt.Errorf("baseline max_code_bytes must be > 0")
+	}
+	if policy.Baseline.CodeSizeBytes > policy.Baseline.MaxCodeBytes {
+		return fmt.Errorf("baseline code_size_bytes cannot exceed max_code_bytes")
+	}
+	if policy.Baseline.TimeoutMs < 0 {
+		return fmt.Errorf("baseline timeout_ms must be >= 0")
+	}
+	if policy.Baseline.MaxTimeoutMs <= 0 {
+		return fmt.Errorf("baseline max_timeout_ms must be > 0")
+	}
+	if policy.Baseline.TimeoutMs > policy.Baseline.MaxTimeoutMs {
+		return fmt.Errorf("baseline timeout_ms cannot exceed max_timeout_ms")
+	}
+	if policy.Baseline.Network != nil {
+		switch strings.TrimSpace(policy.Baseline.Network.Mode) {
+		case policycfg.NetworkModeNone, policycfg.NetworkModeEgressAllowlist:
+		default:
+			return fmt.Errorf("unexpected baseline network mode: %s", policy.Baseline.Network.Mode)
+		}
+		if policy.Baseline.Network.Mode == policycfg.NetworkModeNone && policy.Baseline.Network.Allowlist != nil && (len(policy.Baseline.Network.Allowlist.FQDNs) > 0 || len(policy.Baseline.Network.Allowlist.CIDRs) > 0) {
+			return fmt.Errorf("baseline network allowlist requires egress_allowlist mode")
+		}
+		if err := validateNetworkAllowlistEnvelope(policy.Baseline.Network.Allowlist); err != nil {
+			return fmt.Errorf("baseline network allowlist invalid: %w", err)
+		}
+	}
+	if policy.Intent != nil {
+		if strings.TrimSpace(policy.Intent.Digest) == "" {
+			return fmt.Errorf("intent digest is required when intent policy evidence is present")
+		}
+		switch policy.Intent.Source {
+		case "", PolicyIntentSourceContract, PolicyIntentSourceCompiledCapabilities:
+		default:
+			return fmt.Errorf("unexpected intent source: %s", policy.Intent.Source)
+		}
+	}
+	return nil
+}
+
+func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
+	if runtime == nil {
+		return nil
+	}
+	if runtime.VCPUCount < 0 {
+		return fmt.Errorf("vcpu_count must be >= 0")
+	}
+	if runtime.MemoryMB < 0 {
+		return fmt.Errorf("memory_mb must be >= 0")
+	}
+	for _, override := range runtime.AppliedOverrides {
+		if strings.TrimSpace(override) == "" {
+			return fmt.Errorf("applied_overrides must not contain blank values")
+		}
+	}
+	if runtime.Cgroup != nil {
+		if runtime.Cgroup.MemoryMaxMB < 0 {
+			return fmt.Errorf("cgroup memory_max_mb must be >= 0")
+		}
+		if runtime.Cgroup.MemoryHighMB < 0 {
+			return fmt.Errorf("cgroup memory_high_mb must be >= 0")
+		}
+		if runtime.Cgroup.MemoryHighMB > 0 && runtime.Cgroup.MemoryMaxMB > 0 && runtime.Cgroup.MemoryHighMB > runtime.Cgroup.MemoryMaxMB {
+			return fmt.Errorf("cgroup memory_high_mb cannot exceed memory_max_mb")
+		}
+		if runtime.Cgroup.PidsMax < 0 {
+			return fmt.Errorf("cgroup pids_max must be >= 0")
+		}
+	}
+	if runtime.Network != nil {
+		switch strings.TrimSpace(runtime.Network.Mode) {
+		case policycfg.NetworkModeNone, policycfg.NetworkModeEgressAllowlist:
+		default:
+			return fmt.Errorf("unexpected network mode: %s", runtime.Network.Mode)
+		}
+		if !runtime.Network.Enabled && runtime.Network.Mode != policycfg.NetworkModeNone {
+			return fmt.Errorf("disabled network must use mode none")
+		}
+		if runtime.Network.Enabled && runtime.Network.Mode == policycfg.NetworkModeNone {
+			return fmt.Errorf("enabled network cannot use mode none")
+		}
+		if runtime.Network.Mode == policycfg.NetworkModeNone && runtime.Network.Allowlist != nil && (len(runtime.Network.Allowlist.FQDNs) > 0 || len(runtime.Network.Allowlist.CIDRs) > 0) {
+			return fmt.Errorf("network allowlist requires egress_allowlist mode")
+		}
+		if err := validateNetworkAllowlistEnvelope(runtime.Network.Allowlist); err != nil {
+			return fmt.Errorf("network allowlist invalid: %w", err)
+		}
+		if err := validateBlockedEgressSummary(runtime.Network.BlockedEgress); err != nil {
+			return fmt.Errorf("blocked egress invalid: %w", err)
+		}
+	}
+	return nil
+}
+
 func applyLegacySemantics(statement *Statement) {
 	if statement == nil {
 		return
 	}
 	predicate := &statement.Predicate
+	if predicate.Policy != nil && predicate.Policy.Baseline.Network != nil {
+		mode, allowlist := normalizeReceiptNetwork(predicate.Policy.Baseline.Network.Mode, predicate.Policy.Baseline.Network.Presets, predicate.Policy.Baseline.Network.Allowlist)
+		predicate.Policy.Baseline.Network.Mode = mode
+		predicate.Policy.Baseline.Network.Presets = []string{}
+		predicate.Policy.Baseline.Network.Allowlist = allowlist
+	}
+	if predicate.Runtime != nil && predicate.Runtime.Network != nil {
+		mode, allowlist := normalizeReceiptNetwork(predicate.Runtime.Network.Mode, predicate.Runtime.Network.Presets, predicate.Runtime.Network.Allowlist)
+		predicate.Runtime.Network.Mode = mode
+		predicate.Runtime.Network.Presets = []string{}
+		predicate.Runtime.Network.Allowlist = allowlist
+	}
 	if predicate.GovernedActions != nil {
 		if predicate.GovernedActions.Count == 0 && len(predicate.GovernedActions.Actions) > 0 {
 			predicate.GovernedActions.Count = len(predicate.GovernedActions.Actions)
@@ -315,4 +447,95 @@ func validateGovernedAction(actionType string, capabilityPath string, decision s
 		return fmt.Errorf("non-brokered action cannot include binding_name")
 	}
 	return nil
+}
+
+func validateNetworkAllowlistEnvelope(allowlist *NetworkAllowlistEnvelope) error {
+	if allowlist == nil {
+		return nil
+	}
+	for _, domain := range allowlist.FQDNs {
+		if strings.TrimSpace(domain) == "" {
+			return fmt.Errorf("blank fqdn")
+		}
+	}
+	for _, cidr := range allowlist.CIDRs {
+		if strings.TrimSpace(cidr) == "" {
+			return fmt.Errorf("blank cidr")
+		}
+	}
+	return nil
+}
+
+func validateBlockedEgressSummary(summary *BlockedEgressSummary) error {
+	if summary == nil {
+		return nil
+	}
+	if summary.TotalCount < 0 {
+		return fmt.Errorf("total_count must be >= 0")
+	}
+	if summary.UniqueTargetCount < 0 {
+		return fmt.Errorf("unique_target_count must be >= 0")
+	}
+	if summary.UniqueTargetCount > summary.TotalCount {
+		return fmt.Errorf("unique_target_count cannot exceed total_count")
+	}
+	if len(summary.Sample) > 10 {
+		return fmt.Errorf("sample may include at most 10 targets")
+	}
+	if summary.SampleTruncated {
+		if summary.UniqueTargetCount <= len(summary.Sample) {
+			return fmt.Errorf("sample_truncated requires additional unique targets beyond the sample")
+		}
+	} else if summary.UniqueTargetCount != len(summary.Sample) {
+		return fmt.Errorf("sample must include every unique target when sample_truncated is false")
+	}
+	for idx, entry := range summary.Sample {
+		if strings.TrimSpace(entry.Target) == "" {
+			return fmt.Errorf("sample entry %d target is required", idx+1)
+		}
+		switch strings.TrimSpace(entry.Kind) {
+		case "ip", "fqdn", "rfc1918":
+		default:
+			return fmt.Errorf("sample entry %d has unexpected kind %q", idx+1, entry.Kind)
+		}
+		if entry.FirstSeenAt.IsZero() {
+			return fmt.Errorf("sample entry %d first_seen_at is required", idx+1)
+		}
+		if entry.Count <= 0 {
+			return fmt.Errorf("sample entry %d count must be > 0", idx+1)
+		}
+	}
+	return nil
+}
+
+func normalizeReceiptNetwork(mode string, presets []string, allowlist *NetworkAllowlistEnvelope) (string, *NetworkAllowlistEnvelope) {
+	normalized := policycfg.NormalizeNetworkPolicy(policycfg.NetworkPolicy{
+		Mode:    mode,
+		Presets: presets,
+		Allowlist: policycfg.NetworkAllowlist{
+			FQDNs: allowlistFQDNs(allowlist),
+			CIDRs: allowlistCIDRs(allowlist),
+		},
+	})
+	if normalized.Mode == policycfg.NetworkModeNone {
+		return normalized.Mode, nil
+	}
+	return normalized.Mode, &NetworkAllowlistEnvelope{
+		FQDNs: append([]string(nil), normalized.Allowlist.FQDNs...),
+		CIDRs: append([]string(nil), normalized.Allowlist.CIDRs...),
+	}
+}
+
+func allowlistFQDNs(allowlist *NetworkAllowlistEnvelope) []string {
+	if allowlist == nil {
+		return nil
+	}
+	return append([]string(nil), allowlist.FQDNs...)
+}
+
+func allowlistCIDRs(allowlist *NetworkAllowlistEnvelope) []string {
+	if allowlist == nil {
+		return nil
+	}
+	return append([]string(nil), allowlist.CIDRs...)
 }

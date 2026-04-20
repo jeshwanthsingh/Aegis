@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -172,16 +173,33 @@ func (e *Evaluator) evaluateConnect(event models.RuntimeEvent, result models.Pol
 		result.Reason = "network access is disabled by intent contract"
 		return result
 	}
+	if isLoopbackDestination(event.DstIP) {
+		result.Metadata["baseline"] = "runtime_loopback"
+		result.Reason = "allowed by runtime baseline"
+		return result
+	}
+	if event.DstPort != 80 && event.DstPort != 443 {
+		result.Decision = models.DecisionDeny
+		result.Reason = "destination is blocked by runtime network baseline"
+		return result
+	}
+	if isHardDeniedEgressDestination(event.DstIP) {
+		result.Decision = models.DecisionDeny
+		result.Reason = "destination is blocked by runtime network baseline"
+		return result
+	}
 
 	hasDomainRules := len(e.compiled.Principal.AllowedDomains) > 0
 	hasIPRules := len(e.compiled.Principal.AllowedIPs) > 0
 	if !hasDomainRules && !hasIPRules {
+		result.Decision = models.DecisionDeny
+		result.Reason = "destination is outside network allowlists"
 		return result
 	}
-	if event.Domain != "" && containsString(e.compiled.Principal.AllowedDomains, event.Domain) {
+	if event.Domain != "" && containsStringFold(e.compiled.Principal.AllowedDomains, event.Domain) {
 		return result
 	}
-	if event.DstIP != "" && containsString(e.compiled.Principal.AllowedIPs, event.DstIP) {
+	if event.DstIP != "" && containsCIDR(e.compiled.Principal.AllowedIPs, event.DstIP) {
 		return result
 	}
 	result.Decision = models.DecisionDeny
@@ -205,6 +223,56 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func containsStringFold(values []string, target string) bool {
+	target = strings.ToLower(strings.TrimSpace(target))
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), target) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCIDR(values []string, target string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(target))
+	if err != nil {
+		return false
+	}
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if strings.Contains(value, "/") {
+			prefix, err := netip.ParsePrefix(value)
+			if err == nil && prefix.Contains(addr) {
+				return true
+			}
+			continue
+		}
+		if parsed, err := netip.ParseAddr(value); err == nil && parsed == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func isLoopbackDestination(target string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(target))
+	return err == nil && addr.IsLoopback()
+}
+
+func isHardDeniedEgressDestination(target string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(target))
+	if err != nil {
+		return false
+	}
+	if addr.IsPrivate() {
+		return true
+	}
+	return addr == netip.MustParseAddr("169.254.169.254")
 }
 
 func pathMatchesAny(path string, prefixes []string) bool {

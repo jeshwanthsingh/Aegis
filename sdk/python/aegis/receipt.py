@@ -53,7 +53,12 @@ class Receipt:
         return self.predicate.get('execution_id')
 
     @property
-    def verdict(self) -> str | None:
+    def result_class(self) -> str | None:
+        result_class = self.predicate.get('result_class')
+        return result_class if isinstance(result_class, str) else None
+
+    @property
+    def divergence_verdict(self) -> str | None:
         divergence = self.predicate.get('divergence') or {}
         if isinstance(divergence, dict):
             return divergence.get('verdict')

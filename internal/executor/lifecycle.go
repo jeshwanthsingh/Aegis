@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -129,20 +130,46 @@ func resolveCgroupMemoryMaxMB(defaultMB int) int {
 	return defaultMB
 }
 
+type EffectiveCgroupLimits struct {
+	MemoryMaxMB      int
+	MemoryHighMB     int
+	PidsMax          int
+	CPUMax           string
+	SwapMax          string
+	AppliedOverrides []string
+}
+
+func ResolveCgroupLimits(resources policy.ResourcePolicy) EffectiveCgroupLimits {
+	limits := EffectiveCgroupLimits{
+		MemoryMaxMB: resolveCgroupMemoryMaxMB(resources.MemoryMaxMB),
+		PidsMax:     resources.PidsMax,
+		CPUMax:      fmt.Sprintf("%d 100000", resources.CPUPercent*1000),
+		SwapMax:     "0",
+	}
+	limits.MemoryHighMB = limits.MemoryMaxMB / 2
+	if limits.MemoryMaxMB != resources.MemoryMaxMB {
+		limits.AppliedOverrides = append(limits.AppliedOverrides, "AEGIS_VM_MEMORY_MB")
+	}
+	return limits
+}
+
 type NetworkConfig struct {
-	TapName      string
-	SubnetCIDR   string
-	HostIP       string
-	GuestIP      string
-	GatewayIP    string
-	GuestMAC     string
-	Mode         string
-	Presets      []string
-	allowedHosts map[string]struct{}
-	allowedIPs   map[string]struct{}
-	dnsConn      net.PacketConn
-	upstreamDNS  *net.Resolver
-	dnsMu        sync.Mutex
+	TapName         string
+	SubnetCIDR      string
+	HostIP          string
+	GuestIP         string
+	GatewayIP       string
+	GuestMAC        string
+	Mode            string
+	Presets         []string
+	Allowlist       policy.NetworkAllowlist
+	ResolvedIPs     []string
+	allowedHosts    map[string]struct{}
+	resolvedHostIPs map[string][]string
+	allowedIPs      map[string]struct{}
+	dnsConn         net.PacketConn
+	upstreamDNS     *net.Resolver
+	dnsMu           sync.Mutex
 }
 
 func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *telemetry.Bus) error {
@@ -156,22 +183,22 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *tel
 		return fmt.Errorf("create cgroup dir: %w", err)
 	}
 
-	memoryMaxMB := resolveCgroupMemoryMaxMB(resources.MemoryMaxMB)
-	if memoryMaxMB != resources.MemoryMaxMB {
-		observability.Info("cgroup_memory_override", observability.Fields{"execution_id": uuid, "policy_memory_mb": resources.MemoryMaxMB, "effective_memory_mb": memoryMaxMB})
+	limits := ResolveCgroupLimits(resources)
+	if limits.MemoryMaxMB != resources.MemoryMaxMB {
+		observability.Info("cgroup_memory_override", observability.Fields{"execution_id": uuid, "policy_memory_mb": resources.MemoryMaxMB, "effective_memory_mb": limits.MemoryMaxMB})
 	}
 
-	limits := []struct {
+	writes := []struct {
 		file  string
 		value string
 	}{
-		{"memory.max", fmt.Sprintf("%dM", memoryMaxMB)},
-		{"memory.high", fmt.Sprintf("%dM", memoryMaxMB/2)},
-		{"pids.max", strconv.Itoa(resources.PidsMax)},
-		{"cpu.max", fmt.Sprintf("%d 100000", resources.CPUPercent*1000)},
-		{"memory.swap.max", "0"},
+		{"memory.max", fmt.Sprintf("%dM", limits.MemoryMaxMB)},
+		{"memory.high", fmt.Sprintf("%dM", limits.MemoryHighMB)},
+		{"pids.max", strconv.Itoa(limits.PidsMax)},
+		{"cpu.max", limits.CPUMax},
+		{"memory.swap.max", limits.SwapMax},
 	}
-	for _, w := range limits {
+	for _, w := range writes {
 		path := filepath.Join(cgPath, w.file)
 		if err := os.WriteFile(path, []byte(w.value), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", w.file, err)
@@ -182,17 +209,17 @@ func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *tel
 		return fmt.Errorf("write cgroup.procs: %w", err)
 	}
 	emitIfBus(bus, telemetry.KindCgroupConfigured, telemetry.CgroupConfiguredData{
-		MemoryMax:  limits[0].value,
-		MemoryHigh: limits[1].value,
-		PidsMax:    limits[2].value,
-		CpuMax:     limits[3].value,
-		SwapMax:    limits[4].value,
+		MemoryMax:  writes[0].value,
+		MemoryHigh: writes[1].value,
+		PidsMax:    writes[2].value,
+		CpuMax:     writes[3].value,
+		SwapMax:    writes[4].value,
 	})
 	return nil
 }
 
 func CreateScratchDisk(uuid string) (string, error) {
-	path := fmt.Sprintf("/tmp/aegis/scratch-%s.ext4", uuid)
+	path := scratchDiskPath(uuid)
 	if err := createExt4Disk(path, 50); err != nil {
 		return "", err
 	}
@@ -200,8 +227,9 @@ func CreateScratchDisk(uuid string) (string, error) {
 }
 
 func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*NetworkConfig, error) {
-	mode := np.Mode
-	if mode == "" || mode == "none" {
+	np = policy.NormalizeNetworkPolicy(np)
+	mode := policy.NormalizeNetworkMode(np.Mode)
+	if mode == policy.NetworkModeNone {
 		return nil, nil
 	}
 
@@ -213,22 +241,22 @@ func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*
 		}
 	}()
 
-	if err := runCmd("ip", "tuntap", "add", "dev", cfg.TapName, "mode", "tap"); err != nil {
+	if err := runNetworkCmd("ip", "tuntap", "add", "dev", cfg.TapName, "mode", "tap"); err != nil {
 		return nil, err
 	}
-	if err := runCmd("ip", "addr", "add", cfg.HostIP+"/30", "dev", cfg.TapName); err != nil {
+	if err := runNetworkCmd("ip", "addr", "add", cfg.HostIP+"/30", "dev", cfg.TapName); err != nil {
 		return nil, err
 	}
-	if err := runCmd("ip", "link", "set", cfg.TapName, "up"); err != nil {
+	if err := runNetworkCmd("ip", "link", "set", cfg.TapName, "up"); err != nil {
 		return nil, err
 	}
-	if err := runCmd("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+	if err := runNetworkCmd("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return nil, err
 	}
-	if err := runCmd("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", cfg.SubnetCIDR, "!", "-d", cfg.SubnetCIDR, "-j", "MASQUERADE"); err != nil {
+	if err := runNetworkCmd("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", cfg.SubnetCIDR, "!", "-d", cfg.SubnetCIDR, "-j", "MASQUERADE"); err != nil {
 		return nil, err
 	}
-	if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-j", "DROP"); err != nil {
+	if err := runNetworkCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-j", "DROP"); err != nil {
 		return nil, err
 	}
 	emitIfBus(bus, telemetry.KindNetRuleDrop, telemetry.NetRuleData{
@@ -237,31 +265,39 @@ func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*
 		Direction: "outbound",
 	})
 
-	if mode == "allowlist" {
-		hosts, err := resolvePresetHosts(np.Presets)
-		if err != nil {
-			return nil, err
-		}
-		for _, host := range hosts {
-			cfg.allowedHosts[normalizeHostname(host)] = struct{}{}
-		}
-		if err := startDNSInterceptor(cfg, bus); err != nil {
-			return nil, err
-		}
-	} else {
-		for _, port := range []string{"80", "443"} {
-			if err := runCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "--dport", port, "-j", "ACCEPT"); err != nil {
+	if mode == policy.NetworkModeEgressAllowlist {
+		for _, cidr := range cfg.Allowlist.CIDRs {
+			if err := allowCIDR(cfg, cidr, bus); err != nil {
 				return nil, err
 			}
 		}
-		emitIfBus(bus, telemetry.KindNetRuleAdd, telemetry.NetRuleData{
-			Rule:  "ACCEPT",
-			Ports: "80,443",
-		})
+		if len(cfg.Allowlist.FQDNs) > 0 {
+			cfg.upstreamDNS = newUpstreamResolver()
+		}
+		for _, host := range cfg.Allowlist.FQDNs {
+			cfg.allowedHosts[normalizeHostname(host)] = struct{}{}
+			resolved, err := resolveAllowlistHostIPv4s(cfg.upstreamDNS, host)
+			if err != nil {
+				return nil, fmt.Errorf("resolve allowlist host %q: %w", host, err)
+			}
+			cfg.dnsMu.Lock()
+			cfg.resolvedHostIPs[normalizeHostname(host)] = append([]string(nil), resolved...)
+			cfg.dnsMu.Unlock()
+			for _, ip := range resolved {
+				if err := allowResolvedIP(cfg, ip, bus); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if len(cfg.Allowlist.FQDNs) > 0 {
+			if err := startDNSInterceptorFunc(cfg, bus); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	for _, rule := range forwardRules(cfg, false) {
-		if err := runCmd("iptables", rule...); err != nil {
+		if err := runNetworkCmd("iptables", rule...); err != nil {
 			return nil, err
 		}
 	}
@@ -398,41 +434,43 @@ func CleanupLeakedNetworks() error {
 func teardownNetwork(cfg *NetworkConfig) error {
 	var errs []error
 
-	if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-j", "DROP"); err != nil && !isMissingRule(err) {
+	if err := runNetworkCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-j", "DROP"); err != nil && !isMissingRule(err) {
 		errs = append(errs, err)
 	}
 
 	for _, rule := range forwardRules(cfg, true) {
-		if err := runCmd("iptables", rule...); err != nil && !isMissingRule(err) {
+		if err := runNetworkCmd("iptables", rule...); err != nil && !isMissingRule(err) {
 			errs = append(errs, err)
 		}
 	}
 
-	if cfg.Mode == "allowlist" {
+	mode := policy.NormalizeNetworkMode(cfg.Mode)
+	if mode == policy.NetworkModeEgressAllowlist {
 		if cfg.dnsConn != nil {
 			if err := cfg.dnsConn.Close(); err != nil {
 				errs = append(errs, err)
 			}
 		}
-		for _, ip := range snapshotAllowedIPs(cfg) {
+		for _, cidr := range cfg.Allowlist.CIDRs {
 			for _, port := range []string{"80", "443"} {
-				if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", port, "-j", "ACCEPT"); err != nil && !isMissingRule(err) {
+				if err := runNetworkCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", cidr, "--dport", port, "-j", "ACCEPT"); err != nil && !isMissingRule(err) {
 					errs = append(errs, err)
 				}
 			}
 		}
-	} else if cfg.Mode == "isolated" {
-		for _, port := range []string{"80", "443"} {
-			if err := runCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "--dport", port, "-j", "ACCEPT"); err != nil && !isMissingRule(err) {
-				errs = append(errs, err)
+		for _, ip := range snapshotAllowedIPs(cfg) {
+			for _, port := range []string{"80", "443"} {
+				if err := runNetworkCmd("iptables", "-D", "FORWARD", "-i", cfg.TapName, "-p", "tcp", "-d", ip, "--dport", port, "-j", "ACCEPT"); err != nil && !isMissingRule(err) {
+					errs = append(errs, err)
+				}
 			}
 		}
 	}
 
-	if err := runCmd("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", cfg.SubnetCIDR, "!", "-d", cfg.SubnetCIDR, "-j", "MASQUERADE"); err != nil && !isMissingRule(err) {
+	if err := runNetworkCmd("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", cfg.SubnetCIDR, "!", "-d", cfg.SubnetCIDR, "-j", "MASQUERADE"); err != nil && !isMissingRule(err) {
 		errs = append(errs, err)
 	}
-	if err := runCmd("ip", "link", "del", cfg.TapName); err != nil && !strings.Contains(err.Error(), "Cannot find device") {
+	if err := runNetworkCmd("ip", "link", "del", cfg.TapName); err != nil && !strings.Contains(err.Error(), "Cannot find device") {
 		errs = append(errs, err)
 	}
 	if len(errs) > 0 {
@@ -444,17 +482,21 @@ func teardownNetwork(cfg *NetworkConfig) error {
 func newNetworkConfig(execID string, np policy.NetworkPolicy) *NetworkConfig {
 	short := shortID(execID)
 	subnet, hostIP, guestIP := subnetForID(short)
+	np = policy.NormalizeNetworkPolicy(np)
 	return &NetworkConfig{
-		TapName:      "tap-" + short,
-		SubnetCIDR:   subnet,
-		HostIP:       hostIP,
-		GuestIP:      guestIP,
-		GatewayIP:    hostIP,
-		GuestMAC:     "AA:FC:00:00:00:01",
-		Mode:         np.Mode,
-		Presets:      append([]string(nil), np.Presets...),
-		allowedHosts: map[string]struct{}{},
-		allowedIPs:   map[string]struct{}{},
+		TapName:         "tap-" + short,
+		SubnetCIDR:      subnet,
+		HostIP:          hostIP,
+		GuestIP:         guestIP,
+		GatewayIP:       hostIP,
+		GuestMAC:        "AA:FC:00:00:00:01",
+		Mode:            np.Mode,
+		Presets:         []string{},
+		Allowlist:       policy.CloneAllowlist(np.Allowlist),
+		ResolvedIPs:     []string{},
+		allowedHosts:    map[string]struct{}{},
+		resolvedHostIPs: map[string][]string{},
+		allowedIPs:      map[string]struct{}{},
 	}
 }
 
@@ -508,7 +550,13 @@ func snapshotAllowedIPs(cfg *NetworkConfig) []string {
 	return ips
 }
 
-var runAllowlistRuleCmd = runCmd
+var runAllowlistRuleCmd = runPrivilegedCmd
+var runNetworkCmd = runPrivilegedCmd
+var startDNSInterceptorFunc = startDNSInterceptor
+var combinedOutputRunner = func(cmd *exec.Cmd) ([]byte, error) {
+	return cmd.CombinedOutput()
+}
+var newExecCommand = exec.Command
 
 func parseNameserverList(contents string) []string {
 	var servers []string
@@ -582,6 +630,8 @@ func allowResolvedIP(cfg *NetworkConfig, ip string, bus *telemetry.Bus) error {
 		return nil
 	}
 	cfg.allowedIPs[ip] = struct{}{}
+	cfg.ResolvedIPs = append(cfg.ResolvedIPs, ip)
+	sort.Strings(cfg.ResolvedIPs)
 	cfg.dnsMu.Unlock()
 
 	addedPorts := make([]string, 0, 2)
@@ -605,6 +655,46 @@ func allowResolvedIP(cfg *NetworkConfig, ip string, bus *telemetry.Bus) error {
 	return nil
 }
 
+func allowCIDR(cfg *NetworkConfig, cidr string, bus *telemetry.Bus) error {
+	for _, port := range []string{"80", "443"} {
+		if err := runNetworkCmd("iptables", "-I", "FORWARD", "1", "-i", cfg.TapName, "-p", "tcp", "-d", cidr, "--dport", port, "-j", "ACCEPT"); err != nil {
+			return err
+		}
+		emitIfBus(bus, telemetry.KindNetRuleAdd, telemetry.NetRuleData{
+			Rule:  "ACCEPT",
+			Dst:   cidr,
+			Ports: port,
+		})
+	}
+	return nil
+}
+
+func resolveAllowlistHostIPv4s(resolver *net.Resolver, host string) ([]string, error) {
+	ips, err := lookupAllowlistIPv4(context.Background(), resolver, host)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	resolved := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		ip4 := ip.To4()
+		if ip4 == nil {
+			continue
+		}
+		value := ip4.String()
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		resolved = append(resolved, value)
+	}
+	sort.Strings(resolved)
+	if len(resolved) == 0 {
+		return nil, fmt.Errorf("no IPv4 addresses returned")
+	}
+	return resolved, nil
+}
+
 var lookupAllowlistIPv4 = func(ctx context.Context, resolver *net.Resolver, host string) ([]net.IP, error) {
 	if resolver == nil {
 		resolver = newUpstreamResolver()
@@ -614,8 +704,7 @@ var lookupAllowlistIPv4 = func(ctx context.Context, resolver *net.Resolver, host
 
 func startDNSInterceptor(cfg *NetworkConfig, bus *telemetry.Bus) error {
 	addr := net.JoinHostPort(cfg.HostIP, "53")
-	cfg.upstreamDNS = newUpstreamResolver()
-	observability.Info("dns_interceptor_start", observability.Fields{"tap_name": cfg.TapName, "addr": addr, "presets": cfg.Presets})
+	observability.Info("dns_interceptor_start", observability.Fields{"tap_name": cfg.TapName, "addr": addr, "allowlist_fqdns": cfg.Allowlist.FQDNs})
 	conn, err := net.ListenPacket("udp4", addr)
 	if err != nil {
 		return fmt.Errorf("start dns interceptor: %w", err)
@@ -729,31 +818,24 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte, bus *telemetry.Bus) ([]byt
 	}
 
 	if question.Type == dnsmessage.TypeA {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		ips, err := lookupAllowlistIPv4(ctx, cfg.upstreamDNS, name)
-		observability.Info("dns_upstream_resolve", observability.Fields{"tap_name": cfg.TapName, "name": name, "ips": ips, "resolve_error": err})
-		if err != nil {
+		cfg.dnsMu.Lock()
+		resolved := append([]string(nil), cfg.resolvedHostIPs[name]...)
+		cfg.dnsMu.Unlock()
+		if len(resolved) == 0 {
 			emitIfBus(bus, telemetry.KindDNSQuery, telemetry.DNSQueryData{
 				Domain: name,
 				Action: "error",
-				Reason: err.Error(),
+				Reason: "allowlist host has no resolved IPv4 addresses",
 			})
 			return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
 		}
 		answerCount := 0
-		resolvedIPs := make([]string, 0, len(ips))
-		for _, ip := range ips {
-			ip4 := ip.To4()
-			if ip4 == nil {
-				continue
-			}
-			if err := allowResolvedIP(cfg, ip4.String(), bus); err != nil {
+		for _, value := range resolved {
+			if err := allowResolvedIP(cfg, value, bus); err != nil {
 				return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
 			}
-			resolvedIPs = append(resolvedIPs, ip4.String())
 			var arr [4]byte
-			copy(arr[:], ip4)
+			copy(arr[:], net.ParseIP(value).To4())
 			if err := builder.AResource(dnsmessage.ResourceHeader{
 				Name:  question.Name,
 				Type:  dnsmessage.TypeA,
@@ -767,7 +849,7 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte, bus *telemetry.Bus) ([]byt
 		emitIfBus(bus, telemetry.KindDNSQuery, telemetry.DNSQueryData{
 			Domain:   name,
 			Action:   "allow",
-			Resolved: resolvedIPs,
+			Resolved: resolved,
 		})
 		observability.Info("dns_answered_a", observability.Fields{"tap_name": cfg.TapName, "name": name, "answer_count": answerCount})
 	} else {
@@ -816,9 +898,25 @@ func forwardRules(cfg *NetworkConfig, delete bool) [][]string {
 	}
 }
 
+func runPrivilegedCmd(name string, args ...string) error {
+	cmd := newExecCommand(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		AmbientCaps: []uintptr{
+			uintptr(unix.CAP_NET_BIND_SERVICE),
+			uintptr(unix.CAP_NET_ADMIN),
+			uintptr(unix.CAP_NET_RAW),
+		},
+	}
+	output, err := combinedOutputRunner(cmd)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func runCmd(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	output, err := cmd.CombinedOutput()
+	cmd := newExecCommand(name, args...)
+	output, err := combinedOutputRunner(cmd)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}

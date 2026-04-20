@@ -26,7 +26,9 @@ type Input struct {
 	StartedAt       time.Time
 	FinishedAt      time.Time
 	IntentRaw       []byte
+	Policy          *PolicyEnvelope
 	Outcome         Outcome
+	Runtime         *RuntimeEnvelope
 	TelemetryEvents []telemetry.Event
 	OutputArtifacts []Artifact
 	Attributes      map[string]string
@@ -96,6 +98,88 @@ type TrustPosture struct {
 	Limitations          []string    `json:"limitations,omitempty"`
 }
 
+type RuntimeEnvelope struct {
+	Profile          string                  `json:"profile,omitempty"`
+	VCPUCount        int                     `json:"vcpu_count,omitempty"`
+	MemoryMB         int                     `json:"memory_mb,omitempty"`
+	Cgroup           *RuntimeCgroupEnvelope  `json:"cgroup,omitempty"`
+	Network          *RuntimeNetworkEnvelope `json:"network,omitempty"`
+	Broker           *RuntimeBrokerEnvelope  `json:"broker,omitempty"`
+	AppliedOverrides []string                `json:"applied_overrides,omitempty"`
+}
+
+type RuntimeCgroupEnvelope struct {
+	MemoryMaxMB  int    `json:"memory_max_mb,omitempty"`
+	MemoryHighMB int    `json:"memory_high_mb,omitempty"`
+	PidsMax      int    `json:"pids_max,omitempty"`
+	CPUMax       string `json:"cpu_max,omitempty"`
+	SwapMax      string `json:"swap_max,omitempty"`
+}
+
+type RuntimeNetworkEnvelope struct {
+	Enabled       bool                      `json:"enabled"`
+	Mode          string                    `json:"mode"`
+	Presets       []string                  `json:"presets"`
+	Allowlist     *NetworkAllowlistEnvelope `json:"allowlist,omitempty"`
+	BlockedEgress *BlockedEgressSummary     `json:"blocked_egress,omitempty"`
+}
+
+type RuntimeBrokerEnvelope struct {
+	Enabled bool `json:"enabled"`
+}
+
+type PolicyIntentSource string
+
+const (
+	PolicyIntentSourceContract             PolicyIntentSource = "intent_contract"
+	PolicyIntentSourceCompiledCapabilities PolicyIntentSource = "compiled_capabilities"
+)
+
+type PolicyEnvelope struct {
+	Baseline BaselinePolicy      `json:"baseline"`
+	Intent   *IntentPolicyDigest `json:"intent,omitempty"`
+}
+
+type BaselinePolicy struct {
+	Language      string                 `json:"language"`
+	CodeSizeBytes int                    `json:"code_size_bytes"`
+	MaxCodeBytes  int                    `json:"max_code_bytes"`
+	TimeoutMs     int                    `json:"timeout_ms"`
+	MaxTimeoutMs  int                    `json:"max_timeout_ms"`
+	Profile       string                 `json:"profile,omitempty"`
+	Network       *BaselineNetworkPolicy `json:"network,omitempty"`
+}
+
+type BaselineNetworkPolicy struct {
+	Mode      string                    `json:"mode"`
+	Presets   []string                  `json:"presets"`
+	Allowlist *NetworkAllowlistEnvelope `json:"allowlist,omitempty"`
+}
+
+type NetworkAllowlistEnvelope struct {
+	FQDNs []string `json:"fqdns"`
+	CIDRs []string `json:"cidrs"`
+}
+
+type BlockedEgressSummary struct {
+	TotalCount        int                  `json:"total_count"`
+	UniqueTargetCount int                  `json:"unique_target_count"`
+	Sample            []BlockedEgressEntry `json:"sample"`
+	SampleTruncated   bool                 `json:"sample_truncated"`
+}
+
+type BlockedEgressEntry struct {
+	Target      string    `json:"target"`
+	Kind        string    `json:"kind"`
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	Count       int       `json:"count"`
+}
+
+type IntentPolicyDigest struct {
+	Digest string             `json:"digest"`
+	Source PolicyIntentSource `json:"source,omitempty"`
+}
+
 type ExecutionReceiptPredicate struct {
 	Version            string                 `json:"version"`
 	ExecutionID        string                 `json:"execution_id"`
@@ -111,12 +195,14 @@ type ExecutionReceiptPredicate struct {
 	PolicyDigest       string                 `json:"policy_digest,omitempty"`
 	IntentDigest       string                 `json:"intent_digest,omitempty"`
 	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
+	Policy             *PolicyEnvelope        `json:"policy,omitempty"`
 	EvidenceDigest     string                 `json:"evidence_digest"`
 	EvidenceDigestAlgo string                 `json:"evidence_digest_algo"`
 	RuntimeEventCount  int                    `json:"runtime_event_count"`
 	PointDecisions     PointDecisionSummary   `json:"point_decisions"`
 	Divergence         DivergenceSummary      `json:"divergence"`
 	Outcome            Outcome                `json:"outcome"`
+	Runtime            *RuntimeEnvelope       `json:"runtime,omitempty"`
 	Trust              TrustPosture           `json:"trust"`
 	Limitations        []string               `json:"limitations,omitempty"`
 	StartedAt          time.Time              `json:"started_at"`

@@ -129,8 +129,8 @@ func TestReceiptAndExecutionHelpers(t *testing.T) {
 		t.Fatalf("cloneRawJSON mutated source: %s", string(raw))
 	}
 
-	if verdictFor(0, "completed") != "completed" || verdictFor(1, "failed") != "contained" {
-		t.Fatal("unexpected verdictFor results")
+	if containmentVerdictForOutcome(0, "completed") != "completed" || containmentVerdictForOutcome(1, "failed") != "contained" {
+		t.Fatal("unexpected containmentVerdictForOutcome results")
 	}
 	if outcome, reason, verdict := classifyExecutionResult(0, "divergence_terminated"); outcome != "contained" || reason != "terminated_on_divergence" || verdict != "contained" {
 		t.Fatalf("unexpected divergence classification: %s %s %s", outcome, reason, verdict)
@@ -143,40 +143,105 @@ func TestReceiptAndExecutionHelpers(t *testing.T) {
 	}
 }
 
-func TestPolicyAndCleanupHelpers(t *testing.T) {
-	if got := buildReceiptPolicy(nil, "v1", "default"); got.Version != "v1" || got.Profile != "default" {
-		t.Fatalf("nil policy receipt policy = %+v", got)
-	}
-
-	pol := &policy.Policy{
-		Network: policy.NetworkPolicy{
-			Mode:    "egress",
-			Presets: []string{"npm", "npm"},
-		},
-		Resources: policy.ResourcePolicy{
-			MemoryMaxMB: 256,
-			PidsMax:     32,
-			CPUPercent:  50,
-		},
-	}
-	got := buildReceiptPolicy(pol, "v2", "default")
-	if got.NetworkMode != "egress" || len(got.AllowedDomains) == 0 {
-		t.Fatalf("buildReceiptPolicy = %+v", got)
-	}
-
-	vm := &executor.VMInstance{}
-	vm.Cleanup.AllClean = true
-	vm.Cleanup.CgroupRemoved = true
-	cleanup := cleanupFromVM(vm)
-	if !cleanup.AllClean || !cleanup.CgroupRemoved {
-		t.Fatalf("cleanupFromVM = %+v", cleanup)
-	}
-	if zero := cleanupFromVM(nil); zero.AllClean {
-		t.Fatalf("cleanupFromVM(nil) = %+v", zero)
-	}
-
+func TestEnforcementCallbackNilVM(t *testing.T) {
 	if enforcementCallback("exec-1", nil, nil) != nil {
 		t.Fatal("expected nil callback for nil VM")
+	}
+}
+
+func TestRuntimeEnvelopeForExecutionUsesEffectiveState(t *testing.T) {
+	vm := &executor.VMInstance{
+		VCPUCount:        2,
+		MemoryMB:         768,
+		AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},
+		Network: &executor.NetworkConfig{
+			Mode: policy.NetworkModeEgressAllowlist,
+			Allowlist: policy.NetworkAllowlist{
+				FQDNs: []string{"api.github.com"},
+				CIDRs: []string{"198.51.100.0/24"},
+			},
+		},
+	}
+	cgroup := &executor.EffectiveCgroupLimits{
+		MemoryMaxMB:      896,
+		MemoryHighMB:     448,
+		PidsMax:          100,
+		CPUMax:           "50000 100000",
+		SwapMax:          "0",
+		AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},
+	}
+
+	runtime := runtimeEnvelopeForExecution(ExecuteRequest{Profile: "standard"}, vm, cgroup, true)
+	if runtime == nil {
+		t.Fatal("expected runtime envelope")
+	}
+	if runtime.Profile != "standard" || runtime.VCPUCount != 2 || runtime.MemoryMB != 768 {
+		t.Fatalf("unexpected runtime envelope core: %+v", runtime)
+	}
+	if runtime.Cgroup == nil || runtime.Cgroup.MemoryMaxMB != 896 || runtime.Cgroup.CPUMax != "50000 100000" {
+		t.Fatalf("unexpected cgroup envelope: %+v", runtime.Cgroup)
+	}
+	if runtime.Network == nil || !runtime.Network.Enabled || runtime.Network.Mode != policy.NetworkModeEgressAllowlist {
+		t.Fatalf("unexpected network envelope: %+v", runtime.Network)
+	}
+	if runtime.Network.Allowlist == nil || strings.Join(runtime.Network.Allowlist.CIDRs, ",") != "198.51.100.0/24" {
+		t.Fatalf("unexpected network allowlist: %+v", runtime.Network.Allowlist)
+	}
+	if runtime.Broker == nil || !runtime.Broker.Enabled {
+		t.Fatalf("unexpected broker envelope: %+v", runtime.Broker)
+	}
+	if got := strings.Join(runtime.AppliedOverrides, ","); got != "AEGIS_VM_MEMORY_MB" {
+		t.Fatalf("unexpected overrides: %q", got)
+	}
+}
+
+func TestPolicyEvidenceForExecutionBareRun(t *testing.T) {
+	pol := policy.Default()
+	req := ExecuteRequest{
+		Lang:      "bash",
+		Code:      "echo hello",
+		TimeoutMs: 5000,
+		Profile:   "nano",
+	}
+	policyEvidence, err := policyEvidenceForExecution(req, pol, req.TimeoutMs)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+	if policyEvidence == nil {
+		t.Fatal("expected policy evidence")
+	}
+	if policyEvidence.Intent != nil {
+		t.Fatalf("expected no intent extension, got %+v", policyEvidence.Intent)
+	}
+	if policyEvidence.Baseline.Language != "bash" || policyEvidence.Baseline.CodeSizeBytes != len(req.Code) {
+		t.Fatalf("unexpected baseline policy: %+v", policyEvidence.Baseline)
+	}
+	if policyEvidence.Baseline.Network == nil || policyEvidence.Baseline.Network.Mode != "none" {
+		t.Fatalf("unexpected baseline network policy: %+v", policyEvidence.Baseline.Network)
+	}
+}
+
+func TestPolicyEvidenceForExecutionIntentExtendsBaseline(t *testing.T) {
+	pol := policy.Default()
+	req := ExecuteRequest{
+		Lang:      "python",
+		Code:      "print('hi')",
+		TimeoutMs: 4000,
+		Profile:   "standard",
+		Intent:    json.RawMessage(`{"version":"v1","execution_id":"11111111-1111-4111-8111-111111111111","workflow_id":"wf-1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":["/workspace/out"],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}`),
+	}
+	policyEvidence, err := policyEvidenceForExecution(req, pol, req.TimeoutMs)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+	if policyEvidence == nil || policyEvidence.Intent == nil {
+		t.Fatalf("expected intent policy extension: %+v", policyEvidence)
+	}
+	if policyEvidence.Intent.Source != receipt.PolicyIntentSourceContract {
+		t.Fatalf("unexpected intent source: %q", policyEvidence.Intent.Source)
+	}
+	if policyEvidence.Baseline.Profile != "standard" || policyEvidence.Baseline.TimeoutMs != 4000 {
+		t.Fatalf("unexpected baseline policy: %+v", policyEvidence.Baseline)
 	}
 }
 

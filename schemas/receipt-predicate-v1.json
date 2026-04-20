@@ -2,43 +2,36 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aegis.dev/schemas/receipt-predicate-v1.json",
   "title": "Aegis ExecutionReceipt predicate v1",
-  "description": "Custom Aegis predicate payload embedded inside an in-toto Statement v1 and then wrapped in DSSE.",
+  "description": "Current Aegis predicate payload embedded inside an in-toto Statement v1 and wrapped in DSSE.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "version",
     "execution_id",
-    "workflow_id",
     "backend",
-    "intent_digest",
-    "event_log_digest",
-    "verdict",
-    "violations",
-    "broker_actions",
-    "resource_summary",
-    "network_summary",
-    "cleanup_summary",
-    "telemetry_summary",
-    "host_attestation",
+    "result_class",
+    "policy_digest",
+    "policy",
+    "evidence_digest",
+    "evidence_digest_algo",
+    "runtime_event_count",
+    "point_decisions",
+    "divergence",
+    "outcome",
+    "trust",
     "started_at",
-    "finished_at"
+    "finished_at",
+    "signer_key_id"
   ],
   "properties": {
     "version": {
-      "const": "v1",
-      "description": "Schema version for the Aegis predicate."
+      "const": "v1"
     },
     "execution_id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      "$ref": "#/$defs/non_empty_string"
     },
     "workflow_id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      "$ref": "#/$defs/non_empty_string"
     },
     "backend": {
       "type": "string",
@@ -47,255 +40,728 @@
         "gvisor"
       ]
     },
-    "intent_digest": {
-      "$ref": "#/$defs/digest",
-      "description": "Digest of the canonicalized IntentContract payload."
+    "task_class": {
+      "$ref": "#/$defs/non_empty_string"
     },
-    "event_log_digest": {
-      "$ref": "#/$defs/digest",
-      "description": "Digest of the normalized event stream or canonical event log representation."
+    "declared_purpose": {
+      "$ref": "#/$defs/non_empty_string"
     },
-    "verdict": {
+    "workspace_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "execution_status": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "semantics_mode": {
+      "type": "string",
+      "enum": [
+        "explicit_v1",
+        "legacy_derived"
+      ]
+    },
+    "result_class": {
       "type": "string",
       "enum": [
         "completed",
-        "killed_on_divergence",
-        "budget_exceeded",
-        "failed"
-      ],
-      "description": "Final execution outcome after enforcement and teardown."
-    },
-    "violations": {
-      "type": "array",
-      "items": {
-        "$ref": "violation-v1.json"
-      },
-      "maxItems": 1024,
-      "description": "Violations recorded during the execution."
-    },
-    "broker_actions": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/broker_action"
-      },
-      "maxItems": 512,
-      "description": "Summary of brokered actions observed during the execution."
-    },
-    "resource_summary": {
-      "$ref": "#/$defs/summary_object"
-    },
-    "network_summary": {
-      "$ref": "#/$defs/summary_object"
-    },
-    "cleanup_summary": {
-      "$ref": "#/$defs/summary_object"
-    },
-    "telemetry_summary": {
-      "$ref": "#/$defs/telemetry_summary"
-    },
-    "host_attestation": {
-      "description": "Optional host trust reference. Null for unsigned-host or non-attested runs.",
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "$ref": "#/$defs/host_attestation"
-        }
+        "denied",
+        "abnormal",
+        "reconciled"
       ]
     },
+    "denial": {
+      "$ref": "#/$defs/denial_summary"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "intent_digest": {
+      "$ref": "#/$defs/digest_hex"
+    },
+    "intent_digest_algo": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy_envelope"
+    },
+    "evidence_digest": {
+      "$ref": "#/$defs/digest_hex"
+    },
+    "evidence_digest_algo": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "runtime_event_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "point_decisions": {
+      "$ref": "#/$defs/point_decision_summary"
+    },
+    "divergence": {
+      "$ref": "#/$defs/divergence_summary"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "runtime": {
+      "$ref": "#/$defs/runtime_envelope"
+    },
+    "trust": {
+      "$ref": "#/$defs/trust_posture"
+    },
+    "limitations": {
+      "$ref": "#/$defs/string_list"
+    },
     "started_at": {
-      "type": "string",
-      "format": "date-time",
-      "description": "RFC 3339 execution start time."
+      "$ref": "#/$defs/date_time"
     },
     "finished_at": {
-      "type": "string",
-      "format": "date-time",
-      "description": "RFC 3339 execution end time."
+      "$ref": "#/$defs/date_time"
     },
-    "output_artifacts": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/output_artifact"
-      },
-      "maxItems": 512,
-      "description": "Optional convenience copy of produced artifacts for indexing. Canonical artifact binding belongs in in-toto `subject[]`, not in this predicate."
+    "signer_key_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "broker_summary": {
+      "$ref": "#/$defs/broker_summary"
+    },
+    "governed_actions": {
+      "$ref": "#/$defs/governed_action_summary"
+    },
+    "metadata": {
+      "$ref": "#/$defs/string_map"
     }
   },
   "$defs": {
-    "digest": {
+    "non_empty_string": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 256,
-      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]{16,}$"
+      "minLength": 1
     },
-    "summary_value": {
-      "oneOf": [
-        {
+    "date_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "digest_hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32,}$"
+    },
+    "string_list": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "string_list_or_null": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "string_map": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "denial_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class"
+      ],
+      "properties": {
+        "class": {
           "type": "string",
-          "maxLength": 1024
+          "enum": [
+            "governed_action",
+            "policy"
+          ]
         },
-        {
+        "rule_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "marker": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "point_decision_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allow_count",
+        "deny_count",
+        "not_applicable_count"
+      ],
+      "properties": {
+        "allow_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deny_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_applicable_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "divergence_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "rule_hit_count"
+      ],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "warn",
+            "kill_candidate"
+          ]
+        },
+        "triggered_rule_ids": {
+          "$ref": "#/$defs/string_list"
+        },
+        "rule_hit_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ExitCode",
+        "Reason",
+        "ContainmentVerdict",
+        "OutputTruncated"
+      ],
+      "properties": {
+        "ExitCode": {
           "type": "integer"
         },
-        {
-          "type": "number"
+        "Reason": {
+          "$ref": "#/$defs/non_empty_string"
         },
-        {
+        "ContainmentVerdict": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "OutputTruncated": {
           "type": "boolean"
-        }
-      ]
-    },
-    "summary_object": {
-      "type": "object",
-      "description": "Compact execution summary for operator inspection and verification input.",
-      "propertyNames": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 64,
-        "pattern": "^[a-zA-Z0-9_.-]+$"
-      },
-      "additionalProperties": {
-        "$ref": "#/$defs/summary_value"
-      },
-      "maxProperties": 64
-    },
-    "broker_action": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "delegation",
-        "allowed",
-        "result_digest",
-        "metadata"
-      ],
-      "properties": {
-        "delegation": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-z0-9][a-z0-9_.-]*$"
-        },
-        "allowed": {
-          "type": "boolean"
-        },
-        "result_digest": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/digest"
-            }
-          ],
-          "description": "Digest of the broker result payload when one exists."
-        },
-        "metadata": {
-          "type": "object",
-          "propertyNames": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "pattern": "^[a-zA-Z0-9_.-]+$"
-          },
-          "additionalProperties": {
-            "type": "string",
-            "maxLength": 512
-          },
-          "maxProperties": 32
         }
       }
     },
-    "telemetry_summary": {
+    "policy_envelope": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "emitted_events",
-        "dropped_events",
-        "flood_detected",
-        "event_digest_algo"
+        "baseline"
       ],
       "properties": {
-        "emitted_events": {
+        "baseline": {
+          "$ref": "#/$defs/baseline_policy"
+        },
+        "intent": {
+          "$ref": "#/$defs/intent_policy_digest"
+        }
+      }
+    },
+    "baseline_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "language",
+        "code_size_bytes",
+        "max_code_bytes",
+        "timeout_ms",
+        "max_timeout_ms"
+      ],
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "code_size_bytes": {
           "type": "integer",
           "minimum": 0
         },
-        "dropped_events": {
+        "max_code_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_ms": {
           "type": "integer",
           "minimum": 0
         },
-        "flood_detected": {
-          "type": "boolean"
+        "max_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
         },
-        "event_digest_algo": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 32,
-          "pattern": "^[a-z0-9-]+$",
-          "description": "Digest algorithm label used for event log hashing."
+        "profile": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "network": {
+          "$ref": "#/$defs/baseline_network_policy"
         }
       }
     },
-    "host_attestation": {
+    "baseline_network_policy": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "attested",
-        "method",
-        "quote_digest",
-        "policy_id",
-        "signer_key_id"
+        "mode"
       ],
       "properties": {
-        "attested": {
-          "type": "boolean"
-        },
-        "method": {
+        "mode": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[a-z0-9_.-]+$"
+          "description": "The `direct_web_egress`, `isolated`, and `allowlist` values are deprecated and accepted only for verification of pre-Pass-A receipts. Receipts produced after Pass A MUST use `egress_allowlist`.",
+          "enum": [
+            "none",
+            "direct_web_egress",
+            "isolated",
+            "allowlist",
+            "egress_allowlist"
+          ]
         },
-        "quote_digest": {
-          "$ref": "#/$defs/digest"
+        "presets": {
+          "$ref": "#/$defs/string_list_or_null"
         },
-        "policy_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
-        },
-        "signer_key_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        "allowlist": {
+          "$ref": "#/$defs/network_allowlist"
         }
       }
     },
-    "output_artifact": {
+    "network_allowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fqdns": {
+          "$ref": "#/$defs/string_list"
+        },
+        "cidrs": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "blocked_egress_entry": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "name",
-        "path",
+        "target",
+        "kind",
+        "first_seen_at",
+        "count"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "ip",
+            "fqdn",
+            "rfc1918"
+          ]
+        },
+        "first_seen_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "blocked_egress_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_count",
+        "unique_target_count",
+        "sample",
+        "sample_truncated"
+      ],
+      "properties": {
+        "total_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unique_target_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/blocked_egress_entry"
+          }
+        },
+        "sample_truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "intent_policy_digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
         "digest"
       ],
       "properties": {
-        "name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256
-        },
-        "path": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^/.*"
-        },
         "digest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/digest_hex"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "intent_contract",
+            "compiled_capabilities"
+          ]
+        }
+      }
+    },
+    "runtime_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "vcpu_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_mb": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cgroup": {
+          "$ref": "#/$defs/runtime_cgroup"
+        },
+        "network": {
+          "$ref": "#/$defs/runtime_network"
+        },
+        "broker": {
+          "$ref": "#/$defs/runtime_broker"
+        },
+        "applied_overrides": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "runtime_cgroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "memory_max_mb": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_high_mb": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pids_max": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpu_max": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "swap_max": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "runtime_network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "mode"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "description": "The `direct_web_egress`, `isolated`, and `allowlist` values are deprecated and accepted only for verification of pre-Pass-A receipts. Receipts produced after Pass A MUST use `egress_allowlist`.",
+          "enum": [
+            "none",
+            "direct_web_egress",
+            "isolated",
+            "allowlist",
+            "egress_allowlist"
+          ]
+        },
+        "presets": {
+          "$ref": "#/$defs/string_list_or_null"
+        },
+        "allowlist": {
+          "$ref": "#/$defs/network_allowlist"
+        },
+        "blocked_egress": {
+          "$ref": "#/$defs/blocked_egress_summary"
+        }
+      }
+    },
+    "runtime_broker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "trust_posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signing_mode",
+        "key_source",
+        "attestation",
+        "verification_material"
+      ],
+      "properties": {
+        "signing_mode": {
+          "type": "string",
+          "enum": [
+            "dev",
+            "strict"
+          ]
+        },
+        "key_source": {
+          "type": "string",
+          "enum": [
+            "configured_seed",
+            "dev_fallback"
+          ]
+        },
+        "attestation": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "verification_material": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "limitations": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "broker_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_count",
+        "allowed_count",
+        "denied_count"
+      ],
+      "properties": {
+        "request_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "allowed_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "denied_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "domains_allowed": {
+          "$ref": "#/$defs/string_list"
+        },
+        "domains_denied": {
+          "$ref": "#/$defs/string_list"
+        },
+        "bindings_used": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "governed_action_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/governed_action_record"
+          }
+        },
+        "normalized": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/normalized_governed_action"
+          }
+        }
+      }
+    },
+    "governed_action_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_type",
+        "target",
+        "decision",
+        "used",
+        "brokered",
+        "brokered_credentials"
+      ],
+      "properties": {
+        "action_type": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "target": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "resource": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "method": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "capability_path": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "decision": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "used": {
+          "type": "boolean"
+        },
+        "reason": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "rule_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "brokered": {
+          "type": "boolean"
+        },
+        "brokered_credentials": {
+          "type": "boolean"
+        },
+        "binding_name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "response_digest": {
+          "$ref": "#/$defs/digest_hex"
+        },
+        "response_digest_algo": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "denial_marker": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "audit_payload": {
+          "$ref": "#/$defs/string_map"
+        },
+        "error": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "normalized_governed_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "action_type",
+        "target",
+        "decision",
+        "used",
+        "brokered",
+        "brokered_credentials"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "action_type": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "target": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "resource": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "method": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "capability_path": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "decision": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "used": {
+          "type": "boolean"
+        },
+        "reason": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "rule_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "brokered": {
+          "type": "boolean"
+        },
+        "brokered_credentials": {
+          "type": "boolean"
+        },
+        "binding_name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "response_digest": {
+          "$ref": "#/$defs/digest_hex"
+        },
+        "response_digest_algo": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "denial_marker": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "audit_payload": {
+          "$ref": "#/$defs/string_map"
+        },
+        "error": {
+          "$ref": "#/$defs/non_empty_string"
         }
       }
     }

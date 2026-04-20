@@ -62,7 +62,7 @@ func TestBuildDefaultIntentWithBrokerAndWrites(t *testing.T) {
 	if !equalStrings(intent.BrokerScope.AllowedActionTypes, []string{"http_request"}) {
 		t.Fatalf("unexpected broker action types: %v", intent.BrokerScope.AllowedActionTypes)
 	}
-	if !equalStrings(intent.NetworkScope.AllowedIPs, []string{"127.0.0.1"}) {
+	if len(intent.NetworkScope.AllowedIPs) != 0 {
 		t.Fatalf("unexpected broker proxy allowed IPs: %v", intent.NetworkScope.AllowedIPs)
 	}
 }
@@ -76,14 +76,21 @@ func TestBuildDefaultIntentRejectsBrokerDelegationWithoutResource(t *testing.T) 
 
 func TestEnrichVerifyResultIncludesBrokerEvents(t *testing.T) {
 	statement := receipt.Statement{Predicate: receipt.ExecutionReceiptPredicate{
-		ExecutionID:   "exec-1",
-		Divergence:    receipt.DivergenceSummary{Verdict: models.DivergenceAllow},
-		Trust:         receipt.TrustPosture{SigningMode: receipt.SigningModeStrict, KeySource: receipt.KeySourceConfiguredSeed},
-		Outcome:       receipt.Outcome{Reason: "completed", ExitCode: 0},
-		BrokerSummary: &receipt.BrokerSummary{RequestCount: 1, AllowedCount: 1},
+		ExecutionID: "exec-1",
+		ResultClass: receipt.ResultClassCompleted,
+		Divergence:  receipt.DivergenceSummary{Verdict: models.DivergenceAllow},
+		Trust:       receipt.TrustPosture{SigningMode: receipt.SigningModeStrict, KeySource: receipt.KeySourceConfiguredSeed},
+		Outcome:     receipt.Outcome{Reason: "completed", ExitCode: 0},
+		BrokerSummary: &receipt.BrokerSummary{
+			RequestCount: 1,
+			AllowedCount: 1,
+		},
 	}}
 	var result VerifyToolResult
 	enrichVerifyResult(&result, statement)
+	if result.ResultClass != "completed" || result.DivergenceVerdict != "allow" || result.OutcomeReason != "completed" {
+		t.Fatalf("unexpected top-level verify fields: %+v", result)
+	}
 	broker, ok := result.Diagnostics["broker"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing broker diagnostics: %+v", result.Diagnostics)
@@ -243,6 +250,9 @@ func TestToolHandlerExecuteAndVerify(t *testing.T) {
 	}
 	if !verifyResult.Verified || verifyResult.ExecutionID != "exec-fixture" {
 		t.Fatalf("unexpected verify result: %+v", verifyResult)
+	}
+	if verifyResult.ResultClass != "completed" || verifyResult.DivergenceVerdict != "allow" || verifyResult.OutcomeReason != "completed" {
+		t.Fatalf("unexpected receipt semantics: %+v", verifyResult)
 	}
 }
 

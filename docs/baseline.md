@@ -1,16 +1,11 @@
-# Baseline
+# Baseline (Deprecated)
 
-The narrow local baseline is:
+Deprecated. Do not use this as the Aegis local bring-up or smoke path.
 
-```bash
-go run ./cmd/aegis-cli setup
-bash scripts/preflight.sh
-go run ./cmd/aegis-cli serve
-curl http://localhost:8080/v1/health
-curl http://localhost:8080/ready
-curl -H 'Content-Type: application/json' -d '{"lang":"bash","code":"echo baseline-smoke"}' http://localhost:8080/v1/execute
-curl -H 'Content-Type: application/json' -d '{"lang":"python","code":"print(\"python-baseline\")"}' http://localhost:8080/v1/execute
-go run ./cmd/aegis-cli receipt verify --proof-dir /tmp/aegis/proofs/<execution-id>
-```
+The older `preflight.sh` plus manual `serve` and raw `curl` sequence is useful only for low-level API debugging. It is not the public first-run story.
 
-`scripts/preflight.sh` resolves the database URL in this order: `DB_URL`, `AEGIS_DB_URL`, then `.aegis/config.yaml`.
+Use these docs instead:
+
+- [setup-local.md](setup-local.md): the one canonical Linux/KVM setup path
+- [demo-guide.md](demo-guide.md): the packaged demo sequence
+- [api.md](api.md): the raw HTTP surface, if you intentionally want to drive the runtime by hand

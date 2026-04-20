@@ -331,6 +331,7 @@ class AegisSDKTests(unittest.TestCase):
                         "statement": {
                             "predicate": {
                                 "execution_id": "exec-r",
+                                "result_class": "completed",
                                 "divergence": {"verdict": "allow"},
                                 "trust": {"signing_mode": "strict", "key_source": "configured_seed"},
                             }
@@ -349,7 +350,8 @@ class AegisSDKTests(unittest.TestCase):
 
             receipt = Receipt.load(str(receipt_path), verifier=StubVerifier())
             self.assertEqual(receipt.execution_id, "exec-r")
-            self.assertEqual(receipt.verdict, "allow")
+            self.assertEqual(receipt.result_class, "completed")
+            self.assertEqual(receipt.divergence_verdict, "allow")
             verification = receipt.verify()
             self.assertTrue(verification.verified)
 
@@ -460,7 +462,8 @@ class AegisSDKTests(unittest.TestCase):
             self.assertEqual(receipt.public_key_path, str(pub_path))
             self.assertEqual(receipt.summary_path, str(summary_path))
             self.assertEqual(receipt.summary_text, "verification=verified\n")
-            self.assertIsNone(receipt.verdict)
+            self.assertIsNone(receipt.result_class)
+            self.assertIsNone(receipt.divergence_verdict)
             self.assertIsNone(receipt.signing_mode)
             self.assertIsNone(receipt.key_source)
 

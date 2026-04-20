@@ -1,6 +1,6 @@
 # Self-Hosted Pilot Offer
 
-Aegis lets internal coding agents run code without giving them your machine, and proves what they tried to do.
+Aegis lets internal coding agents run code on a single Linux host under a Firecracker/KVM boundary and leaves host-signed execution records afterward.
 
 This offer is for a narrow self-hosted pilot, not a broad platform rollout.
 
@@ -19,14 +19,14 @@ One workflow only. Example:
 
 One or two policy paths only, chosen up front:
 
-- required path: direct egress denied by default
+- required path: one configured workflow where direct egress is denied
 - optional second path: one governed action path already supported by the current runtime, such as one brokered credential-backed outbound dependency
 
 ## What the design partner gets
 
 - help bringing up `~/aegis` in a self-hosted environment
 - help wiring one coding-agent execution path to the local Aegis runtime
-- the canonical exfil demo running locally as a trust check before workflow rollout
+- the packaged local demo sequence running as a trust check before workflow rollout
 - direct support during pilot setup and during the evaluation window
 
 ## What success looks like
@@ -34,7 +34,7 @@ One or two policy paths only, chosen up front:
 The pilot is successful if, by the end of the window, the design partner can:
 
 - run one real internal coding-agent workflow through Aegis in its own environment
-- show that direct egress is denied by default for that workflow
+- show that direct egress is denied for that workflow
 - verify signed receipts and proof bundles for pilot executions
 - tell a reviewer what the receipt proves and what it does not prove
 
@@ -53,4 +53,4 @@ The pilot is successful if, by the end of the window, the design partner can:
 - one named owner from the coding-agent workflow team
 - agreement to keep the pilot to one workflow and one or two policy paths
 
-For the exact first-run path, use [quickstart.md](quickstart.md). For the canonical proof, use [demo-exfiltration.md](demo-exfiltration.md).
+For the exact first-run path, use [setup-local.md](setup-local.md). For the packaged demo sequence, use [demo-guide.md](demo-guide.md).

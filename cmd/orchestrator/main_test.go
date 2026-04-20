@@ -2,11 +2,16 @@ package main
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"aegis/internal/api"
+	"aegis/internal/executor"
+	"aegis/internal/policy"
 	"aegis/internal/receipt"
 	"aegis/internal/store"
 	"aegis/internal/telemetry"
@@ -152,6 +157,96 @@ func TestReconcileRemovesUntrackedWarmOrphansWithoutReceipt(t *testing.T) {
 	for _, path := range []string{scratch, socket, vsock, cgroupPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expected %s to be removed, stat err=%v", path, err)
+		}
+	}
+}
+
+func TestValidateServerExposureAllowsLoopbackWithoutAuth(t *testing.T) {
+	t.Parallel()
+
+	cfg := serverExposureConfig{ListenAddr: "127.0.0.1:8080"}
+	if err := validateServerExposure(cfg); err != nil {
+		t.Fatalf("validateServerExposure(loopback): %v", err)
+	}
+}
+
+func TestValidateServerExposureRejectsNonLocalWithoutAuth(t *testing.T) {
+	t.Parallel()
+
+	cfg := serverExposureConfig{ListenAddr: "0.0.0.0:8080"}
+	if err := validateServerExposure(cfg); err == nil {
+		t.Fatal("expected non-local bind without auth to fail")
+	}
+}
+
+func TestValidateServerExposureRejectsWildcardCORSForNonLocalBind(t *testing.T) {
+	t.Parallel()
+
+	cfg := serverExposureConfig{
+		ListenAddr:     "0.0.0.0:8080",
+		APIKey:         "secret",
+		AllowedOrigins: []string{"*"},
+	}
+	if err := validateServerExposure(cfg); err == nil {
+		t.Fatal("expected wildcard CORS on non-local bind to fail")
+	}
+}
+
+func TestParseAllowedOriginsAndLoopbackDetection(t *testing.T) {
+	t.Parallel()
+
+	origins := parseAllowedOrigins(" https://b.example,https://a.example,https://b.example , ")
+	if len(origins) != 2 || origins[0] != "https://a.example" || origins[1] != "https://b.example" {
+		t.Fatalf("unexpected origins: %#v", origins)
+	}
+	for _, addr := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"} {
+		if !isLoopbackListenAddr(addr) {
+			t.Fatalf("expected %q to be treated as loopback", addr)
+		}
+	}
+	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080"} {
+		if isLoopbackListenAddr(addr) {
+			t.Fatalf("expected %q to be treated as non-loopback", addr)
+		}
+	}
+}
+
+func TestBuildMuxProtectsSensitiveRoutesWithSharedAuth(t *testing.T) {
+	t.Parallel()
+
+	mux := buildMux(
+		nil,
+		executor.NewPool(1),
+		nil,
+		policy.Default(),
+		"",
+		"",
+		api.NewBusRegistry(),
+		api.NewStatsCounter(),
+		api.NewWorkspaceRegistry(),
+		"secret",
+		nil,
+		filepath.Join(t.TempDir(), "missing-ui"),
+		"test-policy",
+	)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/metrics"},
+		{method: http.MethodGet, path: "/v1/stats"},
+		{method: http.MethodGet, path: "/v1/events/11111111-1111-4111-8111-111111111111"},
+		{method: http.MethodPost, path: "/v1/workspaces/ws-demo"},
+		{method: http.MethodDelete, path: "/v1/workspaces/ws-demo"},
+		{method: http.MethodPost, path: "/v1/execute"},
+		{method: http.MethodPost, path: "/v1/execute/stream"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s status=%d want %d body=%s", tc.method, tc.path, rr.Code, http.StatusUnauthorized, rr.Body.String())
 		}
 	}
 }

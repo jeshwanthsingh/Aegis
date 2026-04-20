@@ -1,8 +1,8 @@
 # MCP Server
 
-Aegis ships an MCP stdio server so agent clients can call the local Aegis runtime without needing to know its HTTP or receipt-verification internals.
+Aegis ships an MCP stdio server so agent clients can call a local Aegis runtime without having to construct HTTP requests or parse receipt verification output themselves.
 
-The MCP path is secondary. The primary repo-native proof path is [demo-exfiltration.md](demo-exfiltration.md).
+The MCP path is secondary. The canonical first-run path is [setup-local.md](setup-local.md) and [demo-guide.md](demo-guide.md). Aegis today is not a broad MCP platform. The server is a thin local wrapper over the same runtime and verification path.
 
 The MCP layer is intentionally thin:
 
@@ -63,11 +63,15 @@ Representative result fields:
 - `proof_dir`
 - `receipt_path`
 - `receipt.verified`
-- `receipt.verdict`
+- `receipt.result_class`
+- `receipt.divergence_verdict`
+- `receipt.outcome_reason`
 - `receipt.signing_mode`
 - `receipt.key_source`
+- `receipt.summary`
 - `divergence`
 - `broker`
+- `verification_error`
 
 ### `aegis_verify`
 
@@ -97,24 +101,20 @@ Representative result fields:
 - `execution_id`
 - `proof_dir`
 - `verified`
-- `verdict`
+- `result_class`
+- `divergence_verdict`
+- `outcome_reason`
 - `signing_mode`
 - `key_source`
 - `summary`
 - `diagnostics`
+- `verification_error`
 
 ## Build
 
-From `~/aegis`:
+If `./scripts/demo_up.sh` completed successfully, the repo-local MCP binary should already exist at `./.aegis/bin/aegis-mcp`.
 
-```bash
-cd ~/aegis
-aegis setup
-```
-
-That builds the canonical repo-local MCP binary at `./.aegis/bin/aegis-mcp` alongside the repo-local CLI and orchestrator binaries.
-
-Manual rebuild if you need it immediately after MCP source changes:
+If you need to rebuild it immediately after MCP source changes:
 
 ```bash
 cd ~/aegis
@@ -123,11 +123,18 @@ go build -buildvcs=false -o ./.aegis/bin/aegis-mcp ./cmd/aegis-mcp
 
 ## Run
 
-The server uses stdio only.
+Bring up the local runtime first:
 
 ```bash
 cd ~/aegis
-AEGIS_BASE_URL=http://localhost:8080 ./.aegis/bin/aegis-mcp
+./scripts/demo_up.sh
+```
+
+Then start the MCP server:
+
+```bash
+cd ~/aegis
+AEGIS_BASE_URL=http://127.0.0.1:8080 ./.aegis/bin/aegis-mcp
 ```
 
 Supported environment variables:
@@ -143,7 +150,7 @@ Example registration from Windows against a WSL-backed repo:
 ```powershell
 @'
 @echo off
-wsl.exe bash -lc "cd ~/aegis && AEGIS_BASE_URL=http://localhost:8080 ./.aegis/bin/aegis-mcp"
+wsl.exe bash -lc "cd ~/aegis && AEGIS_BASE_URL=http://127.0.0.1:8080 ./.aegis/bin/aegis-mcp"
 '@ | Set-Content -Encoding ASCII $HOME\aegis-mcp-launch.cmd
 
 claude mcp add -s user aegis $HOME\aegis-mcp-launch.cmd
@@ -156,9 +163,9 @@ This path was validated with Claude Code interoperability in the current repo st
 
 - the MCP server is a convenience distribution surface, not a separate trust boundary
 - execution still happens through the same Firecracker-backed Aegis runtime
-- verification still depends on the same proof bundle and receipt-verifier path
+- verification still depends on the same host-signed proof bundle and receipt-verifier path
 - if the local host is compromised, MCP results and receipts can be dishonest for the same reason the base runtime can be dishonest
 - safe defaults are intentional: no network and no broker delegation unless requested
 - broker-backed flows still require the orchestrator to be started with the appropriate broker credential environment
 
-If `aegis_execute` fails because the runtime is down, start `aegis serve` first and use [troubleshooting.md](troubleshooting.md).
+If `aegis_execute` fails because the runtime is down, start `./scripts/demo_up.sh` first or use an equivalent operator-managed runtime, then use [troubleshooting.md](troubleshooting.md).

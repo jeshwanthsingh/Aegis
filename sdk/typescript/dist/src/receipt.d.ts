@@ -21,7 +21,8 @@ export declare class Receipt {
     get statement(): Record<string, unknown>;
     get predicate(): Record<string, unknown>;
     get executionId(): string | undefined;
-    get verdict(): string | undefined;
+    get resultClass(): string | undefined;
+    get divergenceVerdict(): string | undefined;
     get signingMode(): string | undefined;
     get keySource(): string | undefined;
     get summaryText(): string | undefined;

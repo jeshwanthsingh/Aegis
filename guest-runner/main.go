@@ -407,7 +407,7 @@ func setupNetwork(p Payload, emit func(string)) (func() error, error) {
 		return nil, nil
 	}
 	emit("setupNetwork start")
-	if p.GuestIP == "" || p.GatewayIP == "" || p.DNSServer == "" {
+	if p.GuestIP == "" || p.GatewayIP == "" {
 		return nil, errors.New("incomplete network configuration")
 	}
 	if _, err := os.Stat("/sys/class/net/eth0"); err != nil {
@@ -442,26 +442,32 @@ func setupNetwork(p Payload, emit func(string)) (func() error, error) {
 		return nil, err
 	}
 
-	emit("create temp resolv.conf")
-	emit("write temp resolv.conf for " + p.DNSServer)
-	cleanupPath, err := createTempResolvConf(p.DNSServer)
-	if err != nil {
-		return nil, err
-	}
-	emit("bind mount resolv.conf")
-	if err := unix.Mount(cleanupPath, "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
-		os.Remove(cleanupPath)
-		return nil, err
+	var cleanupPath string
+	if p.DNSServer != "" {
+		emit("create temp resolv.conf")
+		emit("write temp resolv.conf for " + p.DNSServer)
+		var err error
+		cleanupPath, err = createTempResolvConf(p.DNSServer)
+		if err != nil {
+			return nil, err
+		}
+		emit("bind mount resolv.conf")
+		if err := unix.Mount(cleanupPath, "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
+			os.Remove(cleanupPath)
+			return nil, err
+		}
 	}
 
 	emit("setupNetwork complete")
 	cleanup := func() error {
 		var errs []string
-		if err := unix.Unmount("/etc/resolv.conf", 0); err != nil {
-			errs = append(errs, "unmount /etc/resolv.conf: "+err.Error())
-		}
-		if err := os.Remove(cleanupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			errs = append(errs, "remove resolv temp: "+err.Error())
+		if p.DNSServer != "" {
+			if err := unix.Unmount("/etc/resolv.conf", 0); err != nil {
+				errs = append(errs, "unmount /etc/resolv.conf: "+err.Error())
+			}
+			if err := os.Remove(cleanupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, "remove resolv temp: "+err.Error())
+			}
 		}
 		if len(errs) > 0 {
 			return errors.New(strings.Join(errs, "; "))

@@ -28,9 +28,12 @@ This is where the system is strongest today. It is built to survive bad runs, no
 
 Default behavior is conservative:
 - no-network mode gives the guest no NIC
-- allowlist mode intercepts DNS and installs narrow outbound rules only for explicitly allowed destinations
+- egress-allowlist mode intercepts DNS only when needed and installs narrow outbound rules only for explicitly allowed destinations
+- if an intent supplies any allowlist field, the omitted allowlist dimension is empty for that execution rather than inherited from baseline
+- FQDN allowlist answers are resolved once at execution start and pinned for the life of the execution
+- loopback `127.0.0.0/8` remains allowed inside the guest for brokered outbound and is recorded in the runtime receipt allowlist
 
-The goal is not safe arbitrary internet access. The goal is no ambient egress and visible, scoped exceptions when a policy allows them.
+The goal is not safe arbitrary internet access. The goal is explicit network posture: no network by default, or a narrow allowlist flow when a policy declares domains or CIDRs.
 
 ### Residual state
 
@@ -67,7 +70,7 @@ Current host/guest protections:
 - Firecracker microVM boundary
 - KVM-backed virtualization
 - host cgroups v2
-- default-deny or allowlist network mode
+- no-network or `egress_allowlist` network mode
 - host/guest transport over Firecracker's Unix-socket vsock proxy
 - deterministic teardown with cleanup reflected in the final receipt
 

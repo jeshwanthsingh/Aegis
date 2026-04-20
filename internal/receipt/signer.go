@@ -11,8 +11,6 @@ import (
 )
 
 const (
-	devSeedMaterial = "aegis-dev-receipt-signer-v1"
-
 	EnvSigningMode = "AEGIS_RECEIPT_SIGNING_MODE"
 	EnvSigningSeed = "AEGIS_RECEIPT_SIGNING_SEED_B64"
 )
@@ -26,7 +24,9 @@ const (
 	SigningModeStrict SigningMode = "strict"
 
 	KeySourceConfiguredSeed KeySource = "configured_seed"
-	KeySourceDevFallback    KeySource = "dev_fallback"
+	// KeySourceDevFallback remains for verification of older proof bundles created
+	// before the deterministic dev fallback signer was removed.
+	KeySourceDevFallback KeySource = "dev_fallback"
 )
 
 type SigningConfig struct {
@@ -45,7 +45,7 @@ type Signer struct {
 func ParseSigningMode(raw string) (SigningMode, error) {
 	mode := SigningMode(strings.ToLower(strings.TrimSpace(raw)))
 	if mode == "" {
-		return SigningModeDev, nil
+		return SigningModeStrict, nil
 	}
 	switch mode {
 	case SigningModeDev, SigningModeStrict:
@@ -83,17 +83,7 @@ func NewSigner(config SigningConfig) (*Signer, error) {
 		signer.KeySource = KeySourceConfiguredSeed
 		return signer, nil
 	}
-	if mode == SigningModeStrict {
-		return nil, fmt.Errorf("strict receipt signing requires %s", EnvSigningSeed)
-	}
-	digest := sha256.Sum256([]byte(devSeedMaterial))
-	signer, err := NewSignerFromSeed(digest[:])
-	if err != nil {
-		return nil, err
-	}
-	signer.Mode = SigningModeDev
-	signer.KeySource = KeySourceDevFallback
-	return signer, nil
+	return nil, missingSigningSeedError(mode)
 }
 
 func NewSignerFromEnv() (*Signer, error) {
@@ -102,6 +92,13 @@ func NewSignerFromEnv() (*Signer, error) {
 		return nil, err
 	}
 	return NewSigner(SigningConfig{Mode: mode, SeedB64: strings.TrimSpace(os.Getenv(EnvSigningSeed))})
+}
+
+func missingSigningSeedError(mode SigningMode) error {
+	if mode == SigningModeDev {
+		return fmt.Errorf("receipt signing mode %q is explicit non-production only and requires %s; deterministic fallback signing is disabled", mode, EnvSigningSeed)
+	}
+	return fmt.Errorf("receipt signing mode %q requires %s", mode, EnvSigningSeed)
 }
 
 func KeyIDFromPublicKey(publicKey ed25519.PublicKey) string {

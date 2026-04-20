@@ -84,14 +84,14 @@ func TestEvaluatePointDecisions(t *testing.T) {
 		},
 		{
 			name:     "allowed connect",
-			event:    models.RuntimeEvent{ExecutionID: "exec_123", Seq: 5, Type: models.EventNetConnect, DstIP: "127.0.0.1"},
+			event:    models.RuntimeEvent{ExecutionID: "exec_123", Seq: 5, Type: models.EventNetConnect, DstIP: "127.0.0.1", DstPort: 80},
 			decision: models.DecisionAllow,
-			reason:   "allowed by intent contract",
+			reason:   "allowed by runtime baseline",
 			action:   models.ActionConnect,
 		},
 		{
 			name:     "denied connect",
-			event:    models.RuntimeEvent{ExecutionID: "exec_123", Seq: 6, Type: models.EventNetConnect, DstIP: "10.0.0.5"},
+			event:    models.RuntimeEvent{ExecutionID: "exec_123", Seq: 6, Type: models.EventNetConnect, DstIP: "203.0.113.8", DstPort: 443},
 			decision: models.DecisionDeny,
 			reason:   "destination is outside network allowlists",
 			action:   models.ActionConnect,
@@ -154,6 +154,58 @@ func TestEvaluateDeniedWhenNetworkDisabled(t *testing.T) {
 	}
 	if got.Reason != "network access is disabled by intent contract" {
 		t.Fatalf("Reason = %q", got.Reason)
+	}
+}
+
+func TestEvaluateDeniedWhenEgressAllowlistIsEmpty(t *testing.T) {
+	intent := contract.IntentContract{
+		Version:         "v1",
+		ExecutionID:     "exec_123",
+		WorkflowID:      "wf_9",
+		TaskClass:       "deny_all_networked",
+		DeclaredPurpose: "networked namespace with deny-all outbound",
+		Language:        "python",
+		ResourceScope:   contract.ResourceScope{WorkspaceRoot: "/workspace", ReadPaths: []string{"/workspace"}, WritePaths: []string{"/workspace/out"}, DenyPaths: []string{}, MaxDistinctFiles: 5},
+		NetworkScope: contract.NetworkScope{
+			AllowNetwork: true,
+		},
+		ProcessScope: contract.ProcessScope{AllowedBinaries: []string{"python3"}, MaxChildProcesses: 1},
+		Budgets:      contract.BudgetLimits{TimeoutSec: 20, MemoryMB: 256, CPUQuota: 100, StdoutBytes: 4096},
+	}
+	got := New(intent).Evaluate(models.RuntimeEvent{ExecutionID: "exec_123", Seq: 11, Type: models.EventNetConnect, DstIP: "203.0.113.10", DstPort: 443})
+	if got.Decision != models.DecisionDeny {
+		t.Fatalf("Decision = %q, want deny", got.Decision)
+	}
+	if got.Reason != "destination is outside network allowlists" {
+		t.Fatalf("Reason = %q", got.Reason)
+	}
+}
+
+func TestLoopbackTrafficIsAllowedRegardlessOfAllowlist(t *testing.T) {
+	intent := contract.IntentContract{
+		Version:         "v1",
+		ExecutionID:     "exec_123",
+		WorkflowID:      "wf_9",
+		TaskClass:       "deny_all_networked",
+		DeclaredPurpose: "networked namespace with deny-all external outbound",
+		Language:        "python",
+		ResourceScope:   contract.ResourceScope{WorkspaceRoot: "/workspace", ReadPaths: []string{"/workspace"}, WritePaths: []string{"/workspace/out"}, DenyPaths: []string{}, MaxDistinctFiles: 5},
+		NetworkScope: contract.NetworkScope{
+			AllowNetwork: true,
+		},
+		ProcessScope: contract.ProcessScope{AllowedBinaries: []string{"python3"}, MaxChildProcesses: 1},
+		Budgets:      contract.BudgetLimits{TimeoutSec: 20, MemoryMB: 256, CPUQuota: 100, StdoutBytes: 4096},
+	}
+	eval := New(intent)
+
+	loopback := eval.Evaluate(models.RuntimeEvent{ExecutionID: "exec_123", Seq: 12, Type: models.EventNetConnect, DstIP: "127.0.0.1", DstPort: 8888})
+	if loopback.Decision != models.DecisionAllow {
+		t.Fatalf("loopback decision = %q, want allow", loopback.Decision)
+	}
+
+	public := eval.Evaluate(models.RuntimeEvent{ExecutionID: "exec_123", Seq: 13, Type: models.EventNetConnect, DstIP: "8.8.8.8", DstPort: 443})
+	if public.Decision != models.DecisionDeny {
+		t.Fatalf("public decision = %q, want deny", public.Decision)
 	}
 }
 

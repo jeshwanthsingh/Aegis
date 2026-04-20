@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -160,6 +161,113 @@ func TestWarmShapeDecision(t *testing.T) {
 	}
 }
 
+func TestAcquireExecutionVMWarmClaimRebindsExecutionIdentity(t *testing.T) {
+	pol := policy.Default()
+	warm := warmpool.NewWithHooks(warmpool.Config{
+		Size:   1,
+		MaxAge: time.Minute,
+	}, warmpool.Hooks{
+		Build: func(_ context.Context, assetID string) (*executor.VMInstance, error) {
+			if err := os.MkdirAll("/tmp/aegis", 0o700); err != nil {
+				return nil, err
+			}
+			scratch := filepath.Join("/tmp/aegis", "scratch-"+assetID+".ext4")
+			socket := filepath.Join("/tmp/aegis", "fc-"+assetID+".sock")
+			vsock := filepath.Join("/tmp/aegis", "vsock-"+assetID+".sock")
+			serial := filepath.Join("/tmp/aegis", "serial-"+assetID+".log")
+			for _, path := range []string{scratch, socket, vsock, serial} {
+				if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+					return nil, err
+				}
+			}
+			return &executor.VMInstance{
+				AssetID:       assetID,
+				UUID:          assetID,
+				CgroupID:      assetID,
+				ScratchPath:   scratch,
+				SocketPath:    socket,
+				VsockPath:     vsock,
+				SerialLogPath: serial,
+			}, nil
+		},
+		WaitReady: func(context.Context, *executor.VMInstance) error { return nil },
+		Pause:     func(context.Context, *executor.VMInstance) error { return nil },
+		Resume:    func(context.Context, *executor.VMInstance) error { return nil },
+	})
+	warm.Start()
+	t.Cleanup(func() {
+		if err := warm.Close(); err != nil {
+			t.Fatalf("warm.Close: %v", err)
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if warm.Status().Available == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if warm.Status().Available != 1 {
+		t.Fatalf("warm.Status().Available = %d, want 1", warm.Status().Available)
+	}
+
+	execID := "30454c31-dfdf-4b5f-ae7c-1bddbf09ad9f"
+	vm, dispatch, fallbackReason, err := acquireExecutionVM(context.Background(), warm, execID, ExecuteRequest{Lang: "python", Profile: "standard"}, pol, pol.Profiles["standard"], "", "", nil)
+	if err != nil {
+		t.Fatalf("acquireExecutionVM returned error: %v", err)
+	}
+	if dispatch != "warm" {
+		t.Fatalf("dispatch = %q, want warm", dispatch)
+	}
+	if fallbackReason != "" {
+		t.Fatalf("fallbackReason = %q, want empty", fallbackReason)
+	}
+	if vm == nil {
+		t.Fatal("expected claimed vm")
+	}
+	if vm.AssetID == "" {
+		t.Fatal("expected asset id to remain populated")
+	}
+	if vm.AssetID == execID {
+		t.Fatalf("AssetID = %q, want pooled asset identity distinct from execution identity", vm.AssetID)
+	}
+	if vm.UUID != execID {
+		t.Fatalf("UUID = %q, want %q", vm.UUID, execID)
+	}
+	if vm.CgroupID != execID {
+		t.Fatalf("CgroupID = %q, want %q", vm.CgroupID, execID)
+	}
+
+	wantScratch := filepath.Join("/tmp/aegis", "scratch-"+execID+".ext4")
+	wantSocket := filepath.Join("/tmp/aegis", "fc-"+execID+".sock")
+	wantVsock := filepath.Join("/tmp/aegis", "vsock-"+execID+".sock")
+	wantSerial := filepath.Join("/tmp/aegis", "serial-"+execID+".log")
+	if vm.ScratchPath != wantScratch || vm.SocketPath != wantSocket || vm.VsockPath != wantVsock || vm.SerialLogPath != wantSerial {
+		t.Fatalf("unexpected execution-owned paths: scratch=%q socket=%q vsock=%q serial=%q", vm.ScratchPath, vm.SocketPath, vm.VsockPath, vm.SerialLogPath)
+	}
+
+	for _, path := range []string{wantScratch, wantSocket, wantVsock, wantSerial} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected rebound path %s to exist: %v", path, err)
+		}
+		path := path
+		t.Cleanup(func() {
+			_ = os.Remove(path)
+		})
+	}
+	for _, oldPath := range []string{
+		filepath.Join("/tmp/aegis", "scratch-"+vm.AssetID+".ext4"),
+		filepath.Join("/tmp/aegis", "fc-"+vm.AssetID+".sock"),
+		filepath.Join("/tmp/aegis", "vsock-"+vm.AssetID+".sock"),
+		filepath.Join("/tmp/aegis", "serial-"+vm.AssetID+".log"),
+	} {
+		if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+			t.Fatalf("expected pooled-asset path %s to be gone, stat err=%v", oldPath, err)
+		}
+	}
+}
+
 func TestResolveRequestedProfile(t *testing.T) {
 	t.Parallel()
 
@@ -283,7 +391,10 @@ func TestExecuteHandlerRejectsInvalidProfile(t *testing.T) {
 func TestExecuteHandlerAcceptsCapabilitiesRequest(t *testing.T) {
 	installHandlerRuntimeStubs(t)
 
-	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	pol := policy.Default()
+	pol.Network.Mode = policy.NetworkModeEgressAllowlist
+	pol.Network.Allowlist.FQDNs = []string{"api.example.com", "api.github.com"}
+	handler := NewHandler(nil, executor.NewPool(1), nil, pol, "", "", NewBusRegistry(), NewStatsCounter(), "test")
 	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"capabilities":{"network_domains":["api.example.com"],"broker":{"delegations":[{"name":"github","resource":"https://api.github.com/user"}],"http_requests":true}}}`))
 	rr := httptest.NewRecorder()
 
@@ -309,6 +420,25 @@ func TestExecuteHandlerRejectsIntentAndCapabilitiesTogether(t *testing.T) {
 		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
 	}
 	if !strings.Contains(rr.Body.String(), `"code":"invalid_request"`) || !strings.Contains(rr.Body.String(), "intent and capabilities cannot both be provided") {
+		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestExecuteHandlerRejectsIntentAllowlistOutsideBaseline(t *testing.T) {
+	pol := policy.Default()
+	pol.Network.Mode = policy.NetworkModeEgressAllowlist
+	pol.Network.Allowlist.FQDNs = []string{"api.github.com"}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, pol, "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","lang":"python","code":"print(1)","timeout_ms":1000,"intent":{"version":"v1","execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","workflow_id":"wf_1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":[],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":true,"allowed_domains":["api.example.com"],"max_dns_queries":1,"max_outbound_conns":1},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"invalid_intent_contract"`) || !strings.Contains(rr.Body.String(), "not present in baseline") {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
 	}
 }
@@ -355,7 +485,7 @@ func TestTelemetryHandlerRejectsMalformedExecID(t *testing.T) {
 	req.SetPathValue("exec_id", "not-a-uuid")
 	rr := httptest.NewRecorder()
 
-	NewTelemetryHandler(registry).ServeHTTP(rr, req)
+	NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusBadRequest)
@@ -374,7 +504,7 @@ func TestTelemetryHandlerWaitsForFutureBusAndStreams(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry))
+	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry, nil))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -438,7 +568,7 @@ func TestTelemetryHandlerNotFoundAfterWait(t *testing.T) {
 		telemetryLookupPoll = 25 * time.Millisecond
 	})
 
-	NewTelemetryHandler(registry).ServeHTTP(rr, req)
+	NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusNotFound)
@@ -459,7 +589,7 @@ func TestTelemetryHandlerRejectsWhenTooManyWaiters(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry))
+	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry, nil))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -506,7 +636,7 @@ func TestTelemetryHandlerMissingExecutionUsesConfiguredWait(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	start := time.Now()
-	NewTelemetryHandler(registry).ServeHTTP(rr, req)
+	NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 	elapsed := time.Since(start)
 
 	if rr.Code != http.StatusNotFound {
@@ -535,7 +665,7 @@ func TestTelemetrySSEEventDecodesAsJSON(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		NewTelemetryHandler(registry).ServeHTTP(rr, req)
+		NewTelemetryHandler(registry, nil).ServeHTTP(rr, req)
 		close(done)
 	}()
 
@@ -572,7 +702,7 @@ func TestTelemetryHandlerPreSubscribeStreamsDNSDeny(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry))
+	mux.HandleFunc("GET /v1/events/{exec_id}", NewTelemetryHandler(registry, nil))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -715,8 +845,8 @@ func installHandlerRuntimeStubs(t *testing.T) {
 		return &models.Result{Stdout: "ok\n", ExitCode: 0, ExitReason: "completed", DurationMs: 7, StdoutBytes: 3}, nil
 	}
 	startCgroupPollerFunc = func(context.Context, *telemetry.Bus, string, time.Duration) func() { return func() {} }
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
-		return models.ContainmentReceipt{Verdict: "completed"}, receipt.BundlePaths{
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		return receipt.SignedReceipt{}, receipt.BundlePaths{
 			ProofDir:      "/tmp/aegis/proofs/exec",
 			ReceiptPath:   "/tmp/aegis/proofs/exec/receipt.dsse.json",
 			PublicKeyPath: "/tmp/aegis/proofs/exec/receipt.pub",
@@ -855,8 +985,8 @@ func TestExecuteHandlerAuthFailure(t *testing.T) {
 
 func TestExecuteHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
 	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -1073,8 +1203,8 @@ func TestStreamHandlerInvalidBody(t *testing.T) {
 
 func TestStreamHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
 	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
@@ -1223,9 +1353,9 @@ func TestStreamHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, nil
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}
 	writeExecutionRecordFunc = func(_ *store.Store, _ store.ExecutionRecord) error {
 		recordCount++
@@ -1464,9 +1594,9 @@ func TestExecuteHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *executor.VMInstance, *policy.Policy, models.ReceiptPolicy, string, int, string, bool, string, string, string, *telemetry.Bus) (models.ContainmentReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
-		return models.ContainmentReceipt{}, receipt.BundlePaths{}, nil
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}
 	writeExecutionRecordFunc = func(_ *store.Store, _ store.ExecutionRecord) error {
 		recordCount++
@@ -1539,88 +1669,6 @@ func TestClaimExecutionBusAllowsDifferentExecutionIDsInParallel(t *testing.T) {
 	if len(seen) != len(execIDs) {
 		t.Fatalf("expected %d distinct execution ids, got %d", len(execIDs), len(seen))
 	}
-}
-
-func TestBuildReceiptNetworkAllowCase(t *testing.T) {
-	t.Parallel()
-
-	pol := policy.Default()
-	pol.Network.Mode = "allowlist"
-	pol.Network.Presets = []string{"pypi"}
-
-	summary := buildReceiptNetwork(pol, []telemetry.Event{
-		mustTelemetryEvent(t, telemetry.KindNetRuleAdd, telemetry.NetRuleData{Rule: "ACCEPT", Dst: "151.101.128.223", Ports: "80"}),
-		mustTelemetryEvent(t, telemetry.KindNetRuleAdd, telemetry.NetRuleData{Rule: "ACCEPT", Dst: "151.101.128.223", Ports: "443"}),
-		mustTelemetryEvent(t, telemetry.KindDNSQuery, telemetry.DNSQueryData{
-			Domain:   "pypi.org",
-			Action:   "allow",
-			Resolved: []string{"151.101.128.223"},
-		}),
-	})
-
-	if summary.DNSQueriesTotal != 1 || summary.DNSQueriesAllowed != 1 || summary.DNSQueriesDenied != 0 {
-		t.Fatalf("unexpected dns counts: %#v", summary)
-	}
-	if summary.IptablesRulesAdded != 2 {
-		t.Fatalf("unexpected rule count: %#v", summary)
-	}
-	if summary.NetworkMode != "allowlist" {
-		t.Fatalf("unexpected network mode: %#v", summary)
-	}
-	if !slices.Equal(summary.AllowedDomains, []string{"files.pythonhosted.org", "pypi.org", "pypi.python.org"}) {
-		t.Fatalf("unexpected allowed domains: %#v", summary.AllowedDomains)
-	}
-}
-
-func TestBuildReceiptNetworkDenyCase(t *testing.T) {
-	t.Parallel()
-
-	pol := policy.Default()
-	pol.Network.Mode = "allowlist"
-	pol.Network.Presets = []string{"pypi"}
-
-	summary := buildReceiptNetwork(pol, []telemetry.Event{
-		mustTelemetryEvent(t, telemetry.KindDNSQuery, telemetry.DNSQueryData{
-			Domain: "example.com",
-			Action: "deny",
-			Reason: "not in allowlist",
-		}),
-	})
-
-	if summary.DNSQueriesTotal != 1 || summary.DNSQueriesAllowed != 0 || summary.DNSQueriesDenied != 1 {
-		t.Fatalf("unexpected dns counts: %#v", summary)
-	}
-	if summary.IptablesRulesAdded != 0 {
-		t.Fatalf("unexpected rule count: %#v", summary)
-	}
-}
-
-func TestBuildReceiptNetworkNoNetworkCase(t *testing.T) {
-	t.Parallel()
-
-	pol := policy.Default()
-
-	summary := buildReceiptNetwork(pol, nil)
-
-	if summary.DNSQueriesTotal != 0 || summary.DNSQueriesAllowed != 0 || summary.DNSQueriesDenied != 0 || summary.IptablesRulesAdded != 0 {
-		t.Fatalf("unexpected counts: %#v", summary)
-	}
-	if summary.NetworkMode != "none" {
-		t.Fatalf("unexpected network mode: %#v", summary)
-	}
-	if len(summary.AllowedDomains) != 0 {
-		t.Fatalf("unexpected allowed domains: %#v", summary.AllowedDomains)
-	}
-}
-
-func mustTelemetryEvent(t *testing.T, kind string, data any) telemetry.Event {
-	t.Helper()
-
-	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal telemetry event: %v", err)
-	}
-	return telemetry.Event{Kind: kind, Data: raw}
 }
 
 func TestWithAuthMissingHeaderUsesErrorEnvelope(t *testing.T) {

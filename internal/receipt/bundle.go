@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -313,6 +314,28 @@ func FormatSummary(statement Statement, verified bool) string {
 		fmt.Sprintf("artifact_count=%d", len(statement.Subject)),
 		"artifacts=" + strings.Join(subjects, "; "),
 	}
+	if statement.Predicate.Policy != nil {
+		lines = append(lines,
+			"policy_language="+defaultSummaryValue(statement.Predicate.Policy.Baseline.Language),
+			fmt.Sprintf("policy_code_size_bytes=%d", statement.Predicate.Policy.Baseline.CodeSizeBytes),
+			fmt.Sprintf("policy_max_code_bytes=%d", statement.Predicate.Policy.Baseline.MaxCodeBytes),
+			fmt.Sprintf("policy_timeout_ms=%d", statement.Predicate.Policy.Baseline.TimeoutMs),
+			fmt.Sprintf("policy_max_timeout_ms=%d", statement.Predicate.Policy.Baseline.MaxTimeoutMs),
+			"policy_profile="+defaultSummaryValue(statement.Predicate.Policy.Baseline.Profile),
+		)
+		if statement.Predicate.Policy.Baseline.Network != nil {
+			lines = append(lines, "policy_network_mode="+defaultSummaryValue(statement.Predicate.Policy.Baseline.Network.Mode))
+			if len(statement.Predicate.Policy.Baseline.Network.Presets) > 0 {
+				lines = append(lines, "policy_network_presets="+strings.Join(statement.Predicate.Policy.Baseline.Network.Presets, ","))
+			}
+		}
+		if statement.Predicate.Policy.Intent != nil {
+			lines = append(lines, "policy_intent_digest="+defaultSummaryValue(statement.Predicate.Policy.Intent.Digest))
+			if statement.Predicate.Policy.Intent.Source != "" {
+				lines = append(lines, "policy_intent_source="+string(statement.Predicate.Policy.Intent.Source))
+			}
+		}
+	}
 	if statement.Predicate.WorkspaceID != "" {
 		lines = append(lines, "workspace_id="+statement.Predicate.WorkspaceID)
 	}
@@ -323,6 +346,37 @@ func FormatSummary(statement Statement, verified bool) string {
 		}
 		if statement.Predicate.Denial.Marker != "" {
 			lines = append(lines, "denial_marker="+statement.Predicate.Denial.Marker)
+		}
+	}
+	if statement.Predicate.Runtime != nil {
+		lines = append(lines,
+			"runtime_profile="+defaultSummaryValue(statement.Predicate.Runtime.Profile),
+			fmt.Sprintf("runtime_vcpu_count=%d", statement.Predicate.Runtime.VCPUCount),
+			fmt.Sprintf("runtime_memory_mb=%d", statement.Predicate.Runtime.MemoryMB),
+		)
+		if statement.Predicate.Runtime.Cgroup != nil {
+			lines = append(lines,
+				fmt.Sprintf("runtime_cgroup_memory_max_mb=%d", statement.Predicate.Runtime.Cgroup.MemoryMaxMB),
+				fmt.Sprintf("runtime_cgroup_memory_high_mb=%d", statement.Predicate.Runtime.Cgroup.MemoryHighMB),
+				fmt.Sprintf("runtime_cgroup_pids_max=%d", statement.Predicate.Runtime.Cgroup.PidsMax),
+				"runtime_cgroup_cpu_max="+defaultSummaryValue(statement.Predicate.Runtime.Cgroup.CPUMax),
+				"runtime_cgroup_swap_max="+defaultSummaryValue(statement.Predicate.Runtime.Cgroup.SwapMax),
+			)
+		}
+		if statement.Predicate.Runtime.Network != nil {
+			lines = append(lines,
+				"runtime_network_mode="+defaultSummaryValue(statement.Predicate.Runtime.Network.Mode),
+				"runtime_network_enabled="+strconv.FormatBool(statement.Predicate.Runtime.Network.Enabled),
+			)
+			if len(statement.Predicate.Runtime.Network.Presets) > 0 {
+				lines = append(lines, "runtime_network_presets="+strings.Join(statement.Predicate.Runtime.Network.Presets, ","))
+			}
+		}
+		if statement.Predicate.Runtime.Broker != nil {
+			lines = append(lines, "runtime_broker_enabled="+strconv.FormatBool(statement.Predicate.Runtime.Broker.Enabled))
+		}
+		if len(statement.Predicate.Runtime.AppliedOverrides) > 0 {
+			lines = append(lines, "runtime_applied_overrides="+strings.Join(statement.Predicate.Runtime.AppliedOverrides, ","))
 		}
 	}
 	if statement.Predicate.BrokerSummary != nil {

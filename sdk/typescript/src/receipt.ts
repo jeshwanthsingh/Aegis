@@ -51,7 +51,11 @@ export class Receipt {
     return typeof this.predicate.execution_id === "string" ? this.predicate.execution_id : undefined;
   }
 
-  get verdict(): string | undefined {
+  get resultClass(): string | undefined {
+    return typeof this.predicate.result_class === "string" ? this.predicate.result_class : undefined;
+  }
+
+  get divergenceVerdict(): string | undefined {
     const divergence = this.predicate.divergence;
     if (divergence && typeof divergence === "object" && typeof (divergence as Record<string, unknown>).verdict === "string") {
       return (divergence as Record<string, unknown>).verdict as string;

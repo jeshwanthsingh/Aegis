@@ -23,20 +23,40 @@ import (
 )
 
 type VMInstance struct {
-	UUID           string
-	CgroupID       string
-	FirecrackerPID int
-	SocketPath     string
-	VsockPath      string
-	ScratchPath    string
-	SerialLogPath  string
-	GuestCID       uint32
-	IsPersistent   bool
-	Network        *NetworkConfig
-	Cleanup        telemetry.CleanupDoneData
+	AssetID          string
+	UUID             string
+	CgroupID         string
+	FirecrackerPID   int
+	SocketPath       string
+	VsockPath        string
+	ScratchPath      string
+	SerialLogPath    string
+	GuestCID         uint32
+	IsPersistent     bool
+	Network          *NetworkConfig
+	Cleanup          telemetry.CleanupDoneData
+	VCPUCount        int
+	MemoryMB         int
+	AppliedOverrides []string
 }
 
 const scratchDir = "/tmp/aegis"
+
+func scratchDiskPath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("scratch-%s.ext4", id))
+}
+
+func firecrackerSocketPath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("fc-%s.sock", id))
+}
+
+func vsockSocketPath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("vsock-%s.sock", id))
+}
+
+func serialLogFilePath(id string) string {
+	return filepath.Join(scratchDir, fmt.Sprintf("serial-%s.log", id))
+}
 
 func resolveFirecrackerBinary() string {
 	if bin := strings.TrimSpace(os.Getenv("AEGIS_FIRECRACKER_BIN")); bin != "" {
@@ -101,6 +121,23 @@ func resolveMemoryMB(profile policy.ComputeProfile) int {
 	return profile.MemoryMB
 }
 
+type EffectiveVMSpec struct {
+	VCPUCount        int
+	MemoryMB         int
+	AppliedOverrides []string
+}
+
+func ResolveVMSpec(profile policy.ComputeProfile) EffectiveVMSpec {
+	spec := EffectiveVMSpec{
+		VCPUCount: profile.VCPUCount,
+		MemoryMB:  resolveMemoryMB(profile),
+	}
+	if spec.MemoryMB != profile.MemoryMB {
+		spec.AppliedOverrides = append(spec.AppliedOverrides, "AEGIS_VM_MEMORY_MB")
+	}
+	return spec
+}
+
 func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*VMInstance, error) {
 	baseDir, err := resolveAssetsDir(assetsDir)
 	if err != nil {
@@ -142,13 +179,13 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 		}
 	}
 
-	socketPath := fmt.Sprintf("%s/fc-%s.sock", scratchDir, uuid)
-	vsockPath := fmt.Sprintf("%s/vsock-%s.sock", scratchDir, uuid)
+	socketPath := firecrackerSocketPath(uuid)
+	vsockPath := vsockSocketPath(uuid)
 	kernelPath := filepath.Join(baseDir, "vmlinux")
 
 	cmd := exec.Command(resolveFirecrackerBinary(), "--api-sock", socketPath)
 	cmd.Env = []string{}
-	serialLogPath := fmt.Sprintf("%s/serial-%s.log", scratchDir, uuid)
+	serialLogPath := serialLogFilePath(uuid)
 	serialLog, _ := os.OpenFile(serialLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	cmd.Stdout = serialLog
 	cmd.Stderr = serialLog
@@ -162,21 +199,26 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	observability.Info("rootfs_selected", observability.Fields{"execution_id": uuid, "rootfs_path": rootfsPath})
 
+	vmSpec := ResolveVMSpec(profile)
+
 	vm := &VMInstance{
-		UUID:           uuid,
-		CgroupID:       uuid,
-		FirecrackerPID: pid,
-		SocketPath:     socketPath,
-		VsockPath:      vsockPath,
-		ScratchPath:    scratchPath,
-		SerialLogPath:  serialLogPath,
-		IsPersistent:   isPersistent,
-		Network:        networkCfg,
+		AssetID:          uuid,
+		UUID:             uuid,
+		CgroupID:         uuid,
+		FirecrackerPID:   pid,
+		SocketPath:       socketPath,
+		VsockPath:        vsockPath,
+		ScratchPath:      scratchPath,
+		SerialLogPath:    serialLogPath,
+		IsPersistent:     isPersistent,
+		Network:          networkCfg,
+		VCPUCount:        vmSpec.VCPUCount,
+		MemoryMB:         vmSpec.MemoryMB,
+		AppliedOverrides: append([]string(nil), vmSpec.AppliedOverrides...),
 	}
 
-	memoryMB := resolveMemoryMB(profile)
-	if memoryMB != profile.MemoryMB {
-		observability.Info("vm_memory_override", observability.Fields{"execution_id": uuid, "profile_memory_mb": profile.MemoryMB, "effective_memory_mb": memoryMB})
+	if vmSpec.MemoryMB != profile.MemoryMB {
+		observability.Info("vm_memory_override", observability.Fields{"execution_id": uuid, "profile_memory_mb": profile.MemoryMB, "effective_memory_mb": vmSpec.MemoryMB})
 	}
 
 	client := unixClient(socketPath)
@@ -191,8 +233,8 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	}
 
 	if err := fcPUT(client, "http://localhost/machine-config", map[string]any{
-		"vcpu_count":   profile.VCPUCount,
-		"mem_size_mib": memoryMB,
+		"vcpu_count":   vmSpec.VCPUCount,
+		"mem_size_mib": vmSpec.MemoryMB,
 	}); err != nil {
 		return nil, fmt.Errorf("machine-config: %w", err)
 	}
@@ -253,6 +295,89 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 
 	vm.GuestCID = guestCID
 	return vm, nil
+}
+
+func (vm *VMInstance) ClaimExecutionIdentity(executionID string) error {
+	if vm == nil {
+		return errors.New("vm is nil")
+	}
+	executionID = strings.TrimSpace(executionID)
+	if executionID == "" {
+		return errors.New("execution identity is empty")
+	}
+	if vm.AssetID == "" {
+		vm.AssetID = vm.UUID
+	}
+	if vm.UUID == executionID {
+		vm.CgroupID = executionID
+		return nil
+	}
+
+	type renameStep struct {
+		label       string
+		currentPath *string
+		targetPath  string
+		required    bool
+	}
+
+	steps := []renameStep{
+		{label: "firecracker socket", currentPath: &vm.SocketPath, targetPath: firecrackerSocketPath(executionID), required: true},
+		{label: "vsock socket", currentPath: &vm.VsockPath, targetPath: vsockSocketPath(executionID), required: true},
+		{label: "serial log", currentPath: &vm.SerialLogPath, targetPath: serialLogFilePath(executionID), required: false},
+	}
+	if !vm.IsPersistent {
+		steps = append([]renameStep{{label: "scratch", currentPath: &vm.ScratchPath, targetPath: scratchDiskPath(executionID), required: true}}, steps...)
+	}
+
+	type renamedPath struct {
+		currentPath *string
+		from        string
+		to          string
+	}
+	renamed := make([]renamedPath, 0, len(steps))
+	rollback := func() {
+		for i := len(renamed) - 1; i >= 0; i-- {
+			_ = os.Rename(renamed[i].to, renamed[i].from)
+			*renamed[i].currentPath = renamed[i].from
+		}
+	}
+
+	for _, step := range steps {
+		if step.currentPath == nil {
+			continue
+		}
+		current := strings.TrimSpace(*step.currentPath)
+		target := strings.TrimSpace(step.targetPath)
+		if current == "" {
+			if step.required {
+				rollback()
+				return fmt.Errorf("%s path missing for execution claim", step.label)
+			}
+			*step.currentPath = target
+			continue
+		}
+		if target == "" || current == target {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			rollback()
+			return fmt.Errorf("prepare %s path: %w", step.label, err)
+		}
+		if err := os.Rename(current, target); err != nil {
+			if errors.Is(err, os.ErrNotExist) && !step.required {
+				*step.currentPath = target
+				continue
+			}
+			rollback()
+			return fmt.Errorf("rebind %s from %s to %s: %w", step.label, current, target, err)
+		}
+		*step.currentPath = target
+		renamed = append(renamed, renamedPath{currentPath: step.currentPath, from: current, to: target})
+	}
+
+	vm.UUID = executionID
+	vm.CgroupID = executionID
+	return nil
 }
 
 func (vm *VMInstance) Kill() error {

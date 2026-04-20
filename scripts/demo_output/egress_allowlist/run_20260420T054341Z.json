@@ -1,0 +1,7 @@
+{
+  "error": "orchestrator binary lacks cap_net_admin.\nNetworked demos require capabilities on the binary.\nFix with:\n\n    make setcap\n\nThen re-run this demo. See docs/setup-local.md for details.",
+  "reused_runtime": false,
+  "started_runtime": false,
+  "status": "fail",
+  "summary_path": "/home/cellardoor72/aegis/scripts/demo_output/egress_allowlist/run_20260420T054341Z.json"
+}

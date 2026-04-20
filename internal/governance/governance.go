@@ -394,7 +394,7 @@ func directEgressRuleID(reason string) string {
 	switch reason {
 	case "network access is disabled by intent contract":
 		return "governance.direct_egress_disabled"
-	case "destination is outside network allowlists":
+	case "destination is outside network allowlists", "destination is blocked by runtime network baseline":
 		return "governance.direct_egress_target_denied"
 	default:
 		return "governance.direct_egress_denied"

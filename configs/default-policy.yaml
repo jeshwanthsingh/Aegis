@@ -5,7 +5,9 @@ default_timeout_ms: 10000
 max_timeout_ms: 10000
 network:
   mode: none
-  presets: []
+  allowlist:
+    fqdns: []
+    cidrs: []
 resources:
   memory_max_mb: 128
   cpu_percent: 50

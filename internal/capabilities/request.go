@@ -162,7 +162,6 @@ func Compile(executionID string, language string, timeoutSec float64, req Reques
 	allowedIPs := []string{}
 	maxOutboundConns := len(allowedDomains)
 	if len(brokerDomains) > 0 {
-		allowedIPs = append(allowedIPs, "127.0.0.1")
 		if maxOutboundConns < 1 {
 			maxOutboundConns = 1
 		}

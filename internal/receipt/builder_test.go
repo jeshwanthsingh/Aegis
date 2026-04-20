@@ -1,15 +1,18 @@
 package receipt
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"aegis/internal/models"
+	policycfg "aegis/internal/policy"
 	"aegis/internal/telemetry"
 )
 
@@ -32,6 +35,18 @@ func TestBuildPredicateAndStatement(t *testing.T) {
 	if receipt.Statement.Predicate.PointDecisions.DenyCount != 1 {
 		t.Fatalf("unexpected point summary: %+v", receipt.Statement.Predicate.PointDecisions)
 	}
+	if receipt.Statement.Predicate.Runtime == nil {
+		t.Fatal("expected runtime envelope")
+	}
+	if receipt.Statement.Predicate.Runtime.Profile != "standard" || receipt.Statement.Predicate.Runtime.MemoryMB != 768 {
+		t.Fatalf("unexpected runtime envelope: %+v", receipt.Statement.Predicate.Runtime)
+	}
+	if receipt.Statement.Predicate.Policy == nil {
+		t.Fatal("expected policy envelope")
+	}
+	if receipt.Statement.Predicate.Policy.Baseline.Language != "python" || receipt.Statement.Predicate.Policy.Baseline.TimeoutMs != 5000 {
+		t.Fatalf("unexpected policy envelope: %+v", receipt.Statement.Predicate.Policy)
+	}
 }
 
 func TestDSSEEnvelopeGenerationAndVerify(t *testing.T) {
@@ -50,7 +65,7 @@ func TestDSSEEnvelopeGenerationAndVerify(t *testing.T) {
 	if statement.Predicate.Trust.SigningMode != SigningModeDev {
 		t.Fatalf("unexpected signing mode: %q", statement.Predicate.Trust.SigningMode)
 	}
-	if statement.Predicate.Trust.KeySource != KeySourceDevFallback {
+	if statement.Predicate.Trust.KeySource != KeySourceConfiguredSeed {
 		t.Fatalf("unexpected key source: %q", statement.Predicate.Trust.KeySource)
 	}
 }
@@ -248,44 +263,291 @@ func TestBundleArtifactsIncludeManifestWithoutSweepingWorkspace(t *testing.T) {
 
 func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 	signer := mustDevSigner(t)
-	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	input := testReceiptInput()
+	receipt, err := BuildSignedReceipt(input, signer)
 	if err != nil {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
 	summary := FormatSummary(receipt.Statement, true)
+	expectedPolicyDigest := policyDigestForReceipt(input.Policy)
 	for _, needle := range []string{
 		"verification=verified",
 		"schema_version=v1",
 		"execution_id=exec_123",
 		"backend=firecracker",
-		"policy_digest=policy-digest",
+		"policy_digest=" + expectedPolicyDigest,
+		"policy_language=python",
+		"policy_code_size_bytes=11",
+		"policy_max_code_bytes=65536",
+		"policy_timeout_ms=5000",
+		"policy_max_timeout_ms=10000",
+		"policy_profile=standard",
+		"policy_network_mode=egress_allowlist",
+		"policy_intent_digest=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"policy_intent_source=intent_contract",
 		"signer_key_id=" + signer.KeyID,
 		"signing_mode=dev",
 		"intent_digest=",
-		"trust_limitations=dev_signing_mode,fallback_dev_seed,host_attestation_absent",
+		"trust_limitations=dev_signing_mode,host_attestation_absent",
 		"outcome=completed",
 		"exit_code=0",
 		"execution_status=none",
 		"result_class=denied",
-		"key_source=dev_fallback",
+		"key_source=configured_seed",
 		"attestation=absent",
 		"divergence_verdict=kill_candidate",
 		"artifact_count=0",
+		"runtime_profile=standard",
+		"runtime_vcpu_count=2",
+		"runtime_memory_mb=768",
+		"runtime_cgroup_memory_max_mb=896",
+		"runtime_network_mode=egress_allowlist",
+		"runtime_broker_enabled=true",
+		"runtime_applied_overrides=AEGIS_VM_MEMORY_MB",
 	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
 	}
+	if receipt.Statement.Predicate.Policy.Baseline.Network == nil || receipt.Statement.Predicate.Policy.Baseline.Network.Allowlist == nil {
+		t.Fatalf("expected baseline network allowlist: %+v", receipt.Statement.Predicate.Policy.Baseline.Network)
+	}
+	if got := strings.Join(receipt.Statement.Predicate.Policy.Baseline.Network.Allowlist.FQDNs, ","); got != "api.github.com,registry.npmjs.org" {
+		t.Fatalf("unexpected baseline network allowlist fqdns: %q", got)
+	}
+	if got := strings.Join(receipt.Statement.Predicate.Runtime.Network.Allowlist.CIDRs, ","); got != "127.0.0.0/8,198.51.100.0/24" {
+		t.Fatalf("unexpected runtime network allowlist cidrs: %q", got)
+	}
+}
+
+func TestBuildPredicateBlockedEgressZeroAttempts(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = nil
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary == nil {
+		t.Fatal("expected blocked_egress summary")
+	}
+	if summary.TotalCount != 0 || summary.UniqueTargetCount != 0 || summary.SampleTruncated {
+		t.Fatalf("unexpected zero blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 0 {
+		t.Fatalf("expected empty blocked_egress sample, got %+v", summary.Sample)
+	}
+}
+
+func TestBuildPredicateBlockedEgressOneAttempt(t *testing.T) {
+	signer := mustDevSigner(t)
+	ts := time.Unix(1700001000, 0).UTC()
+	input := testReceiptInput()
+	input.TelemetryEvents = deniedConnectTelemetry(1, ts, "1.1.1.1", 443)
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 1 || summary.UniqueTargetCount != 1 || summary.SampleTruncated {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 1 {
+		t.Fatalf("blocked_egress sample length = %d want 1", len(summary.Sample))
+	}
+	entry := summary.Sample[0]
+	if entry.Target != "tcp://1.1.1.1:443" || entry.Kind != "ip" || entry.Count != 1 || !entry.FirstSeenAt.Equal(ts) {
+		t.Fatalf("unexpected blocked_egress entry: %+v", entry)
+	}
+}
+
+func TestBuildPredicateBlockedEgressRepeatedTarget(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = nil
+	for i := 0; i < 3; i++ {
+		input.TelemetryEvents = append(input.TelemetryEvents, deniedConnectTelemetry(uint64(i+1), time.Unix(1700001100+int64(i), 0).UTC(), "1.1.1.1", 443)...)
+	}
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 3 || summary.UniqueTargetCount != 1 {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 1 || summary.Sample[0].Count != 3 {
+		t.Fatalf("unexpected blocked_egress sample: %+v", summary.Sample)
+	}
+}
+
+func TestBuildPredicateBlockedEgressTruncatesAfterTenUniqueTargets(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = nil
+	for i := 0; i < 11; i++ {
+		ip := "203.0.113." + strconv.Itoa(i+1)
+		input.TelemetryEvents = append(input.TelemetryEvents, deniedConnectTelemetry(uint64(i+1), time.Unix(1700001200+int64(i), 0).UTC(), ip, 443)...)
+	}
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 11 || summary.UniqueTargetCount != 11 || !summary.SampleTruncated {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 10 {
+		t.Fatalf("blocked_egress sample length = %d want 10", len(summary.Sample))
+	}
+	if summary.Sample[0].Target != "tcp://203.0.113.1:443" || summary.Sample[9].Target != "tcp://203.0.113.10:443" {
+		t.Fatalf("blocked_egress sample order unexpected: %+v", summary.Sample)
+	}
+}
+
+func TestBuildPredicateBlockedEgressMixedKinds(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = append(
+		deniedConnectTelemetry(1, time.Unix(1700001300, 0).UTC(), "1.1.1.1", 443),
+		deniedDNSQueryTelemetry(time.Unix(1700001301, 0).UTC(), "evil-attacker.example.com"),
+	)
+	input.TelemetryEvents = append(input.TelemetryEvents, deniedConnectTelemetry(2, time.Unix(1700001302, 0).UTC(), "10.0.0.5", 443)...)
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 3 || summary.UniqueTargetCount != 3 {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	want := []BlockedEgressEntry{
+		{Target: "tcp://1.1.1.1:443", Kind: "ip", Count: 1},
+		{Target: "dns:evil-attacker.example.com", Kind: "fqdn", Count: 1},
+		{Target: "tcp://10.0.0.0/8", Kind: "rfc1918", Count: 1},
+	}
+	for i, entry := range want {
+		got := summary.Sample[i]
+		if got.Target != entry.Target || got.Kind != entry.Kind || got.Count != entry.Count {
+			t.Fatalf("blocked_egress sample[%d] = %+v want %+v", i, got, entry)
+		}
+	}
+}
+
+func TestFormatSummaryNormalizesLegacyIsolatedNetworkMode(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.Policy.Baseline.Network.Mode = policycfg.NetworkModeLegacyIsolated
+	input.Runtime.Network.Mode = policycfg.NetworkModeLegacyIsolated
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := FormatSummary(receipt.Statement, true)
+	if !strings.Contains(summary, "policy_network_mode="+policycfg.NetworkModeEgressAllowlist) {
+		t.Fatalf("summary missing canonical policy network mode: %s", summary)
+	}
+	if !strings.Contains(summary, "runtime_network_mode="+policycfg.NetworkModeEgressAllowlist) {
+		t.Fatalf("summary missing canonical runtime network mode: %s", summary)
+	}
+	if strings.Contains(summary, "policy_network_mode="+policycfg.NetworkModeLegacyIsolated) || strings.Contains(summary, "runtime_network_mode="+policycfg.NetworkModeLegacyIsolated) {
+		t.Fatalf("summary still contains legacy isolated mode: %s", summary)
+	}
+}
+
+func TestVerifySignedReceiptRejectsInvalidRuntimeEnvelope(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.Runtime.Network.Mode = "broken"
+	payload, err := json.Marshal(signed.Statement)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	signed.Envelope.Payload = base64.StdEncoding.EncodeToString(payload)
+	signed.Envelope.Signatures[0].Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, pae(PayloadType, payload)))
+	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err == nil {
+		t.Fatal("expected invalid runtime envelope verification failure")
+	}
+}
+
+func TestVerifySignedReceiptRejectsInvalidPolicyEnvelope(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.Policy.Baseline.TimeoutMs = 20000
+	payload, err := json.Marshal(signed.Statement)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	signed.Envelope.Payload = base64.StdEncoding.EncodeToString(payload)
+	signed.Envelope.Signatures[0].Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, pae(PayloadType, payload)))
+	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err == nil {
+		t.Fatal("expected invalid policy envelope verification failure")
+	}
 }
 
 func TestBuildPredicateIncludesTopLevelPolicyDigest(t *testing.T) {
 	signer := mustDevSigner(t)
-	receipt, err := BuildSignedReceipt(testReceiptInput(), signer)
+	input := testReceiptInput()
+	receipt, err := BuildSignedReceipt(input, signer)
 	if err != nil {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
-	if receipt.Statement.Predicate.PolicyDigest != "policy-digest" {
+	if receipt.Statement.Predicate.PolicyDigest != policyDigestForReceipt(input.Policy) {
 		t.Fatalf("policy digest = %q", receipt.Statement.Predicate.PolicyDigest)
+	}
+}
+
+func TestBuildPredicateBareExecutionIncludesBaselinePolicyDigest(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.IntentRaw = nil
+	input.Policy.Intent = nil
+	receiptValue, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receiptValue.Statement.Predicate.Policy == nil {
+		t.Fatal("expected policy envelope")
+	}
+	if receiptValue.Statement.Predicate.Policy.Intent != nil {
+		t.Fatalf("expected no intent policy extension, got %+v", receiptValue.Statement.Predicate.Policy.Intent)
+	}
+	if receiptValue.Statement.Predicate.PolicyDigest == "" {
+		t.Fatal("expected non-empty policy digest")
+	}
+	if receiptValue.Statement.Predicate.Policy.Baseline.Profile != "standard" {
+		t.Fatalf("unexpected baseline policy: %+v", receiptValue.Statement.Predicate.Policy.Baseline)
+	}
+}
+
+func TestBuildPredicatePolicyDigestChangesWhenBaselinePolicyChanges(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	first, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt(first): %v", err)
+	}
+	changed := testReceiptInput()
+	changed.Policy.Baseline.TimeoutMs = 7000
+	second, err := BuildSignedReceipt(changed, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt(second): %v", err)
+	}
+	if first.Statement.Predicate.PolicyDigest == second.Statement.Predicate.PolicyDigest {
+		t.Fatalf("expected policy digest to change when baseline policy changes: %q", first.Statement.Predicate.PolicyDigest)
 	}
 }
 
@@ -434,7 +696,52 @@ func testReceiptInput() Input {
 		StartedAt:       started,
 		FinishedAt:      finished,
 		IntentRaw:       []byte(`{"version":"v1","execution_id":"exec_123"}`),
-		Outcome:         Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
+		Policy: &PolicyEnvelope{
+			Baseline: BaselinePolicy{
+				Language:      "python",
+				CodeSizeBytes: 11,
+				MaxCodeBytes:  65536,
+				TimeoutMs:     5000,
+				MaxTimeoutMs:  10000,
+				Profile:       "standard",
+				Network: &BaselineNetworkPolicy{
+					Mode:    policycfg.NetworkModeEgressAllowlist,
+					Presets: []string{},
+					Allowlist: &NetworkAllowlistEnvelope{
+						FQDNs: []string{"registry.npmjs.org", "api.github.com"},
+						CIDRs: []string{},
+					},
+				},
+			},
+			Intent: &IntentPolicyDigest{
+				Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				Source: PolicyIntentSourceContract,
+			},
+		},
+		Outcome: Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
+		Runtime: &RuntimeEnvelope{
+			Profile:   "standard",
+			VCPUCount: 2,
+			MemoryMB:  768,
+			Cgroup: &RuntimeCgroupEnvelope{
+				MemoryMaxMB:  896,
+				MemoryHighMB: 448,
+				PidsMax:      100,
+				CPUMax:       "50000 100000",
+				SwapMax:      "0",
+			},
+			Network: &RuntimeNetworkEnvelope{
+				Enabled: true,
+				Mode:    policycfg.NetworkModeEgressAllowlist,
+				Presets: []string{},
+				Allowlist: &NetworkAllowlistEnvelope{
+					FQDNs: []string{"registry.npmjs.org"},
+					CIDRs: []string{"198.51.100.0/24"},
+				},
+			},
+			Broker:           &RuntimeBrokerEnvelope{Enabled: true},
+			AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},
+		},
 		TelemetryEvents: []telemetry.Event{{ExecID: "exec_123", Kind: telemetry.KindRuntimeEvent, Data: runtimeEvent}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointAllow}, {ExecID: "exec_123", Kind: telemetry.KindPolicyPointDecision, Data: pointDeny}, {ExecID: "exec_123", Kind: telemetry.KindPolicyDivergence, Data: divergence}, {ExecID: "exec_123", Kind: telemetry.KindGovernedAction, Data: governedAction}},
 		Attributes:      map[string]string{"mode": "test"},
 	}
@@ -442,9 +749,59 @@ func testReceiptInput() Input {
 
 func mustDevSigner(t *testing.T) *Signer {
 	t.Helper()
-	signer, err := NewSigner(SigningConfig{Mode: SigningModeDev})
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = 1
+	}
+	signer, err := NewSigner(SigningConfig{
+		Mode:    SigningModeDev,
+		SeedB64: base64.StdEncoding.EncodeToString(seed),
+	})
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
 	return signer
+}
+
+func deniedConnectTelemetry(seq uint64, ts time.Time, dstIP string, dstPort uint16) []telemetry.Event {
+	runtimeEvent, _ := json.Marshal(models.RuntimeEvent{
+		ExecutionID: "exec_123",
+		Backend:     models.BackendFirecracker,
+		Seq:         seq,
+		TsUnixNano:  ts.UnixNano(),
+		Type:        models.EventNetConnect,
+		DstIP:       dstIP,
+		DstPort:     dstPort,
+	})
+	pointDecision, _ := json.Marshal(models.PolicyPointDecision{
+		ExecutionID: "exec_123",
+		EventSeq:    seq,
+		EventType:   models.EventNetConnect,
+		CedarAction: models.ActionConnect,
+		Decision:    models.DecisionDeny,
+		Reason:      "destination denied",
+		Metadata: map[string]string{
+			"policy_digest": "policy-digest",
+			"dst_ip":        dstIP,
+			"dst_port":      strconv.Itoa(int(dstPort)),
+		},
+	})
+	return []telemetry.Event{
+		{ExecID: "exec_123", Timestamp: ts.UnixMilli(), Kind: telemetry.KindRuntimeEvent, Data: runtimeEvent},
+		{ExecID: "exec_123", Timestamp: ts.UnixMilli(), Kind: telemetry.KindPolicyPointDecision, Data: pointDecision},
+	}
+}
+
+func deniedDNSQueryTelemetry(ts time.Time, domain string) telemetry.Event {
+	payload, _ := json.Marshal(telemetry.DNSQueryData{
+		Domain: domain,
+		Action: "deny",
+		Reason: "not in allowlist",
+	})
+	return telemetry.Event{
+		ExecID:    "exec_123",
+		Timestamp: ts.UnixMilli(),
+		Kind:      telemetry.KindDNSQuery,
+		Data:      payload,
+	}
 }

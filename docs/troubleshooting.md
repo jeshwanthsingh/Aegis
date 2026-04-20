@@ -1,169 +1,115 @@
 # Troubleshooting
 
-This page covers the common Phase 1 and Phase 2 local validation failures in `~/aegis`.
+This page assumes the canonical local path:
 
-## `aegis: command not found`
+```bash
+cd ~/aegis
+./scripts/demo_up.sh
+./scripts/demo_status.sh
+./scripts/demo_clean.sh
+```
+
+## `demo_up.sh` fails before the runtime starts
+
+Common messages include:
+
+- `/dev/kvm is missing`
+- `/dev/kvm is not accessible to the current user`
+- `Firecracker binary not found`
+- `Postgres tool 'initdb' not found`
+- `Go toolchain not found`
+- `kernel image missing`
+- `rootfs image missing`
+
+Recovery:
+
+- read the exact `demo error: ...` line first
+- compare it against the prerequisite list and failure modes in [setup-local.md](setup-local.md)
+- fix the missing dependency or host permission and rerun `./scripts/demo_up.sh`
+
+If `demo_up.sh` says Aegis is already healthy at `http://127.0.0.1:8080` but is not owned by `/tmp/aegis-demo/state.json`, another runtime is already using the canonical demo port. Stop that runtime or reuse it deliberately.
+
+## `demo_status.sh` says `status=degraded`
+
+That means the demo state exists, but the runtime health check is failing.
+
+Inspect the logs:
+
+```bash
+tail -n 50 /tmp/aegis-demo/orchestrator.log
+tail -n 50 /tmp/aegis-demo/postgres.log
+```
+
+Then restart the packaged local environment:
+
+```bash
+cd ~/aegis
+./scripts/demo_down.sh
+./scripts/demo_up.sh
+```
+
+`demo_down.sh` leaves logs and proof bundles on disk so you can inspect them after the restart.
+
+## A packaged demo script says the runtime is not healthy
+
+The demo scripts require the localhost runtime from `demo_up.sh`.
+
+Check:
+
+```bash
+cd ~/aegis
+./scripts/demo_status.sh
+```
+
+If it is not running, start it:
+
+```bash
+cd ~/aegis
+./scripts/demo_up.sh
+```
+
+## Repo-local binaries are missing or stale
 
 Symptoms:
 
-- `aegis` is not on `PATH`
-- `command -v aegis` prints nothing
+- `./.aegis/bin/aegis` is missing
+- `./.aegis/bin/orchestrator` is missing
+- `./.aegis/bin/aegis-mcp` is missing after setup should have built it
 
 Recovery:
 
 ```bash
 cd ~/aegis
-bash scripts/install.sh
-command -v aegis
+./scripts/demo_up.sh
 ```
 
-Expected current path:
-
-```text
-~/.local/bin/aegis
-```
-
-If you want to inspect the canonical binary directly:
-
-```bash
-ls -l ~/aegis/.aegis/bin/aegis ~/.local/bin/aegis
-```
-
-## Database unreachable
-
-Symptoms:
-
-- `aegis setup` reports database failure
-- `aegis doctor` reports database failure
-- `scripts/install.sh` fails while creating the database or applying schema
-
-Checks:
+If you only need to rerun the repo-local setup step without starting the packaged demo runtime:
 
 ```bash
 cd ~/aegis
-aegis setup
+go run ./cmd/aegis-cli setup --config .aegis/config.yaml
 ```
 
-Recovery:
+## Receipt verification fails
 
-- start PostgreSQL
-- ensure the configured URL is correct
-- set `AEGIS_DB_URL` or `DB_URL` if your local credentials differ from the default
-- rerun:
+If `./.aegis/bin/aegis receipt verify --proof-dir ...` fails, the CLI prints `receipt verification failed: ...` and, when available, `verification_failure_class=...`.
+
+Start with:
 
 ```bash
 cd ~/aegis
-aegis setup
+./.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<execution-id>
+./.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<execution-id>
 ```
 
-## Runtime unavailable
+Check that the proof directory still contains:
 
-Symptoms:
+- `receipt.dsse.json`
+- `receipt.pub`
+- `receipt.summary.txt`
+- every bound artifact named in the bundle, such as `stdout.txt`, `stderr.txt`, or `output-manifest.json`
 
-- `aegis doctor` reports runtime unavailable
-- SDK or demo scripts fail to reach `http://localhost:8080`
-
-Recovery:
-
-Start the runtime in its own terminal:
-
-```bash
-cd ~/aegis
-aegis serve
-```
-
-Then rerun:
-
-```bash
-cd ~/aegis
-aegis doctor
-```
-
-## Stale `.aegis` state
-
-Symptoms:
-
-- config or binary path looks wrong for the current checkout
-- `aegis setup` or `aegis doctor` reports unexpected repo-local binary or config issues
-- the shell command resolves to a different binary than the repo-local one
-
-Explicit recovery path:
-
-```bash
-cd ~/aegis
-rm -rf .aegis
-aegis setup
-```
-
-Then confirm:
-
-```bash
-cd ~/aegis
-command -v aegis
-aegis setup
-```
-
-## Rootfs checksum mismatch or rerun behavior
-
-Symptoms:
-
-- you expected `scripts/install.sh` to revalidate the rootfs against the pristine release checksum on every run
-- you are confused because the rootfs digest changed after install
-
-Current behavior:
-
-- `scripts/install.sh` verifies the release checksum when it first downloads `alpine-base.ext4`
-- the installer then rebakes `guest-runner` into that repo-local rootfs
-- reruns skip the pristine rootfs checksum for an already-present repo-local image because its digest is expected to change after rebake
-
-If you need a clean repo-local runtime rebuild:
-
-```bash
-cd ~/aegis
-rm -rf .aegis
-aegis setup
-```
-
-If you need to rebuild the rootfs image itself, rerun:
-
-```bash
-cd ~/aegis
-bash scripts/install.sh
-```
-
-## Missing `python3-venv` or `python3-pip`
-
-This does not block the repo-native exfil demo.
-
-It only blocks Python SDK examples such as `sdk/python/examples/run_code.py`.
-
-Recovery on Debian or Ubuntu:
-
-```bash
-sudo apt install python3-venv python3-pip
-```
-
-## Missing or stale MCP binary
-
-Symptoms:
-
-- `./.aegis/bin/aegis-mcp` is missing
-- MCP client registration points at a stale or missing binary
-
-Recovery:
-
-```bash
-cd ~/aegis
-aegis setup
-ls -l .aegis/bin/aegis-mcp
-```
-
-If you need to force a rebuild immediately after MCP source changes:
-
-```bash
-cd ~/aegis
-go build -buildvcs=false -o .aegis/bin/aegis-mcp ./cmd/aegis-mcp
-```
+If the bundle was copied elsewhere, keep those files together.
 
 ## Runtime unavailable during MCP use
 
@@ -173,19 +119,13 @@ Symptoms:
 
 Cause:
 
-- the MCP binary is only a thin stdio wrapper around the existing local HTTP runtime
-- it does not embed or start the runtime for you
+- the MCP binary is a thin stdio wrapper around the existing local HTTP runtime
+- it does not start the runtime for you
 
 Recovery:
 
 ```bash
 cd ~/aegis
-aegis serve
-```
-
-In another terminal:
-
-```bash
-cd ~/aegis
-AEGIS_BASE_URL=http://localhost:8080 ./.aegis/bin/aegis-mcp
+./scripts/demo_up.sh
+AEGIS_BASE_URL=http://127.0.0.1:8080 ./.aegis/bin/aegis-mcp
 ```

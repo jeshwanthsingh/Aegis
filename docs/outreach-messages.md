@@ -24,7 +24,7 @@ Subject:
 
 Message:
 
-`I’m speaking with platform and security teams that are trying to let internal coding agents run real build/test/repo tasks without handing those agents a normal host or CI runner. Aegis is a self-hosted runtime that blocks direct egress by default and emits signed receipts for what the host observed and enforced.`
+`I’m speaking with platform and security teams that are trying to let internal coding agents run real build/test/repo tasks without handing those agents a normal host or CI runner. Aegis is a self-hosted runtime that defaults to no network, can enforce configured direct-egress denial paths, and emits signed receipts for what the host observed and enforced.`
 
 `The question I’m trying to answer is simple: is this a real blocker for teams already rolling out coding agents, or is a generic sandbox good enough?`
 
@@ -36,4 +36,4 @@ Message:
 
 ## Short reply to "How is this different from a sandbox?"
 
-`The narrow difference is that Aegis is not just "code ran somewhere else." It is aimed at self-hosted internal coding-agent execution where the team wants direct egress denied by default and a signed receipt showing what the host observed and enforced for that run. If a generic sandbox already solves that in a way your platform and security teams accept, then Aegis is probably not the right wedge for you.`
+`The narrow difference is that Aegis is not just "code ran somewhere else." It is aimed at self-hosted internal coding-agent execution where the team wants no ambient network by default, a configured direct-egress denial path for the workflow they care about, and a signed receipt showing what the host observed and enforced for that run. If a generic sandbox already solves that in a way your platform and security teams accept, then Aegis is probably not the right wedge for you.`

@@ -6,7 +6,10 @@ import (
 )
 
 func FuzzParseSignedReceiptJSON(f *testing.F) {
-	signer, err := NewSigner(SigningConfig{Mode: SigningModeDev})
+	signer, err := NewSigner(SigningConfig{
+		Mode:    SigningModeDev,
+		SeedB64: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+	})
 	if err == nil {
 		signed, buildErr := BuildSignedReceipt(testReceiptInput(), signer)
 		if buildErr == nil {

@@ -51,13 +51,13 @@ func TestReceiptVerifyCommand(t *testing.T) {
 		"signer_key_id=" + signer.KeyID,
 		"signing_mode=dev",
 		"intent_digest=none",
-		"trust_limitations=dev_signing_mode,fallback_dev_seed,host_attestation_absent",
+		"trust_limitations=dev_signing_mode,host_attestation_absent",
 		"outcome=completed",
 		"exit_code=0",
 		"execution_status=none",
 		"semantics_mode=explicit_v1",
 		"result_class=completed",
-		"key_source=dev_fallback",
+		"key_source=configured_seed",
 		"artifact_count=2",
 		"output-manifest.json",
 	} {
@@ -267,7 +267,10 @@ func TestResolveReceiptSelectionInfersPublicKeyPath(t *testing.T) {
 
 func mustTestSigner(t *testing.T) *receipt.Signer {
 	t.Helper()
-	signer, err := receipt.NewSigner(receipt.SigningConfig{Mode: receipt.SigningModeDev})
+	signer, err := receipt.NewSigner(receipt.SigningConfig{
+		Mode:    receipt.SigningModeDev,
+		SeedB64: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+	})
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}

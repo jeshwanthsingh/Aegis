@@ -239,6 +239,11 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Receipt.SigningMode) == "" {
 		return fmt.Errorf("receipt.signing_mode is required")
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Receipt.SigningMode)) {
+	case "strict", "dev":
+	default:
+		return fmt.Errorf("receipt.signing_mode must be strict or dev")
+	}
 	if strings.TrimSpace(c.Receipt.SeedFile) == "" {
 		return fmt.Errorf("receipt.seed_file is required")
 	}
@@ -289,7 +294,8 @@ runtime:
   warm_pool_max_age: %d
 
 receipt:
-  # Signing mode used for local receipts. strict requires a real seed file.
+  # Signing mode used for local receipts. strict is the safe default.
+  # dev is explicit non-production signing and still requires a configured seed file.
   signing_mode: %s
   # Base64-encoded Ed25519 seed file created by aegis setup if missing.
   seed_file: %s

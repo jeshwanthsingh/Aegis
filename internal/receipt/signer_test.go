@@ -8,16 +8,13 @@ import (
 	"time"
 )
 
-func TestNewSignerDevFallback(t *testing.T) {
-	signer, err := NewSigner(SigningConfig{Mode: SigningModeDev})
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
+func TestNewSignerDevRequiresConfiguredSeed(t *testing.T) {
+	_, err := NewSigner(SigningConfig{Mode: SigningModeDev})
+	if err == nil {
+		t.Fatal("expected explicit dev mode to require a configured seed")
 	}
-	if signer.Mode != SigningModeDev {
-		t.Fatalf("mode = %q", signer.Mode)
-	}
-	if signer.KeySource != KeySourceDevFallback {
-		t.Fatalf("key source = %q", signer.KeySource)
+	if !strings.Contains(err.Error(), EnvSigningSeed) || !strings.Contains(err.Error(), "deterministic fallback signing is disabled") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -64,6 +61,38 @@ func TestNewSignerFromEnvNoSilentStrictFallback(t *testing.T) {
 	_, err := NewSignerFromEnv()
 	if err == nil {
 		t.Fatal("expected strict mode env error")
+	}
+}
+
+func TestNewSignerFromEnvDefaultsToStrictWithConfiguredSeed(t *testing.T) {
+	seed := sha256.Sum256([]byte("default-strict-seed"))
+	t.Setenv(EnvSigningMode, "")
+	t.Setenv(EnvSigningSeed, base64.StdEncoding.EncodeToString(seed[:]))
+	signer, err := NewSignerFromEnv()
+	if err != nil {
+		t.Fatalf("NewSignerFromEnv: %v", err)
+	}
+	if signer.Mode != SigningModeStrict {
+		t.Fatalf("mode = %q", signer.Mode)
+	}
+	if signer.KeySource != KeySourceConfiguredSeed {
+		t.Fatalf("key source = %q", signer.KeySource)
+	}
+}
+
+func TestNewSignerFromEnvExplicitDevUsesConfiguredSeed(t *testing.T) {
+	seed := sha256.Sum256([]byte("explicit-dev-seed"))
+	t.Setenv(EnvSigningMode, string(SigningModeDev))
+	t.Setenv(EnvSigningSeed, base64.StdEncoding.EncodeToString(seed[:]))
+	signer, err := NewSignerFromEnv()
+	if err != nil {
+		t.Fatalf("NewSignerFromEnv: %v", err)
+	}
+	if signer.Mode != SigningModeDev {
+		t.Fatalf("mode = %q", signer.Mode)
+	}
+	if signer.KeySource != KeySourceConfiguredSeed {
+		t.Fatalf("key source = %q", signer.KeySource)
 	}
 }
 

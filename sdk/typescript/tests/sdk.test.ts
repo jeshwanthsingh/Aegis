@@ -277,7 +277,7 @@ test("stream parsing yields typed events", async () => {
 test("receipt wrapper and verifier helpers work", async () => {
   const dir = mkdtempSync(join(tmpdir(), "aegis-ts-sdk-"));
   const receiptPath = join(dir, "receipt.dsse.json");
-  writeFileSync(receiptPath, JSON.stringify({ statement: { predicate: { execution_id: "exec-r", divergence: { verdict: "allow" }, trust: { signing_mode: "strict", key_source: "configured_seed" } } } }));
+  writeFileSync(receiptPath, JSON.stringify({ statement: { predicate: { execution_id: "exec-r", result_class: "completed", divergence: { verdict: "allow" }, trust: { signing_mode: "strict", key_source: "configured_seed" } } } }));
 
   class StubVerifier {
     async verifyReceipt(): Promise<ReceiptVerification> {
@@ -287,7 +287,8 @@ test("receipt wrapper and verifier helpers work", async () => {
 
   const receipt = Receipt.load(receiptPath, { verifier: new StubVerifier() as unknown as ReceiptVerifier });
   assert.equal(receipt.executionId, "exec-r");
-  assert.equal(receipt.verdict, "allow");
+  assert.equal(receipt.resultClass, "completed");
+  assert.equal(receipt.divergenceVerdict, "allow");
   const verification = await receipt.verify();
   assert.equal(verification.verified, true);
 });
