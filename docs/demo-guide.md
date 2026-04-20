@@ -1,8 +1,10 @@
 # Demo Guide
 
-These are the three packaged Aegis demo flows.
+These are the packaged Aegis demo flows.
 
-They are the only public demo path to lead with. Older manual and harness-based flows are secondary or deprecated.
+Lead with `./scripts/demo_egress_allowlist.sh`. It is the strongest current public proof story: one public entrypoint, an adversarial blocked-egress phase, a brokered-success phase, and offline verification for both receipts.
+
+The smaller scripts remain useful supporting demos when you want to isolate one behavior at a time.
 
 These scripts make the current product story concrete without asking the user to dig through logs by hand:
 
@@ -26,7 +28,59 @@ If the runtime is healthy, the scripts below will talk to `http://127.0.0.1:8080
 
 These packaged demos prove specific configured paths. They do not imply that every networked execution is deny-all; for networked runs, read `policy_network_mode` and `runtime_network_mode` in the receipt summary.
 
-## 1. Clean Execution
+## 1. Flagship Egress Allowlist Demo
+
+What it proves:
+
+- the current public outbound-governance story in one top-level demo
+- an adversarial phase records `blocked_egress` evidence for `ip`, `fqdn`, and `rfc1918`
+- the adversarial phase terminates as intended and still verifies offline
+- a brokered-success phase completes normally with governed allow evidence
+- both proof bundles verify offline
+
+Run it:
+
+```bash
+./scripts/demo_egress_allowlist.sh
+```
+
+Expected output shape:
+
+```text
+phase=adversarial
+execution_id=<uuid>
+proof_dir=/tmp/aegis-demo/proofs/<uuid>
+result=terminated_as_expected
+blocked_egress_kinds=ip,fqdn,rfc1918
+verification=verified
+
+phase=brokered
+execution_id=<uuid>
+proof_dir=/tmp/aegis-demo/proofs/<uuid>
+result=completed
+broker_allowed_count=1
+verification=verified
+
+overall=pass
+```
+
+Receipt evidence to look for:
+
+- adversarial `result=terminated_as_expected`
+- adversarial `blocked_egress_kinds=ip,fqdn,rfc1918`
+- brokered `result=completed`
+- brokered `broker_allowed_count=1`
+- `verification=verified` for both phases
+- `overall=pass`
+
+What verification proves:
+
+- both executions produced signed proof bundles
+- the adversarial run recorded the blocked-egress evidence the product is meant to expose
+- the brokered run recorded governed allow evidence
+- both bundles and signatures verify locally
+
+## 2. Clean Execution
 
 What it proves:
 
@@ -73,7 +127,7 @@ What verification proves:
 - the receipt semantics pass local verification
 - the bundle is internally consistent under the receipt verification key
 
-## 2. Exfil Denied
+## 3. Exfil Denied
 
 What it proves:
 
@@ -121,7 +175,7 @@ Common note:
 
 - the exact socket error text can vary, but the important signal is the verified denial path, not the specific Python socket return code
 
-## 3. Brokered Outbound Success
+## 4. Brokered Outbound Success
 
 What it proves:
 
