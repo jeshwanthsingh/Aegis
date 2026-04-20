@@ -1,0 +1,7 @@
+{
+  "error": "orchestrator cannot create TAP devices.\nThe orchestrator binary needs cap_net_admin AND ambient caps\nmust be raised at startup.\nFix with:\n\n    make setcap\n\nThen re-run this demo. See docs/setup-local.md for details.",
+  "reused_runtime": false,
+  "started_runtime": false,
+  "status": "fail",
+  "summary_path": "/home/cellardoor72/aegis/scripts/demo_output/egress_allowlist/run_20260420T070046Z.json"
+}

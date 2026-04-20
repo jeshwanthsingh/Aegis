@@ -1,0 +1,7 @@
+{
+  "error": "execution failed: setup network: start dns interceptor: listen udp4 172.23.169.73:53: bind: permission denied",
+  "reused_runtime": false,
+  "started_runtime": true,
+  "status": "fail",
+  "summary_path": "/home/cellardoor72/aegis/scripts/demo_output/egress_allowlist/run_20260420T073442Z.json"
+}

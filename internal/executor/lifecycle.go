@@ -9,8 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -154,22 +154,22 @@ func ResolveCgroupLimits(resources policy.ResourcePolicy) EffectiveCgroupLimits 
 }
 
 type NetworkConfig struct {
-	TapName      string
-	SubnetCIDR   string
-	HostIP       string
-	GuestIP      string
-	GatewayIP    string
-	GuestMAC     string
-	Mode         string
-	Presets      []string
-	Allowlist    policy.NetworkAllowlist
-	ResolvedIPs  []string
-	allowedHosts map[string]struct{}
+	TapName         string
+	SubnetCIDR      string
+	HostIP          string
+	GuestIP         string
+	GatewayIP       string
+	GuestMAC        string
+	Mode            string
+	Presets         []string
+	Allowlist       policy.NetworkAllowlist
+	ResolvedIPs     []string
+	allowedHosts    map[string]struct{}
 	resolvedHostIPs map[string][]string
-	allowedIPs   map[string]struct{}
-	dnsConn      net.PacketConn
-	upstreamDNS  *net.Resolver
-	dnsMu        sync.Mutex
+	allowedIPs      map[string]struct{}
+	dnsConn         net.PacketConn
+	upstreamDNS     *net.Resolver
+	dnsMu           sync.Mutex
 }
 
 func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *telemetry.Bus) error {
@@ -550,9 +550,13 @@ func snapshotAllowedIPs(cfg *NetworkConfig) []string {
 	return ips
 }
 
-var runAllowlistRuleCmd = runCmd
-var runNetworkCmd = runCmd
+var runAllowlistRuleCmd = runPrivilegedCmd
+var runNetworkCmd = runPrivilegedCmd
 var startDNSInterceptorFunc = startDNSInterceptor
+var combinedOutputRunner = func(cmd *exec.Cmd) ([]byte, error) {
+	return cmd.CombinedOutput()
+}
+var newExecCommand = exec.Command
 
 func parseNameserverList(contents string) []string {
 	var servers []string
@@ -894,9 +898,25 @@ func forwardRules(cfg *NetworkConfig, delete bool) [][]string {
 	}
 }
 
+func runPrivilegedCmd(name string, args ...string) error {
+	cmd := newExecCommand(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		AmbientCaps: []uintptr{
+			uintptr(unix.CAP_NET_BIND_SERVICE),
+			uintptr(unix.CAP_NET_ADMIN),
+			uintptr(unix.CAP_NET_RAW),
+		},
+	}
+	output, err := combinedOutputRunner(cmd)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func runCmd(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	output, err := cmd.CombinedOutput()
+	cmd := newExecCommand(name, args...)
+	output, err := combinedOutputRunner(cmd)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}

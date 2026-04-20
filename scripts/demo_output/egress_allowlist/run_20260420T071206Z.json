@@ -1,0 +1,7 @@
+{
+  "error": "execution failed: setup network: ip tuntap add dev tap-5d930cac mode tap: exit status 1: ioctl(TUNSETIFF): Operation not permitted",
+  "reused_runtime": false,
+  "started_runtime": true,
+  "status": "fail",
+  "summary_path": "/home/cellardoor72/aegis/scripts/demo_output/egress_allowlist/run_20260420T071206Z.json"
+}

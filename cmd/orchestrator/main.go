@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"aegis/internal/api"
+	"aegis/internal/capabilities"
 	"aegis/internal/executor"
 	"aegis/internal/models"
 	"aegis/internal/observability"
@@ -50,6 +51,8 @@ var (
 	}
 	emitReconciledReceiptFunc = emitReconciledReceipt
 )
+
+var ambientCaps = []string{"cap_net_admin", "cap_net_raw", "cap_net_bind_service"}
 
 func main() {
 	dbConn := flag.String("db", "postgres://localhost/aegis?sslmode=disable", "postgres connection string")
@@ -91,6 +94,25 @@ func main() {
 		observability.Fatal("startup_failed", observability.Fields{"step": "load_policy", "error": err.Error(), "policy_path": *policyPath})
 	}
 	observability.Info("policy_loaded", observability.Fields{"policy_path": *policyPath})
+	ambientRaiseErr := capabilities.RaiseAmbient(ambientCaps)
+	if ambientRaiseErr != nil {
+		observability.Warn("startup_capabilities_missing", observability.Fields{
+			"message": "orchestrator lacks file capabilities; child processes will fail. Run `make setcap`.",
+			"error":   ambientRaiseErr.Error(),
+			"caps":    ambientCaps,
+		})
+	} else {
+		fields := observability.Fields{
+			"caps":   ambientCaps,
+			"source": "file_caps+ambient_raise",
+		}
+		if capAmbHex, err := currentCapAmbHex(); err == nil {
+			fields["cap_amb_hex"] = capAmbHex
+		} else {
+			fields["cap_amb_error"] = err.Error()
+		}
+		observability.Info("startup_capabilities_verified", fields)
+	}
 
 	apiKey := os.Getenv("AEGIS_API_KEY")
 	allowedOrigins := parseAllowedOrigins(*allowedOriginsFlag)
@@ -154,6 +176,25 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func currentCapAmbHex() (string, error) {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return "", fmt.Errorf("read /proc/self/status: %w", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "CapAmb:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "CapAmb:"))
+		value, err := strconv.ParseUint(raw, 16, 64)
+		if err != nil {
+			return "", fmt.Errorf("parse CapAmb %q: %w", raw, err)
+		}
+		return fmt.Sprintf("0x%x", value), nil
+	}
+	return "", fmt.Errorf("CapAmb not found in /proc/self/status")
 }
 
 func envString(name string, fallback string) string {

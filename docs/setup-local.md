@@ -132,6 +132,36 @@ An empty `egress_allowlist` is valid and means “networked namespace exists, bu
 - FQDN allowlist entries are resolved once at execution start. The resolved IP set is pinned for the lifetime of that execution. Long-running executions where DNS answers rotate may see connection failures after rotation; this is a known, deliberate trade-off eliminating TOCTOU between the DNS interceptor and the firewall.
 - Loopback traffic (127.0.0.0/8) is unconditionally permitted inside the guest to support the brokered outbound path. This is reflected explicitly in every receipt's effective allowlist.
 
+## Host privileges for networked demos
+
+The Aegis orchestrator creates TAP devices, manipulates iptables FORWARD chain rules, and configures IP forwarding for guest VMs. These operations require the `CAP_NET_ADMIN`, `CAP_NET_RAW`, and `CAP_NET_BIND_SERVICE` capabilities. Aegis will not run networked executions as an unprivileged user without them.
+
+Two supported options:
+
+1. Grant the capability to the built binaries (recommended for development):
+
+   ```bash
+   make setcap
+   ```
+
+   This runs `sudo setcap cap_net_admin,cap_net_raw,cap_net_bind_service+eip` on the orchestrator and aegis binaries in `.aegis/bin/`. The grant persists until the binary is rebuilt; rebuilds strip capabilities, so re-run `make setcap` after any `make build` or `go build` that overwrites the binaries. The orchestrator also needs `cap_net_bind_service` to bind the DNS interceptor to UDP port 53 on the TAP gateway address.
+
+2. Run the orchestrator under sudo:
+
+   ```bash
+   sudo ./.aegis/bin/orchestrator ...
+   ```
+
+   This works but complicates signal handling and is not recommended as the default development workflow.
+
+Aegis deliberately fails loud when the capability is missing rather than falling back to a capability-less mode. A capability-less mode would not enforce iptables rules and would produce receipts claiming enforcement that did not occur. The fail-loud behavior preserves the honesty contract between what receipts claim and what was actually enforced.
+
+### Why ambient capabilities?
+
+Linux file capabilities (set via `setcap`) grant capabilities to a process, but they do NOT propagate to child processes across `execve(2)`. Aegis spawns `ip` and `iptables` as child processes to create TAP devices and manipulate firewall rules. To make those children inherit the needed network capabilities, the orchestrator raises them into the ambient set at startup using `prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, ...)`. The ambient set is preserved across `execve`.
+
+If you rebuild the orchestrator, file capabilities are stripped; re-run `make setcap`.
+
 ## What Success Looks Like
 
 `./scripts/demo_up.sh` should print output shaped like:

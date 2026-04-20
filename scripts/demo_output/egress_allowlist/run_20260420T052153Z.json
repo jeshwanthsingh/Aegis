@@ -1,0 +1,7 @@
+{
+  "error": "/home/cellardoor72/aegis/.aegis/bin/orchestrator lacks cap_net_admin and this demo is not running as root; rerun setup with elevated privileges before recording the networked demo",
+  "reused_runtime": false,
+  "started_runtime": false,
+  "status": "fail",
+  "summary_path": "/home/cellardoor72/aegis/scripts/demo_output/egress_allowlist/run_20260420T052153Z.json"
+}

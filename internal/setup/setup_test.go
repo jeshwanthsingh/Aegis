@@ -128,6 +128,46 @@ func TestEvaluateWarnsWhenAPIAuthUnset(t *testing.T) {
 	t.Fatal("api-auth result missing")
 }
 
+func TestEvaluateWarnsWhenNetCapabilityMissing(t *testing.T) {
+	repo := tempRepoRoot(t)
+	cfg := config.Default(repo)
+	mustMkdir(t, filepath.Dir(cfg.Runtime.OrchestratorBin))
+	mustMkdir(t, filepath.Dir(cfg.Runtime.CLIBin))
+	mustWrite(t, cfg.Runtime.OrchestratorBin, "orchestrator")
+	mustWrite(t, cfg.Runtime.CLIBin, "cli")
+	mustWrite(t, config.MCPBinPath(repo), "mcp")
+
+	previous := getcapOutputFunc
+	getcapOutputFunc = func(string) (string, error) {
+		return "", nil
+	}
+	defer func() {
+		getcapOutputFunc = previous
+	}()
+
+	results := Evaluate(repo, cfg, BootstrapArtifacts{})
+	checks := map[string]CheckResult{}
+	for _, result := range results {
+		checks[result.ID] = result
+	}
+
+	for _, id := range []string{"orchestrator-cap", "aegis-cap"} {
+		result, ok := checks[id]
+		if !ok {
+			t.Fatalf("%s result missing", id)
+		}
+		if result.Status != StatusWarn {
+			t.Fatalf("%s status = %s", id, result.Status)
+		}
+		if !strings.Contains(result.Detail, "missing cap_net_admin") {
+			t.Fatalf("%s detail = %q", id, result.Detail)
+		}
+		if !strings.Contains(result.Detail, "make setcap") {
+			t.Fatalf("%s detail = %q", id, result.Detail)
+		}
+	}
+}
+
 func TestEvaluateWarnsWhenSigningModeIsExplicitDev(t *testing.T) {
 	repo := tempRepoRoot(t)
 	cfg := config.Default(repo)

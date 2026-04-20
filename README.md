@@ -29,18 +29,21 @@ It exists for platform and security engineers who need a real local execution bo
 git clone https://github.com/jeshwanthsingh/Aegis.git ~/aegis
 cd ~/aegis
 ./scripts/demo_up.sh
-./scripts/demo_clean.sh
-./scripts/demo_exfil_denied.sh
+./scripts/demo_egress_allowlist.sh
 ./scripts/demo_down.sh
 ```
 
+This is the flagship packaged demo: [scripts/demo_egress_allowlist.sh](scripts/demo_egress_allowlist.sh), a two-execution proof story with one public entrypoint and offline verification for both receipts.
+
 This path assumes Linux + KVM, Firecracker, PostgreSQL server binaries, Go, and the required runtime assets. For the exact tested baseline, asset source, and full demo sequence, use [setup-local.md](docs/setup-local.md) and [demo-guide.md](docs/demo-guide.md).
+Networked demos require `make setcap` after build; see [setup-local.md](docs/setup-local.md) for details.
 
 ## Packaged Demos
 
-- `./scripts/demo_clean.sh`: clean execution with a verified receipt
-- `./scripts/demo_exfil_denied.sh`: direct outbound attempt denied and recorded as governed-action denial evidence
-- `./scripts/demo_broker_success.sh`: brokered outbound HTTP allowed and recorded as governed-action allow evidence
+- [scripts/demo_egress_allowlist.sh](scripts/demo_egress_allowlist.sh): flagship two-execution proof story; one public entrypoint that runs an adversarial blocked-egress phase and a brokered-success phase, with both receipts verified offline
+- [scripts/demo_clean.sh](scripts/demo_clean.sh): focused clean execution with a verified receipt
+- [scripts/demo_exfil_denied.sh](scripts/demo_exfil_denied.sh): focused direct-outbound denial demo with governed-action denial evidence
+- [scripts/demo_broker_success.sh](scripts/demo_broker_success.sh): focused brokered outbound success demo with governed-action allow evidence
 
 ## Trust Scope
 

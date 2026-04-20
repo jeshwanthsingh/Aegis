@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"aegis/internal/policy"
 	"aegis/internal/telemetry"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/sys/unix"
 )
 
 var allowlistHookMu sync.Mutex
@@ -205,6 +208,39 @@ func TestNewNetworkConfigNormalizesLegacyIsolatedMode(t *testing.T) {
 	cfg := newNetworkConfig("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", policy.NetworkPolicy{Mode: policy.NetworkModeLegacyIsolated})
 	if cfg.Mode != policy.NetworkModeEgressAllowlist {
 		t.Fatalf("cfg.Mode = %q, want %q", cfg.Mode, policy.NetworkModeEgressAllowlist)
+	}
+}
+
+func TestPrivilegedCmdSetsAmbientCaps(t *testing.T) {
+	oldCombinedOutputRunner := combinedOutputRunner
+	defer func() {
+		combinedOutputRunner = oldCombinedOutputRunner
+	}()
+
+	var got *syscall.SysProcAttr
+	combinedOutputRunner = func(cmd *exec.Cmd) ([]byte, error) {
+		got = cmd.SysProcAttr
+		return nil, nil
+	}
+
+	if err := runPrivilegedCmd("iptables", "-L"); err != nil {
+		t.Fatalf("runPrivilegedCmd: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected SysProcAttr to be set")
+	}
+	want := []uintptr{
+		uintptr(unix.CAP_NET_BIND_SERVICE),
+		uintptr(unix.CAP_NET_ADMIN),
+		uintptr(unix.CAP_NET_RAW),
+	}
+	if len(got.AmbientCaps) != len(want) {
+		t.Fatalf("AmbientCaps length = %d, want %d", len(got.AmbientCaps), len(want))
+	}
+	for i := range want {
+		if got.AmbientCaps[i] != want[i] {
+			t.Fatalf("AmbientCaps[%d] = %d, want %d", i, got.AmbientCaps[i], want[i])
+		}
 	}
 }
 

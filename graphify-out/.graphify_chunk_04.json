@@ -1,0 +1,361 @@
+{
+  "nodes": [
+    {
+      "id": "architecture_diagram_clients",
+      "label": "Clients",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_agent",
+      "label": "Agent",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_cli",
+      "label": "CLI",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_mcp",
+      "label": "MCP",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_sdk",
+      "label": "SDK",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_api_orchestrator",
+      "label": "API / Orchestrator",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_policy_governance",
+      "label": "Policy / Governance",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_receipt_proof_builder",
+      "label": "Receipt / Proof Builder",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_signed_receipts_proof_bundles",
+      "label": "Signed Receipts / Proof Bundles",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_brokered_actions",
+      "label": "Brokered Actions",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_firecracker_vm_execution",
+      "label": "Firecracker VM / Execution",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_guest_runner",
+      "label": "Guest Runner",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_external_internet",
+      "label": "External Internet",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_brokered_egress_only",
+      "label": "Brokered Egress Only",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "architecture_diagram_direct_egress_denied",
+      "label": "Direct Egress Denied",
+      "file_type": "image",
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "architecture_diagram_agent",
+      "target": "architecture_diagram_clients",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_cli",
+      "target": "architecture_diagram_clients",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_mcp",
+      "target": "architecture_diagram_clients",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_sdk",
+      "target": "architecture_diagram_clients",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_clients",
+      "target": "architecture_diagram_api_orchestrator",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_api_orchestrator",
+      "target": "architecture_diagram_policy_governance",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_api_orchestrator",
+      "target": "architecture_diagram_receipt_proof_builder",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_api_orchestrator",
+      "target": "architecture_diagram_signed_receipts_proof_bundles",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_receipt_proof_builder",
+      "target": "architecture_diagram_signed_receipts_proof_bundles",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_api_orchestrator",
+      "target": "architecture_diagram_firecracker_vm_execution",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_policy_governance",
+      "target": "architecture_diagram_brokered_actions",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_brokered_actions",
+      "target": "architecture_diagram_firecracker_vm_execution",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_guest_runner",
+      "target": "architecture_diagram_firecracker_vm_execution",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_guest_runner",
+      "target": "architecture_diagram_brokered_actions",
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "confidence_score": 0.86,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_brokered_actions",
+      "target": "architecture_diagram_external_internet",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_brokered_egress_only",
+      "target": "architecture_diagram_brokered_actions",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "architecture_diagram_direct_egress_denied",
+      "target": "architecture_diagram_guest_runner",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "aegis_governed_execution_boundary",
+      "label": "AEGIS Governed Execution Boundary",
+      "nodes": [
+        "architecture_diagram_api_orchestrator",
+        "architecture_diagram_policy_governance",
+        "architecture_diagram_receipt_proof_builder",
+        "architecture_diagram_brokered_actions",
+        "architecture_diagram_firecracker_vm_execution",
+        "architecture_diagram_guest_runner"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/architecture-diagram.png"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
