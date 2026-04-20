@@ -322,6 +322,9 @@ func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
 		if err := validateNetworkAllowlistEnvelope(runtime.Network.Allowlist); err != nil {
 			return fmt.Errorf("network allowlist invalid: %w", err)
 		}
+		if err := validateBlockedEgressSummary(runtime.Network.BlockedEgress); err != nil {
+			return fmt.Errorf("blocked egress invalid: %w", err)
+		}
 	}
 	return nil
 }
@@ -458,6 +461,48 @@ func validateNetworkAllowlistEnvelope(allowlist *NetworkAllowlistEnvelope) error
 	for _, cidr := range allowlist.CIDRs {
 		if strings.TrimSpace(cidr) == "" {
 			return fmt.Errorf("blank cidr")
+		}
+	}
+	return nil
+}
+
+func validateBlockedEgressSummary(summary *BlockedEgressSummary) error {
+	if summary == nil {
+		return nil
+	}
+	if summary.TotalCount < 0 {
+		return fmt.Errorf("total_count must be >= 0")
+	}
+	if summary.UniqueTargetCount < 0 {
+		return fmt.Errorf("unique_target_count must be >= 0")
+	}
+	if summary.UniqueTargetCount > summary.TotalCount {
+		return fmt.Errorf("unique_target_count cannot exceed total_count")
+	}
+	if len(summary.Sample) > 10 {
+		return fmt.Errorf("sample may include at most 10 targets")
+	}
+	if summary.SampleTruncated {
+		if summary.UniqueTargetCount <= len(summary.Sample) {
+			return fmt.Errorf("sample_truncated requires additional unique targets beyond the sample")
+		}
+	} else if summary.UniqueTargetCount != len(summary.Sample) {
+		return fmt.Errorf("sample must include every unique target when sample_truncated is false")
+	}
+	for idx, entry := range summary.Sample {
+		if strings.TrimSpace(entry.Target) == "" {
+			return fmt.Errorf("sample entry %d target is required", idx+1)
+		}
+		switch strings.TrimSpace(entry.Kind) {
+		case "ip", "fqdn", "rfc1918":
+		default:
+			return fmt.Errorf("sample entry %d has unexpected kind %q", idx+1, entry.Kind)
+		}
+		if entry.FirstSeenAt.IsZero() {
+			return fmt.Errorf("sample entry %d first_seen_at is required", idx+1)
+		}
+		if entry.Count <= 0 {
+			return fmt.Errorf("sample entry %d count must be > 0", idx+1)
 		}
 	}
 	return nil

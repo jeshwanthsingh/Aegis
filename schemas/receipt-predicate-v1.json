@@ -349,6 +349,66 @@
         }
       }
     },
+    "blocked_egress_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "kind",
+        "first_seen_at",
+        "count"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "ip",
+            "fqdn",
+            "rfc1918"
+          ]
+        },
+        "first_seen_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "blocked_egress_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_count",
+        "unique_target_count",
+        "sample",
+        "sample_truncated"
+      ],
+      "properties": {
+        "total_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unique_target_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/blocked_egress_entry"
+          }
+        },
+        "sample_truncated": {
+          "type": "boolean"
+        }
+      }
+    },
     "intent_policy_digest": {
       "type": "object",
       "additionalProperties": false,
@@ -448,6 +508,9 @@
         },
         "allowlist": {
           "$ref": "#/$defs/network_allowlist"
+        },
+        "blocked_egress": {
+          "$ref": "#/$defs/blocked_egress_summary"
         }
       }
     },

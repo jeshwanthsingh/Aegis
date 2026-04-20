@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -316,6 +317,126 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 	}
 	if got := strings.Join(receipt.Statement.Predicate.Runtime.Network.Allowlist.CIDRs, ","); got != "127.0.0.0/8,198.51.100.0/24" {
 		t.Fatalf("unexpected runtime network allowlist cidrs: %q", got)
+	}
+}
+
+func TestBuildPredicateBlockedEgressZeroAttempts(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = nil
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary == nil {
+		t.Fatal("expected blocked_egress summary")
+	}
+	if summary.TotalCount != 0 || summary.UniqueTargetCount != 0 || summary.SampleTruncated {
+		t.Fatalf("unexpected zero blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 0 {
+		t.Fatalf("expected empty blocked_egress sample, got %+v", summary.Sample)
+	}
+}
+
+func TestBuildPredicateBlockedEgressOneAttempt(t *testing.T) {
+	signer := mustDevSigner(t)
+	ts := time.Unix(1700001000, 0).UTC()
+	input := testReceiptInput()
+	input.TelemetryEvents = deniedConnectTelemetry(1, ts, "1.1.1.1", 443)
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 1 || summary.UniqueTargetCount != 1 || summary.SampleTruncated {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 1 {
+		t.Fatalf("blocked_egress sample length = %d want 1", len(summary.Sample))
+	}
+	entry := summary.Sample[0]
+	if entry.Target != "tcp://1.1.1.1:443" || entry.Kind != "ip" || entry.Count != 1 || !entry.FirstSeenAt.Equal(ts) {
+		t.Fatalf("unexpected blocked_egress entry: %+v", entry)
+	}
+}
+
+func TestBuildPredicateBlockedEgressRepeatedTarget(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = nil
+	for i := 0; i < 3; i++ {
+		input.TelemetryEvents = append(input.TelemetryEvents, deniedConnectTelemetry(uint64(i+1), time.Unix(1700001100+int64(i), 0).UTC(), "1.1.1.1", 443)...)
+	}
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 3 || summary.UniqueTargetCount != 1 {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 1 || summary.Sample[0].Count != 3 {
+		t.Fatalf("unexpected blocked_egress sample: %+v", summary.Sample)
+	}
+}
+
+func TestBuildPredicateBlockedEgressTruncatesAfterTenUniqueTargets(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = nil
+	for i := 0; i < 11; i++ {
+		ip := "203.0.113." + strconv.Itoa(i+1)
+		input.TelemetryEvents = append(input.TelemetryEvents, deniedConnectTelemetry(uint64(i+1), time.Unix(1700001200+int64(i), 0).UTC(), ip, 443)...)
+	}
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 11 || summary.UniqueTargetCount != 11 || !summary.SampleTruncated {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 10 {
+		t.Fatalf("blocked_egress sample length = %d want 10", len(summary.Sample))
+	}
+	if summary.Sample[0].Target != "tcp://203.0.113.1:443" || summary.Sample[9].Target != "tcp://203.0.113.10:443" {
+		t.Fatalf("blocked_egress sample order unexpected: %+v", summary.Sample)
+	}
+}
+
+func TestBuildPredicateBlockedEgressMixedKinds(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = append(
+		deniedConnectTelemetry(1, time.Unix(1700001300, 0).UTC(), "1.1.1.1", 443),
+		deniedDNSQueryTelemetry(time.Unix(1700001301, 0).UTC(), "evil-attacker.example.com"),
+	)
+	input.TelemetryEvents = append(input.TelemetryEvents, deniedConnectTelemetry(2, time.Unix(1700001302, 0).UTC(), "10.0.0.5", 443)...)
+
+	receipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	summary := receipt.Statement.Predicate.Runtime.Network.BlockedEgress
+	if summary.TotalCount != 3 || summary.UniqueTargetCount != 3 {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	want := []BlockedEgressEntry{
+		{Target: "tcp://1.1.1.1:443", Kind: "ip", Count: 1},
+		{Target: "dns:evil-attacker.example.com", Kind: "fqdn", Count: 1},
+		{Target: "tcp://10.0.0.0/8", Kind: "rfc1918", Count: 1},
+	}
+	for i, entry := range want {
+		got := summary.Sample[i]
+		if got.Target != entry.Target || got.Kind != entry.Kind || got.Count != entry.Count {
+			t.Fatalf("blocked_egress sample[%d] = %+v want %+v", i, got, entry)
+		}
 	}
 }
 
@@ -640,4 +761,47 @@ func mustDevSigner(t *testing.T) *Signer {
 		t.Fatalf("NewSigner: %v", err)
 	}
 	return signer
+}
+
+func deniedConnectTelemetry(seq uint64, ts time.Time, dstIP string, dstPort uint16) []telemetry.Event {
+	runtimeEvent, _ := json.Marshal(models.RuntimeEvent{
+		ExecutionID: "exec_123",
+		Backend:     models.BackendFirecracker,
+		Seq:         seq,
+		TsUnixNano:  ts.UnixNano(),
+		Type:        models.EventNetConnect,
+		DstIP:       dstIP,
+		DstPort:     dstPort,
+	})
+	pointDecision, _ := json.Marshal(models.PolicyPointDecision{
+		ExecutionID: "exec_123",
+		EventSeq:    seq,
+		EventType:   models.EventNetConnect,
+		CedarAction: models.ActionConnect,
+		Decision:    models.DecisionDeny,
+		Reason:      "destination denied",
+		Metadata: map[string]string{
+			"policy_digest": "policy-digest",
+			"dst_ip":        dstIP,
+			"dst_port":      strconv.Itoa(int(dstPort)),
+		},
+	})
+	return []telemetry.Event{
+		{ExecID: "exec_123", Timestamp: ts.UnixMilli(), Kind: telemetry.KindRuntimeEvent, Data: runtimeEvent},
+		{ExecID: "exec_123", Timestamp: ts.UnixMilli(), Kind: telemetry.KindPolicyPointDecision, Data: pointDecision},
+	}
+}
+
+func deniedDNSQueryTelemetry(ts time.Time, domain string) telemetry.Event {
+	payload, _ := json.Marshal(telemetry.DNSQueryData{
+		Domain: domain,
+		Action: "deny",
+		Reason: "not in allowlist",
+	})
+	return telemetry.Event{
+		ExecID:    "exec_123",
+		Timestamp: ts.UnixMilli(),
+		Kind:      telemetry.KindDNSQuery,
+		Data:      payload,
+	}
 }

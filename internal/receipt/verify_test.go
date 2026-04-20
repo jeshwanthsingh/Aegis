@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	policycfg "aegis/internal/policy"
 )
@@ -334,6 +335,34 @@ func TestVerifySignedReceiptAcceptsEgressAllowlistWithPopulatedAllowlist(t *test
 	}
 	if got := strings.Join(statement.Predicate.Runtime.Network.Allowlist.CIDRs, ","); got != "127.0.0.0/8,198.51.100.0/24" {
 		t.Fatalf("runtime network allowlist cidrs = %q, want 127.0.0.0/8,198.51.100.0/24", got)
+	}
+}
+
+func TestVerifySignedReceiptAcceptsBlockedEgressSummary(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = append(
+		deniedConnectTelemetry(1, time.Unix(1700002000, 0).UTC(), "1.1.1.1", 443),
+		deniedDNSQueryTelemetry(time.Unix(1700002001, 0).UTC(), "evil-attacker.example.com"),
+	)
+
+	signed, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	statement, err := VerifySignedReceipt(signed, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+	summary := statement.Predicate.Runtime.Network.BlockedEgress
+	if summary == nil {
+		t.Fatal("expected blocked_egress summary")
+	}
+	if summary.TotalCount != 2 || summary.UniqueTargetCount != 2 || summary.SampleTruncated {
+		t.Fatalf("unexpected blocked_egress summary: %+v", summary)
+	}
+	if len(summary.Sample) != 2 {
+		t.Fatalf("blocked_egress sample length = %d want 2", len(summary.Sample))
 	}
 }
 

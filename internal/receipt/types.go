@@ -117,10 +117,11 @@ type RuntimeCgroupEnvelope struct {
 }
 
 type RuntimeNetworkEnvelope struct {
-	Enabled   bool                     `json:"enabled"`
-	Mode      string                   `json:"mode"`
-	Presets   []string                 `json:"presets"`
-	Allowlist *NetworkAllowlistEnvelope `json:"allowlist,omitempty"`
+	Enabled       bool                      `json:"enabled"`
+	Mode          string                    `json:"mode"`
+	Presets       []string                  `json:"presets"`
+	Allowlist     *NetworkAllowlistEnvelope `json:"allowlist,omitempty"`
+	BlockedEgress *BlockedEgressSummary     `json:"blocked_egress,omitempty"`
 }
 
 type RuntimeBrokerEnvelope struct {
@@ -150,14 +151,28 @@ type BaselinePolicy struct {
 }
 
 type BaselineNetworkPolicy struct {
-	Mode      string                   `json:"mode"`
-	Presets   []string                 `json:"presets"`
+	Mode      string                    `json:"mode"`
+	Presets   []string                  `json:"presets"`
 	Allowlist *NetworkAllowlistEnvelope `json:"allowlist,omitempty"`
 }
 
 type NetworkAllowlistEnvelope struct {
 	FQDNs []string `json:"fqdns"`
 	CIDRs []string `json:"cidrs"`
+}
+
+type BlockedEgressSummary struct {
+	TotalCount        int                  `json:"total_count"`
+	UniqueTargetCount int                  `json:"unique_target_count"`
+	Sample            []BlockedEgressEntry `json:"sample"`
+	SampleTruncated   bool                 `json:"sample_truncated"`
+}
+
+type BlockedEgressEntry struct {
+	Target      string    `json:"target"`
+	Kind        string    `json:"kind"`
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	Count       int       `json:"count"`
 }
 
 type IntentPolicyDigest struct {

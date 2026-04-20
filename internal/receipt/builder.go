@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"aegis/internal/models"
 	policycfg "aegis/internal/policy"
@@ -51,6 +53,10 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 	if err != nil {
 		return ExecutionReceiptPredicate{}, 0, err
 	}
+	blockedEgress, err := summarizeBlockedEgress(input.TelemetryEvents)
+	if err != nil {
+		return ExecutionReceiptPredicate{}, 0, err
+	}
 	resultClass, denial := classifyResult(input, pointSummary, governedSummary)
 	limitations := []string{"host attestation deferred"}
 	if input.Outcome.OutputTruncated {
@@ -60,6 +66,10 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		limitations = append(limitations, "file.open semantics are read-only in RuntimeEvent v1")
 	}
 	metadata := cloneStringMap(input.Attributes)
+	runtime := cloneRuntimeEnvelope(input.Runtime)
+	if runtime != nil && runtime.Network != nil {
+		runtime.Network.BlockedEgress = blockedEgress
+	}
 	return ExecutionReceiptPredicate{
 		Version:            PredicateVersion,
 		ExecutionID:        input.ExecutionID,
@@ -82,7 +92,7 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		PointDecisions:     pointSummary,
 		Divergence:         divergenceSummary,
 		Outcome:            input.Outcome,
-		Runtime:            cloneRuntimeEnvelope(input.Runtime),
+		Runtime:            runtime,
 		BrokerSummary:      brokerSummary,
 		GovernedActions:    governedSummary,
 		Trust:              trustPostureForSigner(signer),
@@ -157,10 +167,11 @@ func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
 			allowlist = runtimeAllowlistForReceipt(allowlist)
 		}
 		cloned.Network = &RuntimeNetworkEnvelope{
-			Enabled:   runtime.Network.Enabled,
-			Mode:      mode,
-			Presets:   []string{},
-			Allowlist: allowlist,
+			Enabled:       runtime.Network.Enabled,
+			Mode:          mode,
+			Presets:       []string{},
+			Allowlist:     allowlist,
+			BlockedEgress: cloneBlockedEgressSummary(runtime.Network.BlockedEgress),
 		}
 	}
 	if runtime.Broker != nil {
@@ -428,6 +439,163 @@ func runtimeAllowlistForReceipt(src *NetworkAllowlistEnvelope) *NetworkAllowlist
 	cloned.CIDRs = append(cloned.CIDRs, "127.0.0.0/8")
 	sort.Strings(cloned.CIDRs)
 	return cloned
+}
+
+func cloneBlockedEgressSummary(src *BlockedEgressSummary) *BlockedEgressSummary {
+	if src == nil {
+		return nil
+	}
+	sample := make([]BlockedEgressEntry, 0, len(src.Sample))
+	for _, entry := range src.Sample {
+		sample = append(sample, BlockedEgressEntry{
+			Target:      strings.TrimSpace(entry.Target),
+			Kind:        strings.TrimSpace(entry.Kind),
+			FirstSeenAt: entry.FirstSeenAt.UTC(),
+			Count:       entry.Count,
+		})
+	}
+	return &BlockedEgressSummary{
+		TotalCount:        src.TotalCount,
+		UniqueTargetCount: src.UniqueTargetCount,
+		Sample:            sample,
+		SampleTruncated:   src.SampleTruncated,
+	}
+}
+
+func summarizeBlockedEgress(events []telemetry.Event) (*BlockedEgressSummary, error) {
+	const sampleLimit = 10
+
+	summary := &BlockedEgressSummary{Sample: []BlockedEgressEntry{}}
+	connectEvents := map[uint64]models.RuntimeEvent{}
+	for _, event := range events {
+		if event.Kind != telemetry.KindRuntimeEvent {
+			continue
+		}
+		var runtimeEvent models.RuntimeEvent
+		if err := json.Unmarshal(event.Data, &runtimeEvent); err != nil {
+			return nil, fmt.Errorf("decode runtime event for blocked egress: %w", err)
+		}
+		if runtimeEvent.Type == models.EventNetConnect {
+			connectEvents[runtimeEvent.Seq] = runtimeEvent
+		}
+	}
+
+	type sampleState struct {
+		index int
+	}
+	states := map[string]sampleState{}
+
+	addSample := func(target string, kind string, firstSeenAt time.Time) {
+		target = strings.TrimSpace(target)
+		kind = strings.TrimSpace(kind)
+		if target == "" || kind == "" {
+			return
+		}
+		summary.TotalCount++
+		if state, ok := states[target]; ok {
+			if state.index >= 0 {
+				summary.Sample[state.index].Count++
+			}
+			return
+		}
+		summary.UniqueTargetCount++
+		if len(summary.Sample) >= sampleLimit {
+			summary.SampleTruncated = true
+			states[target] = sampleState{index: -1}
+			return
+		}
+		summary.Sample = append(summary.Sample, BlockedEgressEntry{
+			Target:      target,
+			Kind:        kind,
+			FirstSeenAt: firstSeenAt.UTC(),
+			Count:       1,
+		})
+		states[target] = sampleState{index: len(summary.Sample) - 1}
+	}
+
+	for _, event := range events {
+		switch event.Kind {
+		case telemetry.KindPolicyPointDecision:
+			var point models.PolicyPointDecision
+			if err := json.Unmarshal(event.Data, &point); err != nil {
+				return nil, fmt.Errorf("decode point decision for blocked egress: %w", err)
+			}
+			if point.Decision != models.DecisionDeny || point.EventType != models.EventNetConnect {
+				continue
+			}
+			target, kind, ok := blockedConnectTarget(point, connectEvents[point.EventSeq])
+			if !ok {
+				continue
+			}
+			addSample(target, kind, blockedEventTime(event, connectEvents[point.EventSeq]))
+		case telemetry.KindDNSQuery:
+			var dns telemetry.DNSQueryData
+			if err := json.Unmarshal(event.Data, &dns); err != nil {
+				return nil, fmt.Errorf("decode dns query for blocked egress: %w", err)
+			}
+			if !strings.EqualFold(strings.TrimSpace(dns.Action), "deny") {
+				continue
+			}
+			domain := strings.TrimSpace(dns.Domain)
+			if domain == "" {
+				continue
+			}
+			addSample("dns:"+domain, "fqdn", blockedEventTime(event, models.RuntimeEvent{}))
+		}
+	}
+
+	return summary, nil
+}
+
+func blockedEventTime(event telemetry.Event, runtimeEvent models.RuntimeEvent) time.Time {
+	if runtimeEvent.TsUnixNano > 0 {
+		return time.Unix(0, runtimeEvent.TsUnixNano).UTC()
+	}
+	if event.Timestamp > 0 {
+		return time.UnixMilli(event.Timestamp).UTC()
+	}
+	return time.UnixMilli(0).UTC()
+}
+
+func blockedConnectTarget(point models.PolicyPointDecision, runtimeEvent models.RuntimeEvent) (string, string, bool) {
+	dstIP := strings.TrimSpace(runtimeEvent.DstIP)
+	if dstIP == "" {
+		dstIP = strings.TrimSpace(point.Metadata["dst_ip"])
+	}
+	if dstIP == "" {
+		return "", "", false
+	}
+	if cidr, ok := blockedHardDenyCIDR(dstIP); ok {
+		return "tcp://" + cidr, "rfc1918", true
+	}
+	port := runtimeEvent.DstPort
+	if port == 0 {
+		if raw := strings.TrimSpace(point.Metadata["dst_port"]); raw != "" {
+			if parsed, err := strconv.ParseUint(raw, 10, 16); err == nil {
+				port = uint16(parsed)
+			}
+		}
+	}
+	return fmt.Sprintf("tcp://%s:%d", dstIP, port), "ip", true
+}
+
+func blockedHardDenyCIDR(target string) (string, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(target))
+	if err != nil {
+		return "", false
+	}
+	switch {
+	case netip.MustParsePrefix("10.0.0.0/8").Contains(addr):
+		return "10.0.0.0/8", true
+	case netip.MustParsePrefix("172.16.0.0/12").Contains(addr):
+		return "172.16.0.0/12", true
+	case netip.MustParsePrefix("192.168.0.0/16").Contains(addr):
+		return "192.168.0.0/16", true
+	case addr == netip.MustParseAddr("169.254.169.254"):
+		return "169.254.169.254/32", true
+	default:
+		return "", false
+	}
 }
 
 func normalizedGovernedAction(action GovernedActionRecord) NormalizedGovernedActionEntry {
