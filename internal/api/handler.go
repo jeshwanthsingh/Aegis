@@ -118,6 +118,77 @@ func buildPointEvaluator(req *ExecuteRequest, defaultTimeoutMs int) (*policyeval
 	return eval, &intent, nil
 }
 
+func resolveEffectiveNetworkPolicy(base policy.NetworkPolicy, intent *policycontract.IntentContract) (policy.NetworkPolicy, error) {
+	base = policy.NormalizeNetworkPolicy(base)
+	if intent == nil {
+		return base, nil
+	}
+	effectiveAllowlist, err := policycontract.ResolveEffectiveAllowlist(intent.NetworkScope, base.Allowlist)
+	if err != nil {
+		return policy.NetworkPolicy{}, err
+	}
+	if !intent.NetworkScope.AllowNetwork {
+		if len(effectiveAllowlist.FQDNs) > 0 || len(effectiveAllowlist.CIDRs) > 0 {
+			return policy.NetworkPolicy{}, errors.New("network_scope.allow_network=false cannot be combined with external network allowlist entries")
+		}
+		return policy.NetworkPolicy{
+			Mode:    policy.NetworkModeNone,
+			Presets: []string{},
+			Allowlist: policy.NetworkAllowlist{
+				FQDNs: []string{},
+				CIDRs: []string{},
+			},
+		}, nil
+	}
+	if base.Mode == policy.NetworkModeNone {
+		return policy.NetworkPolicy{
+			Mode:    policy.NetworkModeNone,
+			Presets: []string{},
+			Allowlist: policy.NetworkAllowlist{
+				FQDNs: []string{},
+				CIDRs: []string{},
+			},
+		}, nil
+	}
+	return policy.NetworkPolicy{
+		Mode:      policy.NetworkModeEgressAllowlist,
+		Presets:   []string{},
+		Allowlist: effectiveAllowlist,
+	}, nil
+}
+
+func clonePolicyWithNetwork(base *policy.Policy, network policy.NetworkPolicy) *policy.Policy {
+	if base == nil {
+		return nil
+	}
+	cloned := *base
+	cloned.Network = policy.NormalizeNetworkPolicy(network)
+	return &cloned
+}
+
+func effectiveIntentForExecution(intent *policycontract.IntentContract, vm *executor.VMInstance) *policycontract.IntentContract {
+	if intent == nil {
+		return nil
+	}
+	cloned := *intent
+	cloned.NetworkScope = intent.NetworkScope
+	cloned.NetworkScope.AllowedDomains = []string{}
+	cloned.NetworkScope.AllowedIPs = []string{}
+	cloned.NetworkScope.AllowedDomainsSpecified = false
+	cloned.NetworkScope.AllowedIPsSpecified = false
+	if vm == nil || vm.Network == nil {
+		return &cloned
+	}
+	cloned.NetworkScope.AllowedDomains = append(cloned.NetworkScope.AllowedDomains, vm.Network.Allowlist.FQDNs...)
+	cloned.NetworkScope.AllowedIPs = append(cloned.NetworkScope.AllowedIPs, vm.Network.Allowlist.CIDRs...)
+	cloned.NetworkScope.AllowedIPs = append(cloned.NetworkScope.AllowedIPs, vm.Network.ResolvedIPs...)
+	sort.Strings(cloned.NetworkScope.AllowedDomains)
+	sort.Strings(cloned.NetworkScope.AllowedIPs)
+	cloned.NetworkScope.AllowedDomainsSpecified = len(cloned.NetworkScope.AllowedDomains) > 0
+	cloned.NetworkScope.AllowedIPsSpecified = len(cloned.NetworkScope.AllowedIPs) > 0
+	return &cloned
+}
+
 func guestPidsLimit(lang string, intent *policycontract.IntentContract, defaultLimit int) int {
 	if defaultLimit <= 0 {
 		return 0
@@ -212,22 +283,19 @@ func runtimeEnvelopeForExecution(req ExecuteRequest, vm *executor.VMInstance, cg
 		Network: &receipt.RuntimeNetworkEnvelope{
 			Enabled: false,
 			Mode:    "none",
+			Presets: []string{},
 		},
 		Broker: &receipt.RuntimeBrokerEnvelope{
 			Enabled: brokerEnabled,
 		},
 	}
 	if vm.Network != nil {
-		presets := append([]string(nil), vm.Network.Presets...)
-		sort.Strings(presets)
 		mode := policy.NormalizeNetworkMode(vm.Network.Mode)
-		if mode != policy.NetworkModeAllowlist {
-			presets = nil
-		}
 		runtime.Network = &receipt.RuntimeNetworkEnvelope{
-			Enabled: true,
-			Mode:    mode,
-			Presets: presets,
+			Enabled:   true,
+			Mode:      mode,
+			Presets:   []string{},
+			Allowlist: &receipt.NetworkAllowlistEnvelope{FQDNs: append([]string(nil), vm.Network.Allowlist.FQDNs...), CIDRs: append([]string(nil), vm.Network.Allowlist.CIDRs...)},
 		}
 	}
 	if cgroup != nil {
@@ -261,14 +329,10 @@ func policyEvidenceForExecution(req ExecuteRequest, pol *policy.Policy, timeoutM
 		},
 	}
 	mode := policy.NormalizeNetworkMode(pol.Network.Mode)
-	presets := append([]string(nil), pol.Network.Presets...)
-	sort.Strings(presets)
-	if mode != policy.NetworkModeAllowlist {
-		presets = nil
-	}
 	policyEvidence.Baseline.Network = &receipt.BaselineNetworkPolicy{
-		Mode:    mode,
-		Presets: presets,
+		Mode:      mode,
+		Presets:   []string{},
+		Allowlist: &receipt.NetworkAllowlistEnvelope{FQDNs: append([]string(nil), pol.Network.Allowlist.FQDNs...), CIDRs: append([]string(nil), pol.Network.Allowlist.CIDRs...)},
 	}
 	if len(req.Intent) == 0 {
 		return policyEvidence, nil
@@ -617,6 +681,13 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 			writeAPIError(w, http.StatusBadRequest, "validation_error", err.Error(), nil)
 			return
 		}
+		effectiveNetwork, err := resolveEffectiveNetworkPolicy(pol.Network, intent)
+		if err != nil {
+			execStatus = "validation_error"
+			writeAPIError(w, http.StatusBadRequest, "invalid_intent_contract", err.Error(), nil)
+			return
+		}
+		execPolicy := clonePolicyWithNetwork(pol, effectiveNetwork)
 		policyEvidence, err := policyEvidenceForExecution(req, pol, timeoutMs)
 		if err != nil {
 			execStatus = "validation_error"
@@ -655,7 +726,7 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		}
 
 		claimStart := time.Now()
-		vm, vmPath, coldFallbackReason, err = acquireExecutionVMFunc(ctx, warm, execID, req, pol, computeProfile, assetsDir, rootfsPath, bus)
+		vm, vmPath, coldFallbackReason, err = acquireExecutionVMFunc(ctx, warm, execID, req, execPolicy, computeProfile, assetsDir, rootfsPath, bus)
 		claimElapsed := time.Since(claimStart)
 		if err != nil {
 			recordBoot()
@@ -699,6 +770,11 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		}
 		observability.Info("vm_acquired", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": claimElapsed.Milliseconds(), "cold_fallback_reason": coldFallbackReason})
 		vm.CgroupID = execID
+		enforcementIntent := effectiveIntentForExecution(intent, vm)
+		if enforcementIntent != nil {
+			pointEvaluator = policyevaluator.New(*enforcementIntent)
+			divergenceEvaluator = policydivergence.New(*enforcementIntent)
+		}
 
 		resolvedResources := resourcesForProfile(pol.Resources, computeProfile)
 		resolvedCgroup := executor.ResolveCgroupLimits(resolvedResources)
@@ -801,12 +877,14 @@ func NewHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manager, pol
 		observability.Info("vsock_connected", observability.Fields{"execution_id": execID, "remaining_ms": time.Until(deadline).Milliseconds()})
 		recordLifecycleStatus(s, execID, req.Lang, store.StatusRunning, "")
 
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: guestPidsLimit(req.Lang, intent, pol.Resources.PidsMax), WorkspaceRequested: req.WorkspaceID != ""}
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: guestPidsLimit(req.Lang, enforcementIntent, pol.Resources.PidsMax), WorkspaceRequested: req.WorkspaceID != ""}
 		if vm.Network != nil {
 			payload.NetworkRequested = true
 			payload.GuestIP = vm.Network.GuestIP
 			payload.GatewayIP = vm.Network.GatewayIP
-			payload.DNSServer = vm.Network.GatewayIP
+			if len(vm.Network.Allowlist.FQDNs) > 0 {
+				payload.DNSServer = vm.Network.GatewayIP
+			}
 		}
 		observability.Info("payload_dispatch_start", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": time.Since(start).Milliseconds()})
 
@@ -950,6 +1028,13 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			writeAPIError(w, http.StatusBadRequest, "validation_error", err.Error(), nil)
 			return
 		}
+		effectiveNetwork, err := resolveEffectiveNetworkPolicy(pol.Network, intent)
+		if err != nil {
+			execStatus = "validation_error"
+			writeAPIError(w, http.StatusBadRequest, "invalid_intent_contract", err.Error(), nil)
+			return
+		}
+		execPolicy := clonePolicyWithNetwork(pol, effectiveNetwork)
 		policyEvidence, err := policyEvidenceForExecution(req, pol, timeoutMs)
 		if err != nil {
 			execStatus = "validation_error"
@@ -1000,7 +1085,7 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		}
 
 		claimStart := time.Now()
-		vm, vmPath, coldFallbackReason, err = acquireExecutionVMFunc(ctx, warm, execID, req, pol, computeProfile, assetsDir, rootfsPath, bus)
+		vm, vmPath, coldFallbackReason, err = acquireExecutionVMFunc(ctx, warm, execID, req, execPolicy, computeProfile, assetsDir, rootfsPath, bus)
 		claimElapsed := time.Since(claimStart)
 		if err != nil {
 			recordBoot()
@@ -1039,6 +1124,11 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 		}
 		observability.Info("vm_acquired", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": claimElapsed.Milliseconds(), "cold_fallback_reason": coldFallbackReason})
 		vm.CgroupID = execID
+		enforcementIntent := effectiveIntentForExecution(intent, vm)
+		if enforcementIntent != nil {
+			pointEvaluator = policyevaluator.New(*enforcementIntent)
+			divergenceEvaluator = policydivergence.New(*enforcementIntent)
+		}
 
 		resolvedResources := resourcesForProfile(pol.Resources, computeProfile)
 		resolvedCgroup := executor.ResolveCgroupLimits(resolvedResources)
@@ -1143,12 +1233,14 @@ func NewStreamHandler(s *store.Store, pool *executor.Pool, warm *warmpool.Manage
 			writeSSE(w, flusher, models.GuestChunk{Type: "error", Error: err.Error()})
 			return
 		}
-		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: guestPidsLimit(req.Lang, intent, pol.Resources.PidsMax), WorkspaceRequested: req.WorkspaceID != ""}
+		payload := models.Payload{Lang: req.Lang, Code: req.Code, TimeoutMs: timeoutMs, PidsLimit: guestPidsLimit(req.Lang, enforcementIntent, pol.Resources.PidsMax), WorkspaceRequested: req.WorkspaceID != ""}
 		if vm.Network != nil {
 			payload.NetworkRequested = true
 			payload.GuestIP = vm.Network.GuestIP
 			payload.GatewayIP = vm.Network.GatewayIP
-			payload.DNSServer = vm.Network.GatewayIP
+			if len(vm.Network.Allowlist.FQDNs) > 0 {
+				payload.DNSServer = vm.Network.GatewayIP
+			}
 		}
 		observability.Info("payload_dispatch_start", observability.Fields{"execution_id": execID, "path": vmPath, "elapsed_ms": time.Since(start).Milliseconds()})
 		if err := json.NewEncoder(conn).Encode(payload); err != nil {

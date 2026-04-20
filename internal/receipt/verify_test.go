@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -272,11 +273,87 @@ func TestVerifySignedReceiptNormalizesLegacyIsolatedNetworkMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifySignedReceipt: %v", err)
 	}
-	if statement.Predicate.Policy.Baseline.Network.Mode != policycfg.NetworkModeDirectWebEgress {
-		t.Fatalf("policy network mode = %q, want %q", statement.Predicate.Policy.Baseline.Network.Mode, policycfg.NetworkModeDirectWebEgress)
+	if statement.Predicate.Policy.Baseline.Network.Mode != policycfg.NetworkModeEgressAllowlist {
+		t.Fatalf("policy network mode = %q, want %q", statement.Predicate.Policy.Baseline.Network.Mode, policycfg.NetworkModeEgressAllowlist)
 	}
-	if statement.Predicate.Runtime.Network.Mode != policycfg.NetworkModeDirectWebEgress {
-		t.Fatalf("runtime network mode = %q, want %q", statement.Predicate.Runtime.Network.Mode, policycfg.NetworkModeDirectWebEgress)
+	if statement.Predicate.Runtime.Network.Mode != policycfg.NetworkModeEgressAllowlist {
+		t.Fatalf("runtime network mode = %q, want %q", statement.Predicate.Runtime.Network.Mode, policycfg.NetworkModeEgressAllowlist)
+	}
+}
+
+func TestVerifySignedReceiptNormalizesLegacyDirectWebEgressMode(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.Policy.Baseline.Network.Mode = policycfg.NetworkModeDirectWebEgress
+	signed.Statement.Predicate.Runtime.Network.Mode = policycfg.NetworkModeDirectWebEgress
+	reSignStatement(t, &signed, signer)
+
+	statement, err := VerifySignedReceipt(signed, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+	if statement.Predicate.Policy.Baseline.Network.Mode != policycfg.NetworkModeEgressAllowlist {
+		t.Fatalf("policy network mode = %q, want %q", statement.Predicate.Policy.Baseline.Network.Mode, policycfg.NetworkModeEgressAllowlist)
+	}
+	if statement.Predicate.Runtime.Network.Mode != policycfg.NetworkModeEgressAllowlist {
+		t.Fatalf("runtime network mode = %q, want %q", statement.Predicate.Runtime.Network.Mode, policycfg.NetworkModeEgressAllowlist)
+	}
+}
+
+func TestVerifySignedReceiptAcceptsEgressAllowlistWithEmptyAllowlist(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.Policy.Baseline.Network.Allowlist = &NetworkAllowlistEnvelope{FQDNs: []string{}, CIDRs: []string{}}
+	signed.Statement.Predicate.Runtime.Network.Allowlist = &NetworkAllowlistEnvelope{FQDNs: []string{}, CIDRs: []string{"127.0.0.0/8"}}
+	reSignStatement(t, &signed, signer)
+
+	statement, err := VerifySignedReceipt(signed, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+	if got := strings.Join(statement.Predicate.Runtime.Network.Allowlist.CIDRs, ","); got != "127.0.0.0/8" {
+		t.Fatalf("runtime network allowlist cidrs = %q, want 127.0.0.0/8", got)
+	}
+}
+
+func TestVerifySignedReceiptAcceptsEgressAllowlistWithPopulatedAllowlist(t *testing.T) {
+	signer := mustDevSigner(t)
+	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	statement, err := VerifySignedReceipt(signed, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+	if got := strings.Join(statement.Predicate.Runtime.Network.Allowlist.CIDRs, ","); got != "127.0.0.0/8,198.51.100.0/24" {
+		t.Fatalf("runtime network allowlist cidrs = %q, want 127.0.0.0/8,198.51.100.0/24", got)
+	}
+}
+
+func TestVerifySignedReceiptFixtureLegacyDirectWebEgress(t *testing.T) {
+	signer := mustDevSigner(t)
+	fixturePath := filepath.Join("testdata", "legacy_direct_web_egress_receipt.json")
+	signed, err := LoadSignedReceiptFile(fixturePath)
+	if err != nil {
+		t.Fatalf("LoadSignedReceiptFile: %v", err)
+	}
+
+	statement, err := VerifySignedReceipt(signed, signer.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+	if statement.Predicate.Policy.Baseline.Network.Mode != policycfg.NetworkModeEgressAllowlist {
+		t.Fatalf("policy network mode = %q, want %q", statement.Predicate.Policy.Baseline.Network.Mode, policycfg.NetworkModeEgressAllowlist)
+	}
+	if statement.Predicate.Runtime.Network.Mode != policycfg.NetworkModeEgressAllowlist {
+		t.Fatalf("runtime network mode = %q, want %q", statement.Predicate.Runtime.Network.Mode, policycfg.NetworkModeEgressAllowlist)
 	}
 }
 

@@ -117,9 +117,10 @@ type RuntimeCgroupEnvelope struct {
 }
 
 type RuntimeNetworkEnvelope struct {
-	Enabled bool     `json:"enabled"`
-	Mode    string   `json:"mode"`
-	Presets []string `json:"presets,omitempty"`
+	Enabled   bool                     `json:"enabled"`
+	Mode      string                   `json:"mode"`
+	Presets   []string                 `json:"presets"`
+	Allowlist *NetworkAllowlistEnvelope `json:"allowlist,omitempty"`
 }
 
 type RuntimeBrokerEnvelope struct {
@@ -149,8 +150,14 @@ type BaselinePolicy struct {
 }
 
 type BaselineNetworkPolicy struct {
-	Mode    string   `json:"mode"`
-	Presets []string `json:"presets,omitempty"`
+	Mode      string                   `json:"mode"`
+	Presets   []string                 `json:"presets"`
+	Allowlist *NetworkAllowlistEnvelope `json:"allowlist,omitempty"`
+}
+
+type NetworkAllowlistEnvelope struct {
+	FQDNs []string `json:"fqdns"`
+	CIDRs []string `json:"cidrs"`
 }
 
 type IntentPolicyDigest struct {

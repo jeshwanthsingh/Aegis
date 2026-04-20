@@ -82,7 +82,7 @@ func TestEvaluateReadAndConnectBranches(t *testing.T) {
 	if got := eval.Evaluate(models.RuntimeEvent{ExecutionID: "exec", Seq: 2, Type: models.EventFileOpen, Path: "/workspace/other"}); got.Reason != "path is outside read_paths" {
 		t.Fatalf("outside read paths reason = %q", got.Reason)
 	}
-	if got := eval.Evaluate(models.RuntimeEvent{ExecutionID: "exec", Seq: 3, Type: models.EventNetConnect, Domain: "api.example.com", DstIP: "10.0.0.5"}); got.Decision != models.DecisionAllow {
+	if got := eval.Evaluate(models.RuntimeEvent{ExecutionID: "exec", Seq: 3, Type: models.EventNetConnect, Domain: "api.example.com", DstIP: "203.0.113.5", DstPort: 443}); got.Decision != models.DecisionAllow {
 		t.Fatalf("domain allow decision = %q", got.Decision)
 	}
 }

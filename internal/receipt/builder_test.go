@@ -281,8 +281,7 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		"policy_timeout_ms=5000",
 		"policy_max_timeout_ms=10000",
 		"policy_profile=standard",
-		"policy_network_mode=allowlist",
-		"policy_network_presets=npm,pypi",
+		"policy_network_mode=egress_allowlist",
 		"policy_intent_digest=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"policy_intent_source=intent_contract",
 		"signer_key_id=" + signer.KeyID,
@@ -301,13 +300,22 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		"runtime_vcpu_count=2",
 		"runtime_memory_mb=768",
 		"runtime_cgroup_memory_max_mb=896",
-		"runtime_network_mode=allowlist",
+		"runtime_network_mode=egress_allowlist",
 		"runtime_broker_enabled=true",
 		"runtime_applied_overrides=AEGIS_VM_MEMORY_MB",
 	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
+	}
+	if receipt.Statement.Predicate.Policy.Baseline.Network == nil || receipt.Statement.Predicate.Policy.Baseline.Network.Allowlist == nil {
+		t.Fatalf("expected baseline network allowlist: %+v", receipt.Statement.Predicate.Policy.Baseline.Network)
+	}
+	if got := strings.Join(receipt.Statement.Predicate.Policy.Baseline.Network.Allowlist.FQDNs, ","); got != "api.github.com,registry.npmjs.org" {
+		t.Fatalf("unexpected baseline network allowlist fqdns: %q", got)
+	}
+	if got := strings.Join(receipt.Statement.Predicate.Runtime.Network.Allowlist.CIDRs, ","); got != "127.0.0.0/8,198.51.100.0/24" {
+		t.Fatalf("unexpected runtime network allowlist cidrs: %q", got)
 	}
 }
 
@@ -322,10 +330,10 @@ func TestFormatSummaryNormalizesLegacyIsolatedNetworkMode(t *testing.T) {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
 	summary := FormatSummary(receipt.Statement, true)
-	if !strings.Contains(summary, "policy_network_mode="+policycfg.NetworkModeDirectWebEgress) {
+	if !strings.Contains(summary, "policy_network_mode="+policycfg.NetworkModeEgressAllowlist) {
 		t.Fatalf("summary missing canonical policy network mode: %s", summary)
 	}
-	if !strings.Contains(summary, "runtime_network_mode="+policycfg.NetworkModeDirectWebEgress) {
+	if !strings.Contains(summary, "runtime_network_mode="+policycfg.NetworkModeEgressAllowlist) {
 		t.Fatalf("summary missing canonical runtime network mode: %s", summary)
 	}
 	if strings.Contains(summary, "policy_network_mode="+policycfg.NetworkModeLegacyIsolated) || strings.Contains(summary, "runtime_network_mode="+policycfg.NetworkModeLegacyIsolated) {
@@ -576,8 +584,12 @@ func testReceiptInput() Input {
 				MaxTimeoutMs:  10000,
 				Profile:       "standard",
 				Network: &BaselineNetworkPolicy{
-					Mode:    "allowlist",
-					Presets: []string{"npm", "pypi"},
+					Mode:    policycfg.NetworkModeEgressAllowlist,
+					Presets: []string{},
+					Allowlist: &NetworkAllowlistEnvelope{
+						FQDNs: []string{"registry.npmjs.org", "api.github.com"},
+						CIDRs: []string{},
+					},
 				},
 			},
 			Intent: &IntentPolicyDigest{
@@ -599,8 +611,12 @@ func testReceiptInput() Input {
 			},
 			Network: &RuntimeNetworkEnvelope{
 				Enabled: true,
-				Mode:    "allowlist",
-				Presets: []string{"npm", "pypi"},
+				Mode:    policycfg.NetworkModeEgressAllowlist,
+				Presets: []string{},
+				Allowlist: &NetworkAllowlistEnvelope{
+					FQDNs: []string{"registry.npmjs.org"},
+					CIDRs: []string{"198.51.100.0/24"},
+				},
 			},
 			Broker:           &RuntimeBrokerEnvelope{Enabled: true},
 			AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},

@@ -116,6 +116,22 @@ The UI is served from that same localhost runtime. The CLI demo scripts use the 
 
 If the demo runtime is already healthy and owned by `/tmp/aegis-demo/state.json`, rerunning `./scripts/demo_up.sh` prints `status=running` and the current connection details instead of starting a second copy.
 
+## Network Modes
+
+Aegis has two canonical network modes:
+
+- `none`: no guest NIC is attached
+- `egress_allowlist`: the guest gets a TAP/NAT path, but outbound is still default-deny; only declared FQDNs and CIDRs open TCP `80` / `443`, and the hard deny rules for private ranges, metadata, and guest DNS still apply
+
+An empty `egress_allowlist` is valid and means “networked namespace exists, but nothing external is reachable.”
+
+### Inheritance and timing
+
+- If an execution's intent omits all allowlist fields, it inherits the baseline allowlist in full.
+- If an execution's intent provides any allowlist field (`allowed_domains` or `allowed_ips`), the omitted dimension does NOT inherit from baseline; it is treated as empty for that execution. This enforces explicit scope requests.
+- FQDN allowlist entries are resolved once at execution start. The resolved IP set is pinned for the lifetime of that execution. Long-running executions where DNS answers rotate may see connection failures after rotation; this is a known, deliberate trade-off eliminating TOCTOU between the DNS interceptor and the firewall.
+- Loopback traffic (127.0.0.0/8) is unconditionally permitted inside the guest to support the brokered outbound path. This is reflected explicitly in every receipt's effective allowlist.
+
 ## What Success Looks Like
 
 `./scripts/demo_up.sh` should print output shaped like:

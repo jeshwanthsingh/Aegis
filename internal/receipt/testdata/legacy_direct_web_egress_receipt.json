@@ -1,0 +1,156 @@
+{
+  "envelope": {
+    "payloadType": "application/vnd.in-toto+json",
+    "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJwcmVkaWNhdGUiOnsiYmFja2VuZCI6ImZpcmVjcmFja2VyIiwiZGVjbGFyZWRfcHVycG9zZSI6IlN1bW1hcml6ZSByZXBvcnQucGRmIGludG8gc3VtbWFyeS5tZCIsImRlbmlhbCI6eyJjbGFzcyI6ImdvdmVybmVkX2FjdGlvbiIsIm1hcmtlciI6ImRpcmVjdF9lZ3Jlc3NfZGVuaWVkIiwicnVsZV9pZCI6ImdvdmVybmFuY2UuZGlyZWN0X2VncmVzc19kaXNhYmxlZCJ9LCJkaXZlcmdlbmNlIjp7InJ1bGVfaGl0X2NvdW50IjoxLCJ0cmlnZ2VyZWRfcnVsZV9pZHMiOlsibmV0d29yay5jb25uZWN0X2Rpc2FibGVkIl0sInZlcmRpY3QiOiJraWxsX2NhbmRpZGF0ZSJ9LCJldmlkZW5jZV9kaWdlc3QiOiIzZjBjZWI1MjZiOThlNTI3YzQ4ZTcxYjIwYzVmMTc3MmQxMGYyNjNkYWMxMTcwY2JkOTI3NGZhYWM3ZTRlYjRlIiwiZXZpZGVuY2VfZGlnZXN0X2FsZ28iOiJzaGEyNTYiLCJleGVjdXRpb25faWQiOiJleGVjXzEyMyIsImZpbmlzaGVkX2F0IjoiMjAyMy0xMS0xNFQyMjoxMzoyMloiLCJnb3Zlcm5lZF9hY3Rpb25zIjp7ImFjdGlvbnMiOlt7ImFjdGlvbl90eXBlIjoiaHR0cF9yZXF1ZXN0IiwiYnJva2VyZWQiOmZhbHNlLCJicm9rZXJlZF9jcmVkZW50aWFscyI6ZmFsc2UsImNhcGFiaWxpdHlfcGF0aCI6ImRpcmVjdF9lZ3Jlc3MiLCJkZWNpc2lvbiI6ImRlbnkiLCJkZW5pYWxfbWFya2VyIjoiZGlyZWN0X2VncmVzc19kZW5pZWQiLCJtZXRob2QiOiJDT05ORUNUIiwib3V0Y29tZSI6ImRlbmllZCIsInBvbGljeV9kaWdlc3QiOiJwb2xpY3ktZGlnZXN0IiwicmVhc29uIjoibmV0d29yayBhY2Nlc3MgaXMgZGlzYWJsZWQgYnkgaW50ZW50IGNvbnRyYWN0IiwicmVzb3VyY2UiOiJ0Y3A6Ly8xMjcuMC4wLjE6ODAiLCJydWxlX2lkIjoiZ292ZXJuYW5jZS5kaXJlY3RfZWdyZXNzX2Rpc2FibGVkIiwidGFyZ2V0IjoidGNwOi8vMTI3LjAuMC4xOjgwIiwidXNlZCI6ZmFsc2V9XSwiY291bnQiOjEsIm5vcm1hbGl6ZWQiOlt7ImFjdGlvbl90eXBlIjoiaHR0cF9yZXF1ZXN0IiwiYnJva2VyZWQiOmZhbHNlLCJicm9rZXJlZF9jcmVkZW50aWFscyI6ZmFsc2UsImNhcGFiaWxpdHlfcGF0aCI6ImRpcmVjdF9lZ3Jlc3MiLCJjb3VudCI6MSwiZGVjaXNpb24iOiJkZW55IiwiZGVuaWFsX21hcmtlciI6ImRpcmVjdF9lZ3Jlc3NfZGVuaWVkIiwibWV0aG9kIjoiQ09OTkVDVCIsIm91dGNvbWUiOiJkZW5pZWQiLCJwb2xpY3lfZGlnZXN0IjoicG9saWN5LWRpZ2VzdCIsInJlYXNvbiI6Im5ldHdvcmsgYWNjZXNzIGlzIGRpc2FibGVkIGJ5IGludGVudCBjb250cmFjdCIsInJlc291cmNlIjoidGNwOi8vMTI3LjAuMC4xOjgwIiwicnVsZV9pZCI6ImdvdmVybmFuY2UuZGlyZWN0X2VncmVzc19kaXNhYmxlZCIsInRhcmdldCI6InRjcDovLzEyNy4wLjAuMTo4MCIsInVzZWQiOmZhbHNlfV19LCJpbnRlbnRfZGlnZXN0IjoiYWU5NDA2MDBhODViM2EzODdmMThmMTU5NTFlM2Q3MGZkMGNjNzBkM2YwYTUwNWFkOTNhYmFjNGMzNDAxZWM4NSIsImludGVudF9kaWdlc3RfYWxnbyI6InNoYTI1NiIsImxpbWl0YXRpb25zIjpbImhvc3QgYXR0ZXN0YXRpb24gZGVmZXJyZWQiXSwibWV0YWRhdGEiOnsibW9kZSI6InRlc3QifSwib3V0Y29tZSI6eyJDb250YWlubWVudFZlcmRpY3QiOiJjb21wbGV0ZWQiLCJFeGl0Q29kZSI6MCwiT3V0cHV0VHJ1bmNhdGVkIjpmYWxzZSwiUmVhc29uIjoiY29tcGxldGVkIn0sInBvaW50X2RlY2lzaW9ucyI6eyJhbGxvd19jb3VudCI6MSwiZGVueV9jb3VudCI6MSwibm90X2FwcGxpY2FibGVfY291bnQiOjB9LCJwb2xpY3kiOnsiYmFzZWxpbmUiOnsiY29kZV9zaXplX2J5dGVzIjoxMSwibGFuZ3VhZ2UiOiJweXRob24iLCJtYXhfY29kZV9ieXRlcyI6NjU1MzYsIm1heF90aW1lb3V0X21zIjoxMDAwMCwibmV0d29yayI6eyJtb2RlIjoiZGlyZWN0X3dlYl9lZ3Jlc3MifSwicHJvZmlsZSI6InN0YW5kYXJkIiwidGltZW91dF9tcyI6NTAwMH0sImludGVudCI6eyJkaWdlc3QiOiIwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwic291cmNlIjoiaW50ZW50X2NvbnRyYWN0In19LCJwb2xpY3lfZGlnZXN0IjoiNTQ2OTg2MmJjOTI0MDFkOWZiYTVhODA1YmM3ZTYxYWVhYjE0MzYyMWMwNjAyM2UzMTEzMDYyOGUzZWQwNGFmYiIsInJlc3VsdF9jbGFzcyI6ImRlbmllZCIsInJ1bnRpbWUiOnsiYXBwbGllZF9vdmVycmlkZXMiOlsiQUVHSVNfVk1fTUVNT1JZX01CIl0sImJyb2tlciI6eyJlbmFibGVkIjp0cnVlfSwiY2dyb3VwIjp7ImNwdV9tYXgiOiI1MDAwMCAxMDAwMDAiLCJtZW1vcnlfaGlnaF9tYiI6NDQ4LCJtZW1vcnlfbWF4X21iIjo4OTYsInBpZHNfbWF4IjoxMDAsInN3YXBfbWF4IjoiMCJ9LCJtZW1vcnlfbWIiOjc2OCwibmV0d29yayI6eyJlbmFibGVkIjp0cnVlLCJtb2RlIjoiZGlyZWN0X3dlYl9lZ3Jlc3MifSwicHJvZmlsZSI6InN0YW5kYXJkIiwidmNwdV9jb3VudCI6Mn0sInJ1bnRpbWVfZXZlbnRfY291bnQiOjEsInNlbWFudGljc19tb2RlIjoiZXhwbGljaXRfdjEiLCJzaWduZXJfa2V5X2lkIjoiZWQyNTUxOTozNDc1MGY5OGJkNTlmY2ZjIiwic3RhcnRlZF9hdCI6IjIwMjMtMTEtMTRUMjI6MTM6MjBaIiwidGFza19jbGFzcyI6InN1bW1hcml6ZV9kb2N1bWVudCIsInRydXN0Ijp7ImF0dGVzdGF0aW9uIjoiYWJzZW50Iiwia2V5X3NvdXJjZSI6ImNvbmZpZ3VyZWRfc2VlZCIsImxpbWl0YXRpb25zIjpbImhvc3RfYXR0ZXN0YXRpb25fYWJzZW50IiwiZGV2X3NpZ25pbmdfbW9kZSJdLCJzaWduaW5nX21vZGUiOiJkZXYiLCJ2ZXJpZmljYXRpb25fbWF0ZXJpYWwiOiJlZDI1NTE5X3B1YmxpY19rZXkifSwidmVyc2lvbiI6InYxIiwid29ya2Zsb3dfaWQiOiJ3Zl85In0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL2FlZ2lzLmRldi9FeGVjdXRpb25SZWNlaXB0L3YxIiwic3ViamVjdCI6W119",
+    "signatures": [
+      {
+        "keyid": "ed25519:34750f98bd59fcfc",
+        "sig": "7E17mMRPGfr45hZ15E+d2z63hTg7z0E5JF3fg1B4ZyV/3qB3XQveb8KLIannxJy/3x6SQ1lQ+MBeUWEhM0M4Cg=="
+      }
+    ]
+  },
+  "statement": {
+    "_type": "https://in-toto.io/Statement/v1",
+    "subject": [],
+    "predicateType": "https://aegis.dev/ExecutionReceipt/v1",
+    "predicate": {
+      "version": "v1",
+      "execution_id": "exec_123",
+      "workflow_id": "wf_9",
+      "backend": "firecracker",
+      "task_class": "summarize_document",
+      "declared_purpose": "Summarize report.pdf into summary.md",
+      "semantics_mode": "explicit_v1",
+      "result_class": "denied",
+      "denial": {
+        "class": "governed_action",
+        "rule_id": "governance.direct_egress_disabled",
+        "marker": "direct_egress_denied"
+      },
+      "policy_digest": "5469862bc92401d9fba5a805bc7e61aeab143621c06023e31130628e3ed04afb",
+      "intent_digest": "ae940600a85b3a387f18f15951e3d70fd0cc70d3f0a505ad93abac4c3401ec85",
+      "intent_digest_algo": "sha256",
+      "policy": {
+        "baseline": {
+          "language": "python",
+          "code_size_bytes": 11,
+          "max_code_bytes": 65536,
+          "timeout_ms": 5000,
+          "max_timeout_ms": 10000,
+          "profile": "standard",
+          "network": {
+            "mode": "direct_web_egress",
+            "presets": null
+          }
+        },
+        "intent": {
+          "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "source": "intent_contract"
+        }
+      },
+      "evidence_digest": "3f0ceb526b98e527c48e71b20c5f1772d10f263dac1170cbd9274faac7e4eb4e",
+      "evidence_digest_algo": "sha256",
+      "runtime_event_count": 1,
+      "point_decisions": {
+        "allow_count": 1,
+        "deny_count": 1,
+        "not_applicable_count": 0
+      },
+      "divergence": {
+        "verdict": "kill_candidate",
+        "triggered_rule_ids": [
+          "network.connect_disabled"
+        ],
+        "rule_hit_count": 1
+      },
+      "outcome": {
+        "ExitCode": 0,
+        "Reason": "completed",
+        "ContainmentVerdict": "completed",
+        "OutputTruncated": false
+      },
+      "runtime": {
+        "profile": "standard",
+        "vcpu_count": 2,
+        "memory_mb": 768,
+        "cgroup": {
+          "memory_max_mb": 896,
+          "memory_high_mb": 448,
+          "pids_max": 100,
+          "cpu_max": "50000 100000",
+          "swap_max": "0"
+        },
+        "network": {
+          "enabled": true,
+          "mode": "direct_web_egress",
+          "presets": null
+        },
+        "broker": {
+          "enabled": true
+        },
+        "applied_overrides": [
+          "AEGIS_VM_MEMORY_MB"
+        ]
+      },
+      "trust": {
+        "signing_mode": "dev",
+        "key_source": "configured_seed",
+        "attestation": "absent",
+        "verification_material": "ed25519_public_key",
+        "limitations": [
+          "host_attestation_absent",
+          "dev_signing_mode"
+        ]
+      },
+      "limitations": [
+        "host attestation deferred"
+      ],
+      "started_at": "2023-11-14T22:13:20Z",
+      "finished_at": "2023-11-14T22:13:22Z",
+      "signer_key_id": "ed25519:34750f98bd59fcfc",
+      "governed_actions": {
+        "count": 1,
+        "actions": [
+          {
+            "action_type": "http_request",
+            "target": "tcp://127.0.0.1:80",
+            "resource": "tcp://127.0.0.1:80",
+            "method": "CONNECT",
+            "capability_path": "direct_egress",
+            "decision": "deny",
+            "outcome": "denied",
+            "used": false,
+            "reason": "network access is disabled by intent contract",
+            "rule_id": "governance.direct_egress_disabled",
+            "policy_digest": "policy-digest",
+            "brokered": false,
+            "brokered_credentials": false,
+            "denial_marker": "direct_egress_denied"
+          }
+        ],
+        "normalized": [
+          {
+            "count": 1,
+            "action_type": "http_request",
+            "target": "tcp://127.0.0.1:80",
+            "resource": "tcp://127.0.0.1:80",
+            "method": "CONNECT",
+            "capability_path": "direct_egress",
+            "decision": "deny",
+            "outcome": "denied",
+            "used": false,
+            "reason": "network access is disabled by intent contract",
+            "rule_id": "governance.direct_egress_disabled",
+            "policy_digest": "policy-digest",
+            "brokered": false,
+            "brokered_credentials": false,
+            "denial_marker": "direct_egress_denied"
+          }
+        ]
+      },
+      "metadata": {
+        "mode": "test"
+      }
+    }
+  }
+}

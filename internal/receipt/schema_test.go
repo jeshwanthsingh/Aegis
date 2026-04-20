@@ -57,6 +57,25 @@ func TestReceiptPredicateMatchesSchemaWithDirectWebEgressMode(t *testing.T) {
 	}
 }
 
+func TestLegacyDirectWebEgressFixturePredicateMatchesSchema(t *testing.T) {
+	schema := loadReceiptPredicateSchema(t)
+	signed, err := LoadSignedReceiptFile(filepath.Join("testdata", "legacy_direct_web_egress_receipt.json"))
+	if err != nil {
+		t.Fatalf("LoadSignedReceiptFile: %v", err)
+	}
+	payload, err := json.Marshal(signed.Statement.Predicate)
+	if err != nil {
+		t.Fatalf("Marshal predicate: %v", err)
+	}
+	var doc any
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		t.Fatalf("Unmarshal predicate: %v", err)
+	}
+	if err := validateSchemaValue(doc, schema, schema, "$"); err != nil {
+		t.Fatalf("legacy fixture predicate does not match schema: %v\npayload=%s", err, string(payload))
+	}
+}
+
 func TestReceiptPredicateSchemaExcludesLegacyFields(t *testing.T) {
 	schema := loadReceiptPredicateSchema(t)
 	properties, ok := schema["properties"].(map[string]any)
@@ -144,10 +163,32 @@ func validateSchemaValue(value any, schema map[string]any, root map[string]any, 
 			return fmt.Errorf("%s: %#v not in enum %#v", path, value, enum)
 		}
 	}
-	if typeName, ok := schema["type"].(string); ok {
-		if err := validateType(value, schema, root, path, typeName); err != nil {
+	switch rawType := schema["type"].(type) {
+	case string:
+		if err := validateType(value, schema, root, path, rawType); err != nil {
 			return err
 		}
+	case []any:
+		var errs []string
+		for _, candidate := range rawType {
+			typeName, ok := candidate.(string)
+			if !ok {
+				return fmt.Errorf("%s: invalid schema type entry %T", path, candidate)
+			}
+			if typeName == "null" {
+				if value == nil {
+					return nil
+				}
+				errs = append(errs, fmt.Sprintf("expected null, got %T", value))
+				continue
+			}
+			if err := validateType(value, schema, root, path, typeName); err == nil {
+				return nil
+			} else {
+				errs = append(errs, err.Error())
+			}
+		}
+		return fmt.Errorf("%s: value did not match any allowed schema type: %s", path, strings.Join(errs, "; "))
 	}
 	return nil
 }

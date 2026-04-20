@@ -100,7 +100,7 @@ else
 fi
 
 echo ""
-echo "TEST 5: DNS Exfiltration Blocked (direct_web_egress/allowlist modes)"
+echo "TEST 5: DNS Exfiltration Blocked (requires loaded policy with egress_allowlist)"
 echo "------------------------------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \
@@ -108,7 +108,7 @@ RESULT=$(curl -s -X POST $BASE \
 echo $RESULT | jq .
 
 echo ""
-echo "TEST 6: RFC1918 Blocked (direct_web_egress/allowlist modes)"
+echo "TEST 6: RFC1918 Blocked (requires loaded policy with egress_allowlist)"
 echo "----------------------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \
@@ -116,7 +116,7 @@ RESULT=$(curl -s -X POST $BASE \
 echo $RESULT | jq .
 
 echo ""
-echo "TEST 7: Metadata Endpoint Blocked (direct_web_egress/allowlist modes)"
+echo "TEST 7: Metadata Endpoint Blocked (requires loaded policy with egress_allowlist)"
 echo "--------------------------------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \
@@ -124,7 +124,7 @@ RESULT=$(curl -s -X POST $BASE \
 echo $RESULT | jq .
 
 echo ""
-echo "TEST 8: Port 443 Allowed (direct_web_egress mode)"
+echo "TEST 8: Port 443 Allowed (requires loaded policy with egress_allowlist)"
 echo "-----------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \
@@ -132,7 +132,7 @@ RESULT=$(curl -s -X POST $BASE \
 echo $RESULT | jq .
 
 echo ""
-echo "TEST 9: PyPI Allowed (allowlist mode with presets=[pypi])"
+echo "TEST 9: PyPI Allowed (requires loaded policy with egress_allowlist for the target hostnames)"
 echo "----------------------------------------------------------"
 RESULT=$(curl -s -X POST $BASE \
   -H "Content-Type: application/json" \

@@ -81,10 +81,9 @@ A brokered outbound success shows:
 That deny path is specific to the no-network or governed-demo configuration. The receipt also records the runtime network mode directly:
 
 - `none`: no guest NIC
-- `direct_web_egress`: direct public TCP 80/443 is allowed while private ranges, metadata, and guest DNS stay blocked
-- `allowlist`: DNS is intercepted and narrow outbound rules are opened only for declared allowlist destinations
+- `egress_allowlist`: TCP 80/443 only, hard deny rules for private ranges / metadata / guest DNS, and outbound opened only for declared FQDNs or CIDRs; an empty allowlist is a valid deny-all networked configuration
 
-Older bundles may still carry the legacy label `isolated`; current verification normalizes that to `direct_web_egress` in reporting.
+Older bundles may still carry legacy network-mode labels from the previous policy surface; current verification normalizes them to `egress_allowlist` in reporting.
 
 ## How Verification Works
 

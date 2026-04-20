@@ -110,13 +110,14 @@ func clonePolicyEnvelope(policy *PolicyEnvelope) *PolicyEnvelope {
 	}
 	if policy.Baseline.Network != nil {
 		mode := policycfg.NormalizeNetworkMode(policy.Baseline.Network.Mode)
-		presets := append([]string(nil), policy.Baseline.Network.Presets...)
-		if mode != policycfg.NetworkModeAllowlist {
-			presets = nil
+		allowlist := cloneNetworkAllowlistEnvelope(policy.Baseline.Network.Allowlist)
+		if mode == policycfg.NetworkModeNone {
+			allowlist = nil
 		}
 		cloned.Baseline.Network = &BaselineNetworkPolicy{
-			Mode:    mode,
-			Presets: presets,
+			Mode:      mode,
+			Presets:   []string{},
+			Allowlist: allowlist,
 		}
 	}
 	if policy.Intent != nil {
@@ -149,14 +150,17 @@ func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
 	}
 	if runtime.Network != nil {
 		mode := policycfg.NormalizeNetworkMode(runtime.Network.Mode)
-		presets := append([]string(nil), runtime.Network.Presets...)
-		if mode != policycfg.NetworkModeAllowlist {
-			presets = nil
+		allowlist := cloneNetworkAllowlistEnvelope(runtime.Network.Allowlist)
+		if mode == policycfg.NetworkModeNone {
+			allowlist = nil
+		} else {
+			allowlist = runtimeAllowlistForReceipt(allowlist)
 		}
 		cloned.Network = &RuntimeNetworkEnvelope{
-			Enabled: runtime.Network.Enabled,
-			Mode:    mode,
-			Presets: presets,
+			Enabled:   runtime.Network.Enabled,
+			Mode:      mode,
+			Presets:   []string{},
+			Allowlist: allowlist,
 		}
 	}
 	if runtime.Broker != nil {
@@ -392,6 +396,38 @@ func normalizeGovernedActions(actions []GovernedActionRecord) []NormalizedGovern
 		normalized = append(normalized, entry.entry)
 	}
 	return normalized
+}
+
+func cloneNetworkAllowlistEnvelope(src *NetworkAllowlistEnvelope) *NetworkAllowlistEnvelope {
+	if src == nil {
+		return nil
+	}
+	fqdns := append([]string{}, src.FQDNs...)
+	cidrs := append([]string{}, src.CIDRs...)
+	sort.Strings(fqdns)
+	sort.Strings(cidrs)
+	return &NetworkAllowlistEnvelope{
+		FQDNs: fqdns,
+		CIDRs: cidrs,
+	}
+}
+
+func runtimeAllowlistForReceipt(src *NetworkAllowlistEnvelope) *NetworkAllowlistEnvelope {
+	if src == nil {
+		src = &NetworkAllowlistEnvelope{}
+	}
+	cloned := cloneNetworkAllowlistEnvelope(src)
+	if cloned == nil {
+		cloned = &NetworkAllowlistEnvelope{}
+	}
+	for _, cidr := range cloned.CIDRs {
+		if cidr == "127.0.0.0/8" {
+			return cloned
+		}
+	}
+	cloned.CIDRs = append(cloned.CIDRs, "127.0.0.0/8")
+	sort.Strings(cloned.CIDRs)
+	return cloned
 }
 
 func normalizedGovernedAction(action GovernedActionRecord) NormalizedGovernedActionEntry {

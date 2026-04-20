@@ -9,7 +9,7 @@ It exists for platform and security engineers who need a real local execution bo
 - Linux-only
 - single-host
 - Firecracker/KVM based
-- no network by default, plus explicit allowlist or direct public web egress modes and governed brokered paths
+- no network by default, plus explicit `egress_allowlist` policy and governed brokered paths
 - host-signed DSSE receipts with offline verification
 - packaged local demos plus a minimal operator UI
 - suitable for local validation and narrow internal pilots

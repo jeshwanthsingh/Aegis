@@ -8,7 +8,7 @@ Aegis today is a single-host secure execution runtime for local or internal-pilo
 - one host
 - Firecracker/KVM runtime
 - host-signed DSSE receipts
-- no network by default, plus explicit allowlist or direct public web egress modes and governed brokered paths
+- no network by default, plus explicit `egress_allowlist` policy and governed brokered paths
 - local demo and narrow internal-pilot scope
 
 It is not:
@@ -34,7 +34,7 @@ If that host is dishonest or compromised, Aegis can produce dishonest receipts.
 ## What the Runtime Boundary Does
 
 - runs untrusted code in a Firecracker microVM instead of a normal developer shell or CI runner
-- keeps no-network as the default posture, supports an explicit allowlist path, and also has a separately labeled direct public web egress mode that still permits direct TCP 80/443 while blocking private ranges, metadata, and guest DNS
+- keeps no-network as the default posture and uses `egress_allowlist` for the networked path: TCP 80/443 only, hard deny rules for private ranges / metadata / guest DNS, and outbound opened only for declared FQDNs or CIDRs
 - records governed-action allow and deny evidence, runtime envelope data, and artifact hashes per execution
 - binds that evidence into a DSSE-signed receipt and proof bundle
 

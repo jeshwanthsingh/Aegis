@@ -155,8 +155,11 @@ func TestRuntimeEnvelopeForExecutionUsesEffectiveState(t *testing.T) {
 		MemoryMB:         768,
 		AppliedOverrides: []string{"AEGIS_VM_MEMORY_MB"},
 		Network: &executor.NetworkConfig{
-			Mode:    "allowlist",
-			Presets: []string{"pypi", "npm"},
+			Mode: policy.NetworkModeEgressAllowlist,
+			Allowlist: policy.NetworkAllowlist{
+				FQDNs: []string{"api.github.com"},
+				CIDRs: []string{"198.51.100.0/24"},
+			},
 		},
 	}
 	cgroup := &executor.EffectiveCgroupLimits{
@@ -178,8 +181,11 @@ func TestRuntimeEnvelopeForExecutionUsesEffectiveState(t *testing.T) {
 	if runtime.Cgroup == nil || runtime.Cgroup.MemoryMaxMB != 896 || runtime.Cgroup.CPUMax != "50000 100000" {
 		t.Fatalf("unexpected cgroup envelope: %+v", runtime.Cgroup)
 	}
-	if runtime.Network == nil || !runtime.Network.Enabled || runtime.Network.Mode != "allowlist" {
+	if runtime.Network == nil || !runtime.Network.Enabled || runtime.Network.Mode != policy.NetworkModeEgressAllowlist {
 		t.Fatalf("unexpected network envelope: %+v", runtime.Network)
+	}
+	if runtime.Network.Allowlist == nil || strings.Join(runtime.Network.Allowlist.CIDRs, ",") != "198.51.100.0/24" {
+		t.Fatalf("unexpected network allowlist: %+v", runtime.Network.Allowlist)
 	}
 	if runtime.Broker == nil || !runtime.Broker.Enabled {
 		t.Fatalf("unexpected broker envelope: %+v", runtime.Broker)

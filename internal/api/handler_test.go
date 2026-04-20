@@ -391,7 +391,10 @@ func TestExecuteHandlerRejectsInvalidProfile(t *testing.T) {
 func TestExecuteHandlerAcceptsCapabilitiesRequest(t *testing.T) {
 	installHandlerRuntimeStubs(t)
 
-	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	pol := policy.Default()
+	pol.Network.Mode = policy.NetworkModeEgressAllowlist
+	pol.Network.Allowlist.FQDNs = []string{"api.example.com", "api.github.com"}
+	handler := NewHandler(nil, executor.NewPool(1), nil, pol, "", "", NewBusRegistry(), NewStatsCounter(), "test")
 	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000,"capabilities":{"network_domains":["api.example.com"],"broker":{"delegations":[{"name":"github","resource":"https://api.github.com/user"}],"http_requests":true}}}`))
 	rr := httptest.NewRecorder()
 
@@ -417,6 +420,25 @@ func TestExecuteHandlerRejectsIntentAndCapabilitiesTogether(t *testing.T) {
 		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
 	}
 	if !strings.Contains(rr.Body.String(), `"code":"invalid_request"`) || !strings.Contains(rr.Body.String(), "intent and capabilities cannot both be provided") {
+		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestExecuteHandlerRejectsIntentAllowlistOutsideBaseline(t *testing.T) {
+	pol := policy.Default()
+	pol.Network.Mode = policy.NetworkModeEgressAllowlist
+	pol.Network.Allowlist.FQDNs = []string{"api.github.com"}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, pol, "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","lang":"python","code":"print(1)","timeout_ms":1000,"intent":{"version":"v1","execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b","workflow_id":"wf_1","task_class":"task","declared_purpose":"purpose","language":"python","resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":[],"deny_paths":[],"max_distinct_files":1},"network_scope":{"allow_network":true,"allowed_domains":["api.example.com"],"max_dns_queries":1,"max_outbound_conns":1},"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},"broker_scope":{"allowed_delegations":[],"require_host_consent":false},"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}}}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"invalid_intent_contract"`) || !strings.Contains(rr.Body.String(), "not present in baseline") {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
 	}
 }

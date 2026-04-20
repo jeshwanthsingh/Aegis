@@ -251,12 +251,15 @@ func validatePolicyEnvelope(policy *PolicyEnvelope) error {
 	}
 	if policy.Baseline.Network != nil {
 		switch strings.TrimSpace(policy.Baseline.Network.Mode) {
-		case policycfg.NetworkModeNone, policycfg.NetworkModeDirectWebEgress, policycfg.NetworkModeAllowlist:
+		case policycfg.NetworkModeNone, policycfg.NetworkModeEgressAllowlist:
 		default:
 			return fmt.Errorf("unexpected baseline network mode: %s", policy.Baseline.Network.Mode)
 		}
-		if policy.Baseline.Network.Mode != policycfg.NetworkModeAllowlist && len(policy.Baseline.Network.Presets) > 0 {
-			return fmt.Errorf("baseline network presets require allowlist mode")
+		if policy.Baseline.Network.Mode == policycfg.NetworkModeNone && policy.Baseline.Network.Allowlist != nil && (len(policy.Baseline.Network.Allowlist.FQDNs) > 0 || len(policy.Baseline.Network.Allowlist.CIDRs) > 0) {
+			return fmt.Errorf("baseline network allowlist requires egress_allowlist mode")
+		}
+		if err := validateNetworkAllowlistEnvelope(policy.Baseline.Network.Allowlist); err != nil {
+			return fmt.Errorf("baseline network allowlist invalid: %w", err)
 		}
 	}
 	if policy.Intent != nil {
@@ -303,7 +306,7 @@ func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
 	}
 	if runtime.Network != nil {
 		switch strings.TrimSpace(runtime.Network.Mode) {
-		case policycfg.NetworkModeNone, policycfg.NetworkModeDirectWebEgress, policycfg.NetworkModeAllowlist:
+		case policycfg.NetworkModeNone, policycfg.NetworkModeEgressAllowlist:
 		default:
 			return fmt.Errorf("unexpected network mode: %s", runtime.Network.Mode)
 		}
@@ -313,8 +316,11 @@ func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
 		if runtime.Network.Enabled && runtime.Network.Mode == policycfg.NetworkModeNone {
 			return fmt.Errorf("enabled network cannot use mode none")
 		}
-		if runtime.Network.Mode != policycfg.NetworkModeAllowlist && len(runtime.Network.Presets) > 0 {
-			return fmt.Errorf("network presets require allowlist mode")
+		if runtime.Network.Mode == policycfg.NetworkModeNone && runtime.Network.Allowlist != nil && (len(runtime.Network.Allowlist.FQDNs) > 0 || len(runtime.Network.Allowlist.CIDRs) > 0) {
+			return fmt.Errorf("network allowlist requires egress_allowlist mode")
+		}
+		if err := validateNetworkAllowlistEnvelope(runtime.Network.Allowlist); err != nil {
+			return fmt.Errorf("network allowlist invalid: %w", err)
 		}
 	}
 	return nil
@@ -326,18 +332,16 @@ func applyLegacySemantics(statement *Statement) {
 	}
 	predicate := &statement.Predicate
 	if predicate.Policy != nil && predicate.Policy.Baseline.Network != nil {
-		mode := policycfg.NormalizeNetworkMode(predicate.Policy.Baseline.Network.Mode)
+		mode, allowlist := normalizeReceiptNetwork(predicate.Policy.Baseline.Network.Mode, predicate.Policy.Baseline.Network.Presets, predicate.Policy.Baseline.Network.Allowlist)
 		predicate.Policy.Baseline.Network.Mode = mode
-		if mode != policycfg.NetworkModeAllowlist {
-			predicate.Policy.Baseline.Network.Presets = nil
-		}
+		predicate.Policy.Baseline.Network.Presets = []string{}
+		predicate.Policy.Baseline.Network.Allowlist = allowlist
 	}
 	if predicate.Runtime != nil && predicate.Runtime.Network != nil {
-		mode := policycfg.NormalizeNetworkMode(predicate.Runtime.Network.Mode)
+		mode, allowlist := normalizeReceiptNetwork(predicate.Runtime.Network.Mode, predicate.Runtime.Network.Presets, predicate.Runtime.Network.Allowlist)
 		predicate.Runtime.Network.Mode = mode
-		if mode != policycfg.NetworkModeAllowlist {
-			predicate.Runtime.Network.Presets = nil
-		}
+		predicate.Runtime.Network.Presets = []string{}
+		predicate.Runtime.Network.Allowlist = allowlist
 	}
 	if predicate.GovernedActions != nil {
 		if predicate.GovernedActions.Count == 0 && len(predicate.GovernedActions.Actions) > 0 {
@@ -440,4 +444,53 @@ func validateGovernedAction(actionType string, capabilityPath string, decision s
 		return fmt.Errorf("non-brokered action cannot include binding_name")
 	}
 	return nil
+}
+
+func validateNetworkAllowlistEnvelope(allowlist *NetworkAllowlistEnvelope) error {
+	if allowlist == nil {
+		return nil
+	}
+	for _, domain := range allowlist.FQDNs {
+		if strings.TrimSpace(domain) == "" {
+			return fmt.Errorf("blank fqdn")
+		}
+	}
+	for _, cidr := range allowlist.CIDRs {
+		if strings.TrimSpace(cidr) == "" {
+			return fmt.Errorf("blank cidr")
+		}
+	}
+	return nil
+}
+
+func normalizeReceiptNetwork(mode string, presets []string, allowlist *NetworkAllowlistEnvelope) (string, *NetworkAllowlistEnvelope) {
+	normalized := policycfg.NormalizeNetworkPolicy(policycfg.NetworkPolicy{
+		Mode:    mode,
+		Presets: presets,
+		Allowlist: policycfg.NetworkAllowlist{
+			FQDNs: allowlistFQDNs(allowlist),
+			CIDRs: allowlistCIDRs(allowlist),
+		},
+	})
+	if normalized.Mode == policycfg.NetworkModeNone {
+		return normalized.Mode, nil
+	}
+	return normalized.Mode, &NetworkAllowlistEnvelope{
+		FQDNs: append([]string(nil), normalized.Allowlist.FQDNs...),
+		CIDRs: append([]string(nil), normalized.Allowlist.CIDRs...),
+	}
+}
+
+func allowlistFQDNs(allowlist *NetworkAllowlistEnvelope) []string {
+	if allowlist == nil {
+		return nil
+	}
+	return append([]string(nil), allowlist.FQDNs...)
+}
+
+func allowlistCIDRs(allowlist *NetworkAllowlistEnvelope) []string {
+	if allowlist == nil {
+		return nil
+	}
+	return append([]string(nil), allowlist.CIDRs...)
 }

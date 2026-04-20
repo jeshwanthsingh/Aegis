@@ -62,7 +62,7 @@ func TestBuildDefaultIntentWithBrokerAndWrites(t *testing.T) {
 	if !equalStrings(intent.BrokerScope.AllowedActionTypes, []string{"http_request"}) {
 		t.Fatalf("unexpected broker action types: %v", intent.BrokerScope.AllowedActionTypes)
 	}
-	if !equalStrings(intent.NetworkScope.AllowedIPs, []string{"127.0.0.1"}) {
+	if len(intent.NetworkScope.AllowedIPs) != 0 {
 		t.Fatalf("unexpected broker proxy allowed IPs: %v", intent.NetworkScope.AllowedIPs)
 	}
 }

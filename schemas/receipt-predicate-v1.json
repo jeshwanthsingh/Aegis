@@ -149,6 +149,15 @@
         "$ref": "#/$defs/non_empty_string"
       }
     },
+    "string_list_or_null": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
     "string_map": {
       "type": "object",
       "additionalProperties": {
@@ -311,14 +320,31 @@
       "properties": {
         "mode": {
           "type": "string",
+          "description": "The `direct_web_egress`, `isolated`, and `allowlist` values are deprecated and accepted only for verification of pre-Pass-A receipts. Receipts produced after Pass A MUST use `egress_allowlist`.",
           "enum": [
             "none",
             "direct_web_egress",
             "isolated",
-            "allowlist"
+            "allowlist",
+            "egress_allowlist"
           ]
         },
         "presets": {
+          "$ref": "#/$defs/string_list_or_null"
+        },
+        "allowlist": {
+          "$ref": "#/$defs/network_allowlist"
+        }
+      }
+    },
+    "network_allowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fqdns": {
+          "$ref": "#/$defs/string_list"
+        },
+        "cidrs": {
           "$ref": "#/$defs/string_list"
         }
       }
@@ -408,15 +434,20 @@
         },
         "mode": {
           "type": "string",
+          "description": "The `direct_web_egress`, `isolated`, and `allowlist` values are deprecated and accepted only for verification of pre-Pass-A receipts. Receipts produced after Pass A MUST use `egress_allowlist`.",
           "enum": [
             "none",
             "direct_web_egress",
             "isolated",
-            "allowlist"
+            "allowlist",
+            "egress_allowlist"
           ]
         },
         "presets": {
-          "$ref": "#/$defs/string_list"
+          "$ref": "#/$defs/string_list_or_null"
+        },
+        "allowlist": {
+          "$ref": "#/$defs/network_allowlist"
         }
       }
     },
