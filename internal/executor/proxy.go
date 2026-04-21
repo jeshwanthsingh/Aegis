@@ -86,6 +86,7 @@ func handleBrokerConn(conn net.Conn, b *broker.Broker, divEval *policydivergence
 	if err := broker.EncodeBrokerResponse(conn, resp); err != nil {
 		observability.Warn("broker_response_encode_failed", observability.Fields{"error": err.Error()})
 	}
+	b.HandleTerminalResponse(resp)
 }
 
 func decodeBrokerRequest(conn net.Conn) (broker.BrokerRequest, error) {

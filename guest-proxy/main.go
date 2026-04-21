@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/mdlayher/vsock"
 )
@@ -21,10 +22,11 @@ const (
 )
 
 type ProxyRequest struct {
-	Method     string              `json:"method"`
-	URL        string              `json:"url"`
-	Headers    map[string][]string `json:"headers"`
-	BodyBase64 string              `json:"body_base64,omitempty"`
+	Method         string              `json:"method"`
+	URL            string              `json:"url"`
+	Headers        map[string][]string `json:"headers"`
+	BodyBase64     string              `json:"body_base64,omitempty"`
+	ApprovalTicket json.RawMessage     `json:"approval_ticket,omitempty"`
 }
 
 type ProxyResponse struct {
@@ -65,7 +67,21 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	msg := ProxyRequest{
 		Method:  r.Method,
 		URL:     r.URL.String(),
-		Headers: r.Header,
+		Headers: make(map[string][]string, len(r.Header)),
+	}
+	for key, vals := range r.Header {
+		if strings.EqualFold(key, "X-Aegis-Approval-Ticket") {
+			if len(msg.ApprovalTicket) == 0 && len(vals) > 0 {
+				ticket, err := decodeApprovalTicketHeader(vals[0])
+				if err != nil {
+					http.Error(w, fmt.Sprintf("decode approval ticket: %v", err), http.StatusBadRequest)
+					return
+				}
+				msg.ApprovalTicket = ticket
+			}
+			continue
+		}
+		msg.Headers[key] = vals
 	}
 	if len(body) > 0 {
 		msg.BodyBase64 = base64.StdEncoding.EncodeToString(body)
@@ -118,7 +134,13 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 	msg := ProxyRequest{
 		Method:  http.MethodConnect,
 		URL:     r.Host,
-		Headers: r.Header,
+		Headers: make(map[string][]string, len(r.Header)),
+	}
+	for key, vals := range r.Header {
+		if strings.EqualFold(key, "X-Aegis-Approval-Ticket") {
+			continue
+		}
+		msg.Headers[key] = vals
 	}
 	if err := json.NewEncoder(guestConn).Encode(msg); err != nil {
 		_ = guestConn.Close()
@@ -179,13 +201,29 @@ func init() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 }
 
+func decodeApprovalTicketHeader(raw string) (json.RawMessage, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode approval ticket header: %w", err)
+	}
+	var payload any
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		return nil, fmt.Errorf("decode approval ticket header payload: %w", err)
+	}
+	return json.RawMessage(decoded), nil
+}
+
 var _ http.Hijacker = (*responseWriterHijackGuard)(nil)
 
 type responseWriterHijackGuard struct{}
 
-func (*responseWriterHijackGuard) Header() http.Header         { return http.Header{} }
-func (*responseWriterHijackGuard) Write([]byte) (int, error)   { return 0, nil }
-func (*responseWriterHijackGuard) WriteHeader(statusCode int)  {}
+func (*responseWriterHijackGuard) Header() http.Header        { return http.Header{} }
+func (*responseWriterHijackGuard) Write([]byte) (int, error)  { return 0, nil }
+func (*responseWriterHijackGuard) WriteHeader(statusCode int) {}
 func (*responseWriterHijackGuard) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, fmt.Errorf("not implemented")
 }

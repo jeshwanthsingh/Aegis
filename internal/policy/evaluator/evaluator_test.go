@@ -3,6 +3,7 @@ package evaluator
 import (
 	"testing"
 
+	"aegis/internal/governance"
 	"aegis/internal/models"
 	"aegis/internal/policy/contract"
 	"golang.org/x/sys/unix"
@@ -154,6 +155,33 @@ func TestEvaluateDeniedWhenNetworkDisabled(t *testing.T) {
 	}
 	if got.Reason != "network access is disabled by intent contract" {
 		t.Fatalf("Reason = %q", got.Reason)
+	}
+}
+
+func TestEvaluateIncludesProvidedPolicyDigestMetadata(t *testing.T) {
+	intent := contract.IntentContract{
+		Version:         "v1",
+		ExecutionID:     "exec_123",
+		WorkflowID:      "wf_9",
+		TaskClass:       "task",
+		DeclaredPurpose: "prove metadata",
+		Language:        "python",
+		ResourceScope:   contract.ResourceScope{WorkspaceRoot: "/workspace", ReadPaths: []string{"/workspace"}, WritePaths: []string{"/workspace/out"}, MaxDistinctFiles: 1},
+		ProcessScope:    contract.ProcessScope{AllowedBinaries: []string{"python3"}, MaxChildProcesses: 1},
+		Budgets:         contract.BudgetLimits{TimeoutSec: 20, MemoryMB: 256, CPUQuota: 100, StdoutBytes: 4096},
+	}
+	got := NewWithPolicyDigest(intent, "policy-digest").Evaluate(models.RuntimeEvent{
+		ExecutionID: "exec_123",
+		Seq:         1,
+		Type:        models.EventProcessExec,
+		Exe:         "/usr/bin/python3",
+		Comm:        "python3",
+	})
+	if got.Metadata["policy_digest"] != "policy-digest" {
+		t.Fatalf("policy_digest metadata = %q", got.Metadata["policy_digest"])
+	}
+	if got.Metadata["intent_digest"] != governance.DigestIntent(intent) {
+		t.Fatalf("intent_digest metadata = %q", got.Metadata["intent_digest"])
 	}
 }
 

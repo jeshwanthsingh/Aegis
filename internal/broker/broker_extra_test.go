@@ -13,7 +13,7 @@ import (
 
 func TestBroker_HandleRejectsInvalidURLAndMalformedBody(t *testing.T) {
 	bus := telemetry.NewBus("exec-broker")
-	b := makeTestBroker([]string{"example.com"}, nil, bus)
+	b := makeTestBroker(t, []string{"example.com"}, nil, bus)
 
 	resp := b.Handle(BrokerRequest{Method: http.MethodGet, URL: "://bad-url"})
 	if !resp.Denied || resp.DenyReason != "broker.invalid_url" {
@@ -56,7 +56,7 @@ func TestBroker_HandleSanitizesGuestAndUpstreamHeaders(t *testing.T) {
 
 	t.Setenv("AEGIS_CRED_TESTTOKEN_TOKEN", "secret-test-value")
 	host := strings.TrimPrefix(srv.URL, "http://")
-	b := makeTestBroker([]string{host, "*.example.org", host + ":443"}, []string{"testtoken"}, nil)
+	b := makeTestBroker(t, []string{host, "*.example.org", host + ":443"}, []string{"testtoken"}, nil)
 
 	resp := b.Handle(BrokerRequest{
 		Method: http.MethodPost,
@@ -85,7 +85,7 @@ func TestBroker_HandleSanitizesGuestAndUpstreamHeaders(t *testing.T) {
 }
 
 func TestBroker_AllowedDomainsAndWildcardMatching(t *testing.T) {
-	b := makeTestBroker([]string{"api.example.com", "*.example.org", "example.net:443"}, nil, nil)
+	b := makeTestBroker(t, []string{"api.example.com", "*.example.org", "example.net:443"}, nil, nil)
 	if got := b.AllowedDomains(); len(got) != 3 {
 		t.Fatalf("AllowedDomains length = %d", len(got))
 	}
@@ -102,8 +102,8 @@ func TestBroker_AllowedDomainsAndWildcardMatching(t *testing.T) {
 }
 
 func TestBroker_DenyErrorUsesForbiddenEnvelope(t *testing.T) {
-	b := makeTestBroker([]string{"example.com"}, nil, nil)
-	resp := b.denyError("", "http_request", "digest", "broker.invalid_url", "invalid URL")
+	b := makeTestBroker(t, []string{"example.com"}, nil, nil)
+	resp := b.denyError("", "http_request", "digest", "broker.invalid_url", "invalid URL", nil)
 	if !resp.Denied || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("denyError response = %+v", resp)
 	}

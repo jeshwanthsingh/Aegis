@@ -83,6 +83,9 @@
     "policy": {
       "$ref": "#/$defs/policy_envelope"
     },
+    "authority": {
+      "$ref": "#/$defs/authority_envelope"
+    },
     "evidence_digest": {
       "$ref": "#/$defs/digest_hex"
     },
@@ -273,6 +276,133 @@
         }
       }
     },
+    "authority_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "rootfs_image",
+        "mounts",
+        "network_mode",
+        "approval_mode"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest_hex"
+        },
+        "rootfs_image": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/authority_mount"
+          }
+        },
+        "network_mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "egress_allowlist"
+          ]
+        },
+        "egress_allowlist": {
+          "$ref": "#/$defs/network_allowlist"
+        },
+        "resolved_hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/authority_resolved_host"
+          }
+        },
+        "broker_allowed_domains": {
+          "$ref": "#/$defs/string_list"
+        },
+        "broker_repo_labels": {
+          "$ref": "#/$defs/string_list"
+        },
+        "broker_action_types": {
+          "$ref": "#/$defs/string_list"
+        },
+        "approval_mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "require_host_consent"
+          ]
+        },
+        "mutation_attempt": {
+          "$ref": "#/$defs/authority_mutation"
+        }
+      }
+    },
+    "authority_mount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "target",
+        "read_only"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "kind": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "target": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "read_only": {
+          "type": "boolean"
+        },
+        "persistent": {
+          "type": "boolean"
+        }
+      }
+    },
+    "authority_resolved_host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "ipv4"
+      ],
+      "properties": {
+        "host": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "ipv4": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "authority_mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "expected",
+        "observed",
+        "enforcement_point"
+      ],
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "expected": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "observed": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "enforcement_point": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
     "baseline_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -452,6 +582,9 @@
         "broker": {
           "$ref": "#/$defs/runtime_broker"
         },
+        "policy": {
+          "$ref": "#/$defs/runtime_policy"
+        },
         "applied_overrides": {
           "$ref": "#/$defs/string_list"
         }
@@ -525,6 +658,119 @@
           "type": "boolean"
         }
       }
+    },
+    "runtime_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "escalation_attempts": {
+          "$ref": "#/$defs/escalation_summary"
+        },
+        "denied_destructive_actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/destructive_action_class"
+          }
+        },
+        "termination_reason": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "escalation_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/escalation_sample"
+          }
+        },
+        "sample_truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "escalation_sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "source",
+        "signals"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "governed_action",
+            "authority_mutation"
+          ]
+        },
+        "signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/escalation_signal"
+          }
+        },
+        "rule_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "action_type": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "capability_path": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "target": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "resource": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "host_action_class": {
+          "$ref": "#/$defs/destructive_action_class"
+        },
+        "mutation_field": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "enforcement_point": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "escalation_signal": {
+      "type": "string",
+      "enum": [
+        "authority_broadening_attempt",
+        "destructive_boundary_probe",
+        "unsupported_destructive_class_access",
+        "repeated_probing_pattern"
+      ]
+    },
+    "destructive_action_class": {
+      "type": "string",
+      "enum": [
+        "host_repo_apply_patch",
+        "host_file_delete",
+        "host_config_move",
+        "host_package_manager",
+        "host_docker_socket",
+        "host_system_resource"
+      ]
     },
     "trust_posture": {
       "type": "object",
@@ -686,6 +932,34 @@
         },
         "error": {
           "$ref": "#/$defs/non_empty_string"
+        },
+        "approval": {
+          "$ref": "#/$defs/approval_check"
+        },
+        "lease": {
+          "$ref": "#/$defs/lease_check"
+        },
+        "escalation": {
+          "$ref": "#/$defs/escalation_evidence"
+        },
+        "host_action": {
+          "$ref": "#/$defs/host_action_evidence"
+        }
+      }
+    },
+    "escalation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signals"
+      ],
+      "properties": {
+        "signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/escalation_signal"
+          }
         }
       }
     },
@@ -761,6 +1035,139 @@
           "$ref": "#/$defs/string_map"
         },
         "error": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "approval_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "result"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "ticket_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "issuer_key_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "result": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "reason": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "resource_digest": {
+          "$ref": "#/$defs/digest_hex"
+        },
+        "resource_digest_algo": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "consumed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "lease_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "result",
+        "budget_result"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "issuer": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "issuer_key_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "result": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "reason": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "grant_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "selector_digest": {
+          "$ref": "#/$defs/digest_hex"
+        },
+        "selector_digest_algo": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "budget_result": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "remaining_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "host_action_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class"
+      ],
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "repo_apply_patch": {
+          "$ref": "#/$defs/host_repo_apply_patch_evidence"
+        }
+      }
+    },
+    "host_repo_apply_patch_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_label",
+        "affected_paths",
+        "patch_digest",
+        "patch_digest_algo",
+        "base_revision"
+      ],
+      "properties": {
+        "repo_label": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "target_scope": {
+          "$ref": "#/$defs/string_list"
+        },
+        "affected_paths": {
+          "$ref": "#/$defs/string_list"
+        },
+        "patch_digest": {
+          "$ref": "#/$defs/digest_hex"
+        },
+        "patch_digest_algo": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "base_revision": {
           "$ref": "#/$defs/non_empty_string"
         }
       }

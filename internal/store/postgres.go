@@ -3,10 +3,16 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
-	_ "github.com/lib/pq"
+	"aegis/internal/approval"
+	"aegis/internal/lease"
+	"aegis/internal/dsse"
+	"github.com/lib/pq"
 )
 
 type Store struct {
@@ -216,6 +222,247 @@ func (s *Store) GetExecution(executionID string) (ExecutionRecord, error) {
 		rec.ErrorMsg = errorMsg.String
 	}
 	return rec, nil
+}
+
+func (s *Store) ConsumeApprovalTicket(ctx context.Context, claim approval.UseClaim) error {
+	if s == nil || s.db == nil {
+		return approval.ErrTicketUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if claim.ConsumedAt.IsZero() {
+		claim.ConsumedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO approval_ticket_uses
+			(ticket_id, nonce, execution_id, policy_digest, action_type, resource_digest, resource_digest_algo, consumed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		claim.TicketID,
+		claim.Nonce,
+		claim.ExecutionID,
+		claim.PolicyDigest,
+		claim.ActionType,
+		claim.ResourceDigest,
+		claim.ResourceDigestAlgo,
+		claim.ConsumedAt.UTC(),
+	)
+	if err == nil {
+		return nil
+	}
+	var pqErr *pq.Error
+	if ok := AsPQError(err, &pqErr); ok && pqErr.Code == "23505" {
+		return fmt.Errorf("%w: %s", approval.ErrTicketAlreadyUsed, claim.TicketID)
+	}
+	return fmt.Errorf("%w: %v", approval.ErrTicketUnavailable, err)
+}
+
+func (s *Store) PutIssued(ctx context.Context, record lease.IssuedRecord) error {
+	if s == nil || s.db == nil {
+		return lease.ErrLeaseUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if record.IssuedAt.IsZero() {
+		record.IssuedAt = time.Now().UTC()
+	}
+	if record.ExpiresAt.IsZero() {
+		record.ExpiresAt = record.IssuedAt
+	}
+	envelopeJSON, err := json.Marshal(record.Signed.Envelope)
+	if err != nil {
+		return fmt.Errorf("%w: marshal lease envelope: %v", lease.ErrLeaseUnavailable, err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%w: begin lease tx: %v", lease.ErrLeaseUnavailable, err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO side_effect_leases
+			(lease_id, execution_id, issuer, issuer_key_id, issued_at, expires_at, workload_kind, workload_boot_digest, workload_rootfs_image, policy_digest, authority_digest, envelope_json)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		record.LeaseID,
+		record.ExecutionID,
+		record.Issuer,
+		record.IssuerKeyID,
+		record.IssuedAt.UTC(),
+		record.ExpiresAt.UTC(),
+		record.Lease.Workload.Kind,
+		record.Lease.Workload.BootDigest,
+		record.Lease.Workload.RootfsImage,
+		record.PolicyDigest,
+		record.AuthorityDigest,
+		envelopeJSON,
+	); err != nil {
+		return fmt.Errorf("%w: insert lease: %v", lease.ErrLeaseUnavailable, err)
+	}
+	for _, grant := range record.Lease.Grants {
+		selectorDigest, selectorDigestAlgo, err := lease.DigestSelector(grant.Selector)
+		if err != nil {
+			return fmt.Errorf("%w: digest lease selector: %v", lease.ErrLeaseUnavailable, err)
+		}
+		selectorJSON, err := json.Marshal(grant.Selector)
+		if err != nil {
+			return fmt.Errorf("%w: marshal lease selector: %v", lease.ErrLeaseUnavailable, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO side_effect_lease_grants
+				(lease_id, grant_id, action_kind, selector_kind, selector_digest, selector_digest_algo, selector_json, budget_kind, limit_count, remaining_count)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+			record.LeaseID,
+			grant.GrantID,
+			grant.ActionKind,
+			grant.Selector.Kind,
+			selectorDigest,
+			selectorDigestAlgo,
+			selectorJSON,
+			grant.Budget.Kind,
+			int64(grant.Budget.LimitCount),
+		); err != nil {
+			return fmt.Errorf("%w: insert lease grant: %v", lease.ErrLeaseUnavailable, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: commit lease tx: %v", lease.ErrLeaseUnavailable, err)
+	}
+	return nil
+}
+
+func (s *Store) LookupActiveByExecution(ctx context.Context, executionID string) (lease.IssuedRecord, error) {
+	if s == nil || s.db == nil {
+		return lease.IssuedRecord{}, lease.ErrLeaseUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var (
+		record       lease.IssuedRecord
+		envelopeJSON []byte
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT lease_id, execution_id, issuer, issuer_key_id, issued_at, expires_at, policy_digest, authority_digest, envelope_json
+		FROM side_effect_leases
+		WHERE execution_id = $1`,
+		executionID,
+	).Scan(
+		&record.LeaseID,
+		&record.ExecutionID,
+		&record.Issuer,
+		&record.IssuerKeyID,
+		&record.IssuedAt,
+		&record.ExpiresAt,
+		&record.PolicyDigest,
+		&record.AuthorityDigest,
+		&envelopeJSON,
+	)
+	if err == sql.ErrNoRows {
+		return lease.IssuedRecord{}, lease.WrapLeaseMissing(executionID)
+	}
+	if err != nil {
+		return lease.IssuedRecord{}, fmt.Errorf("%w: lookup lease: %v", lease.ErrLeaseUnavailable, err)
+	}
+	var envelope dsse.Envelope
+	if err := json.Unmarshal(envelopeJSON, &envelope); err != nil {
+		return lease.IssuedRecord{}, fmt.Errorf("%w: decode lease envelope: %v", lease.ErrLeaseUnavailable, err)
+	}
+	record.Signed.Envelope = envelope
+	payload, err := base64.StdEncoding.DecodeString(envelope.Payload)
+	if err != nil {
+		return lease.IssuedRecord{}, fmt.Errorf("%w: decode lease payload: %v", lease.ErrLeaseUnavailable, err)
+	}
+	var statement lease.Statement
+	if err := json.Unmarshal(payload, &statement); err != nil {
+		return lease.IssuedRecord{}, fmt.Errorf("%w: decode lease statement: %v", lease.ErrLeaseUnavailable, err)
+	}
+	record.Signed.Statement = statement
+	record.Lease = statement.Predicate
+	return record, nil
+}
+
+func (s *Store) Consume(ctx context.Context, req lease.ConsumeRequest) (lease.ConsumeResult, error) {
+	if s == nil || s.db == nil {
+		return lease.ConsumeResult{}, lease.ErrLeaseUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if req.ConsumedAt.IsZero() {
+		req.ConsumedAt = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return lease.ConsumeResult{}, fmt.Errorf("%w: begin consume tx: %v", lease.ErrLeaseUnavailable, err)
+	}
+	defer tx.Rollback()
+
+	var remaining int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT remaining_count
+		FROM side_effect_lease_grants
+		WHERE lease_id = $1 AND grant_id = $2
+		FOR UPDATE`,
+		req.LeaseID,
+		req.GrantID,
+	).Scan(&remaining)
+	if err == sql.ErrNoRows {
+		return lease.ConsumeResult{}, lease.WrapLeaseMissing(req.LeaseID)
+	}
+	if err != nil {
+		return lease.ConsumeResult{}, fmt.Errorf("%w: lock lease grant: %v", lease.ErrLeaseUnavailable, err)
+	}
+	if remaining <= 0 {
+		return lease.ConsumeResult{}, lease.ErrBudgetExhausted
+	}
+
+	if req.Approval != nil {
+		claim := *req.Approval
+		if claim.ConsumedAt.IsZero() {
+			claim.ConsumedAt = req.ConsumedAt.UTC()
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO approval_ticket_uses
+				(ticket_id, nonce, execution_id, policy_digest, action_type, resource_digest, resource_digest_algo, consumed_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			claim.TicketID,
+			claim.Nonce,
+			claim.ExecutionID,
+			claim.PolicyDigest,
+			claim.ActionType,
+			claim.ResourceDigest,
+			claim.ResourceDigestAlgo,
+			claim.ConsumedAt.UTC(),
+		); err != nil {
+			var pqErr *pq.Error
+			if ok := AsPQError(err, &pqErr); ok && pqErr.Code == "23505" {
+				return lease.ConsumeResult{}, fmt.Errorf("%w: %s", approval.ErrTicketAlreadyUsed, claim.TicketID)
+			}
+			return lease.ConsumeResult{}, fmt.Errorf("%w: insert approval use: %v", lease.ErrLeaseUnavailable, err)
+		}
+	}
+
+	var updatedRemaining int64
+	err = tx.QueryRowContext(ctx, `
+		UPDATE side_effect_lease_grants
+		SET remaining_count = remaining_count - 1
+		WHERE lease_id = $1 AND grant_id = $2
+		RETURNING remaining_count`,
+		req.LeaseID,
+		req.GrantID,
+	).Scan(&updatedRemaining)
+	if err != nil {
+		return lease.ConsumeResult{}, fmt.Errorf("%w: decrement lease budget: %v", lease.ErrLeaseUnavailable, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return lease.ConsumeResult{}, fmt.Errorf("%w: commit consume tx: %v", lease.ErrLeaseUnavailable, err)
+	}
+	return lease.ConsumeResult{RemainingCount: uint64(updatedRemaining)}, nil
+}
+
+func AsPQError(err error, target **pq.Error) bool {
+	return err != nil && target != nil && errors.As(err, target)
 }
 
 // MarkReconciled updates rows that were mid-flight during a crash.

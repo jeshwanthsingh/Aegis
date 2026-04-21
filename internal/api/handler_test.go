@@ -2,7 +2,9 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,10 +18,16 @@ import (
 	"testing"
 	"time"
 
+	"aegis/internal/authority"
 	"aegis/internal/broker"
 	"aegis/internal/capabilities"
+	"aegis/internal/escalation"
 	"aegis/internal/executor"
+	"aegis/internal/governance"
+	"aegis/internal/hostaction"
+	"aegis/internal/lease"
 	"aegis/internal/models"
+	"aegis/internal/observability"
 	"aegis/internal/policy"
 	policycontract "aegis/internal/policy/contract"
 	policydivergence "aegis/internal/policy/divergence"
@@ -29,6 +37,47 @@ import (
 	"aegis/internal/store"
 	"aegis/internal/telemetry"
 )
+
+func makeTestAssets(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	rootfs := filepath.Join(dir, "alpine-base.ext4")
+	if err := os.WriteFile(rootfs, []byte("rootfs"), 0o600); err != nil {
+		t.Fatalf("WriteFile(rootfs): %v", err)
+	}
+	return dir, rootfs
+}
+
+func mustFrozenAuthorityForTest(t *testing.T, pol *policy.Policy, assetsDir string, rootfsPath string) authority.Context {
+	t.Helper()
+	frozen, err := authority.Freeze(authority.FreezeInput{
+		ExecutionID:  "30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
+		AssetsDir:    assetsDir,
+		RootfsPath:   rootfsPath,
+		Network:      pol.Network,
+		PolicyDigest: "policy-digest",
+	})
+	if err != nil {
+		t.Fatalf("authority.Freeze: %v", err)
+	}
+	return frozen
+}
+
+func mustDefaultShapes(t *testing.T, totalSize int, assetsDir string, rootfsPath string, pol *policy.Policy) []warmpool.ShapeConfig {
+	t.Helper()
+	shapes, err := warmpool.DefaultShapes(totalSize, assetsDir, rootfsPath, pol)
+	if err != nil {
+		t.Fatalf("DefaultShapes: %v", err)
+	}
+	return shapes
+}
+
+func setTestReceiptSignerEnv(t *testing.T) {
+	t.Helper()
+	seed := bytes.Repeat([]byte{7}, 32)
+	t.Setenv(receipt.EnvSigningMode, string(receipt.SigningModeDev))
+	t.Setenv(receipt.EnvSigningSeed, base64.StdEncoding.EncodeToString(seed))
+}
 
 func TestBuildPointEvaluatorRejectsExecutionIDMismatch(t *testing.T) {
 	t.Parallel()
@@ -89,6 +138,360 @@ func TestBuildPointEvaluatorCompilesCapabilitiesRequest(t *testing.T) {
 	}
 }
 
+func TestFreezeAuthorityForExecutionCarriesReceiptPolicyDigest(t *testing.T) {
+	t.Parallel()
+
+	pol := policy.Default()
+	assetsDir, rootfsPath := makeTestAssets(t)
+	req := ExecuteRequest{Lang: "python", Code: "print(1)", TimeoutMs: 1000, Profile: "standard"}
+	policyEvidence, err := policyEvidenceForExecution(req, pol, req.TimeoutMs)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+	frozen, err := freezeAuthorityForExecution("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", req, nil, policyEvidence, pol, assetsDir, rootfsPath)
+	if err != nil {
+		t.Fatalf("freezeAuthorityForExecution: %v", err)
+	}
+	if got, want := frozen.PolicyDigest, receipt.PolicyDigest(policyEvidence); got != want {
+		t.Fatalf("policy digest = %q, want %q", got, want)
+	}
+	if frozen.AuthorityDigest == "" {
+		t.Fatal("expected non-empty authority digest")
+	}
+}
+
+func TestFreezeAuthorityForExecutionCarriesBrokerActionTypes(t *testing.T) {
+	t.Parallel()
+
+	pol := policy.Default()
+	assetsDir, rootfsPath := makeTestAssets(t)
+	req := ExecuteRequest{Lang: "python", Code: "print(1)", TimeoutMs: 1000, Profile: "standard"}
+	policyEvidence, err := policyEvidenceForExecution(req, pol, req.TimeoutMs)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+	intent := &policycontract.IntentContract{
+		BrokerScope: policycontract.BrokerScope{
+			AllowedRepoLabels: []string{"demo"},
+		},
+	}
+	frozen, err := freezeAuthorityForExecution("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", req, intent, policyEvidence, pol, assetsDir, rootfsPath)
+	if err != nil {
+		t.Fatalf("freezeAuthorityForExecution: %v", err)
+	}
+	if got, want := frozen.BrokerActionTypes, []string{governance.ActionHostRepoApply}; !slices.Equal(got, want) {
+		t.Fatalf("broker action types = %v, want %v", got, want)
+	}
+}
+
+func TestFreezeAuthorityForExecutionCarriesBrokerRepoLabels(t *testing.T) {
+	t.Parallel()
+
+	pol := policy.Default()
+	assetsDir, rootfsPath := makeTestAssets(t)
+	req := ExecuteRequest{Lang: "python", Code: "print(1)", TimeoutMs: 1000, Profile: "standard"}
+	policyEvidence, err := policyEvidenceForExecution(req, pol, req.TimeoutMs)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+	intent := &policycontract.IntentContract{
+		BrokerScope: policycontract.BrokerScope{
+			AllowedRepoLabels: []string{"DEMO", "alpha", "demo"},
+		},
+	}
+	frozen, err := freezeAuthorityForExecution("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", req, intent, policyEvidence, pol, assetsDir, rootfsPath)
+	if err != nil {
+		t.Fatalf("freezeAuthorityForExecution: %v", err)
+	}
+	if got, want := frozen.BrokerRepoLabels, []string{"alpha", "demo"}; !slices.Equal(got, want) {
+		t.Fatalf("broker repo labels = %v, want %v", got, want)
+	}
+}
+
+type recordingLeaseIssueStore struct {
+	record lease.IssuedRecord
+	count  int
+}
+
+func (s *recordingLeaseIssueStore) PutIssued(_ context.Context, record lease.IssuedRecord) error {
+	s.record = record
+	s.count++
+	return nil
+}
+
+func (s *recordingLeaseIssueStore) LookupActiveByExecution(context.Context, string) (lease.IssuedRecord, error) {
+	return lease.IssuedRecord{}, errors.New("not implemented")
+}
+
+func (s *recordingLeaseIssueStore) Consume(context.Context, lease.ConsumeRequest) (lease.ConsumeResult, error) {
+	return lease.ConsumeResult{}, errors.New("not implemented")
+}
+
+func TestIssueExecutionLeasePersistsTruthfulGrants(t *testing.T) {
+	t.Parallel()
+
+	issuer, err := lease.NewLocalIssuerFromSeed(bytes.Repeat([]byte{9}, 32), "test-issuer")
+	if err != nil {
+		t.Fatalf("NewLocalIssuerFromSeed: %v", err)
+	}
+	runtime := &leaseRuntime{
+		issuer:   issuer,
+		verifier: lease.VerifierFromIssuer(issuer),
+		budgets: lease.BudgetDefaults{
+			HTTPCount:      5,
+			HostPatchCount: 1,
+		},
+	}
+	frozen := authority.Context{
+		ExecutionID:          "30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
+		PolicyDigest:         "policy-digest",
+		AuthorityDigest:      "authority-digest",
+		BrokerAllowedDomains: []string{"API.EXAMPLE.COM"},
+		BrokerRepoLabels:     []string{"DEMO"},
+		BrokerActionTypes:    []string{governance.ActionHTTPRequest, governance.ActionHostRepoApply},
+		ApprovalMode:         authority.ApprovalModeRequireHostConsent,
+		Boot: authority.BootContext{
+			RootfsImage: "aegis-rootfs:test",
+		},
+	}
+	store := &recordingLeaseIssueStore{}
+	deadline := time.Now().UTC().Add(5 * time.Minute)
+
+	if err := issueExecutionLease(context.Background(), store, runtime, frozen, deadline); err != nil {
+		t.Fatalf("issueExecutionLease: %v", err)
+	}
+	if store.count != 1 {
+		t.Fatalf("PutIssued count = %d, want 1", store.count)
+	}
+	if got, want := store.record.ExecutionID, frozen.ExecutionID; got != want {
+		t.Fatalf("execution_id = %q, want %q", got, want)
+	}
+	if got, want := store.record.Lease.PolicyDigest, frozen.PolicyDigest; got != want {
+		t.Fatalf("policy_digest = %q, want %q", got, want)
+	}
+	if got, want := store.record.Lease.AuthorityDigest, frozen.AuthorityDigest; got != want {
+		t.Fatalf("authority_digest = %q, want %q", got, want)
+	}
+	if got, want := len(store.record.Lease.Grants), 2; got != want {
+		t.Fatalf("grant count = %d, want %d", got, want)
+	}
+	var httpGrant *lease.Grant
+	var hostGrant *lease.Grant
+	for i := range store.record.Lease.Grants {
+		grant := &store.record.Lease.Grants[i]
+		switch grant.ActionKind {
+		case lease.ActionKindHTTPRequest:
+			httpGrant = grant
+		case lease.ActionKindHostRepoApplyPatch:
+			hostGrant = grant
+		}
+	}
+	if httpGrant == nil || httpGrant.Selector.HTTP == nil {
+		t.Fatalf("http grant = %+v", httpGrant)
+	}
+	if got, want := httpGrant.Selector.HTTP.Domain, "api.example.com"; got != want {
+		t.Fatalf("http domain = %q, want %q", got, want)
+	}
+	if len(httpGrant.Selector.HTTP.Methods) != 0 || len(httpGrant.Selector.HTTP.PathPrefixes) != 0 {
+		t.Fatalf("http selector should remain domain-only: %+v", httpGrant.Selector.HTTP)
+	}
+	if hostGrant == nil || hostGrant.Selector.HostRepoApplyPatch == nil {
+		t.Fatalf("host grant = %+v", hostGrant)
+	}
+	if got, want := hostGrant.Selector.HostRepoApplyPatch.RepoLabel, "demo"; got != want {
+		t.Fatalf("host repo label = %q, want %q", got, want)
+	}
+	if len(hostGrant.Selector.HostRepoApplyPatch.TargetScope) != 0 {
+		t.Fatalf("host selector should remain repo-label-only: %+v", hostGrant.Selector.HostRepoApplyPatch)
+	}
+}
+
+func TestExecuteHandlerLeaseIssueFailureBlocksHTTPStart(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+
+	var (
+		acquireCount int
+		emitCount    int
+		persisted    []store.ExecutionRecord
+		logs         bytes.Buffer
+	)
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		acquireCount++
+		return nil, "", "", errors.New("should not acquire vm")
+	}
+	issueExecutionLeaseFunc = func(context.Context, lease.Store, *leaseRuntime, authority.Context, time.Time) error {
+		return lease.ErrLeaseUnavailable
+	}
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, executionAuthorityState, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		emitCount++
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
+	}
+	writeExecutionRecordFunc = func(_ *store.Store, rec store.ExecutionRecord) error {
+		persisted = append(persisted, rec)
+		return nil
+	}
+	restoreLogs := observability.SetWriters(&logs, &logs)
+	defer restoreLogs()
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{
+		"lang":"python",
+		"code":"print(1)",
+		"timeout_ms":1000,
+		"intent":{
+			"version":"v1",
+			"execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
+			"workflow_id":"wf_1",
+			"task_class":"task",
+			"declared_purpose":"purpose",
+			"language":"python",
+			"resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":[],"deny_paths":[],"max_distinct_files":1},
+			"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},
+			"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},
+			"broker_scope":{"allowed_delegations":[],"allowed_domains":["api.example.com"],"require_host_consent":false},
+			"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}
+		}
+	}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), `"code":"lease_issue_failed"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if acquireCount != 0 {
+		t.Fatalf("acquireExecutionVMFunc called %d times, want 0", acquireCount)
+	}
+	if emitCount != 0 {
+		t.Fatalf("emitSignedReceiptFunc called %d times, want 0", emitCount)
+	}
+	if len(persisted) == 0 {
+		t.Fatal("expected persisted execution records")
+	}
+	last := persisted[len(persisted)-1]
+	if last.Status != store.StatusSandboxError {
+		t.Fatalf("persisted status = %q, want %q", last.Status, store.StatusSandboxError)
+	}
+	if last.ErrorMsg != admissionFailureLeaseIssue+": "+lease.ErrLeaseUnavailable.Error() {
+		t.Fatalf("persisted error_msg = %q", last.ErrorMsg)
+	}
+	if !strings.Contains(logs.String(), `"event":"lease_issue_failed"`) ||
+		!strings.Contains(logs.String(), `"broker_action_types":["http_request"]`) ||
+		!strings.Contains(logs.String(), `"policy_digest":"`) ||
+		!strings.Contains(logs.String(), `"authority_digest":"`) {
+		t.Fatalf("expected structured lease_issue_failed log, got %s", logs.String())
+	}
+}
+
+func TestExecuteHandlerLeaseIssueFailureBlocksHostPatchStart(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	t.Setenv(hostaction.EnvRepoRootsJSON, `{"demo":"/srv/repos/demo"}`)
+
+	var (
+		acquireCount int
+		emitCount    int
+		logs         bytes.Buffer
+	)
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		acquireCount++
+		return nil, "", "", errors.New("should not acquire vm")
+	}
+	issueExecutionLeaseFunc = func(context.Context, lease.Store, *leaseRuntime, authority.Context, time.Time) error {
+		return lease.ErrLeaseUnavailable
+	}
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, executionAuthorityState, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		emitCount++
+		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
+	}
+	restoreLogs := observability.SetWriters(&logs, &logs)
+	defer restoreLogs()
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{
+		"lang":"python",
+		"code":"print(1)",
+		"timeout_ms":1000,
+		"intent":{
+			"version":"v1",
+			"execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
+			"workflow_id":"wf_1",
+			"task_class":"task",
+			"declared_purpose":"purpose",
+			"language":"python",
+			"resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":[],"deny_paths":[],"max_distinct_files":1},
+			"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},
+			"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},
+			"broker_scope":{"allowed_delegations":[],"allowed_repo_labels":["demo"],"require_host_consent":true},
+			"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}
+		}
+	}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), `"code":"lease_issue_failed"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if acquireCount != 0 {
+		t.Fatalf("acquireExecutionVMFunc called %d times, want 0", acquireCount)
+	}
+	if emitCount != 0 {
+		t.Fatalf("emitSignedReceiptFunc called %d times, want 0", emitCount)
+	}
+	if !strings.Contains(logs.String(), `"broker_repo_labels":["demo"]`) || !strings.Contains(logs.String(), `"error":"lease unavailable"`) {
+		t.Fatalf("expected broker repo labels in structured log, got %s", logs.String())
+	}
+	if strings.Contains(logs.String(), "/srv/repos/demo") {
+		t.Fatalf("lease_issue_failed log leaked repo root: %s", logs.String())
+	}
+}
+
+func TestExecuteHandlerWithoutLeaseCoveredActionsDoesNotFailAdmissionWhenLeaseUnavailable(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+
+	var acquireCount int
+	issueExecutionLeaseFunc = func(context.Context, lease.Store, *leaseRuntime, authority.Context, time.Time) error {
+		return lease.ErrLeaseUnavailable
+	}
+	acquireExecutionVMFunc = func(_ context.Context, _ *warmpool.Manager, _ string, req ExecuteRequest, frozen authority.Context, profile policy.ComputeProfile, assets string, bus *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		acquireCount++
+		return &executor.VMInstance{FirecrackerPID: 77, VsockPath: "/tmp/vsock", Boot: frozen.Boot}, "cold", warmpool.FallbackPoolDisabled, nil
+	}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{
+		"lang":"python",
+		"code":"print(1)",
+		"timeout_ms":1000,
+		"intent":{
+			"version":"v1",
+			"execution_id":"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
+			"workflow_id":"wf_1",
+			"task_class":"task",
+			"declared_purpose":"purpose",
+			"language":"python",
+			"resource_scope":{"workspace_root":"/workspace","read_paths":["/workspace"],"write_paths":[],"deny_paths":[],"max_distinct_files":1},
+			"network_scope":{"allow_network":false,"allowed_domains":[],"allowed_ips":[],"max_dns_queries":0,"max_outbound_conns":0},
+			"process_scope":{"allowed_binaries":["python3"],"allow_shell":false,"allow_package_install":false,"max_child_processes":1},
+			"broker_scope":{"allowed_delegations":[],"allowed_action_types":["dependency_fetch"],"require_host_consent":false},
+			"budgets":{"timeout_sec":10,"memory_mb":128,"cpu_quota":100,"stdout_bytes":1024}
+		}
+	}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"stdout":"ok\n"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if acquireCount != 1 {
+		t.Fatalf("acquireExecutionVMFunc called %d times, want 1", acquireCount)
+	}
+	if strings.Contains(rr.Body.String(), admissionFailureLeaseIssue) {
+		t.Fatalf("response should not surface lease issue failure: %s", rr.Body.String())
+	}
+}
+
 func TestBuildPointEvaluatorRejectsIntentAndCapabilitiesTogether(t *testing.T) {
 	t.Parallel()
 
@@ -145,24 +548,28 @@ func TestWarmShapeDecision(t *testing.T) {
 	t.Parallel()
 
 	pol := policy.Default()
+	assetsDir, rootfsPath := makeTestAssets(t)
+	frozen := mustFrozenAuthorityForTest(t, pol, assetsDir, rootfsPath)
 	warm := warmpool.New(warmpool.Config{
 		Size:   2,
 		MaxAge: time.Minute,
-		Shapes: warmpool.DefaultShapes(2, "", "", pol),
+		Shapes: mustDefaultShapes(t, 2, assetsDir, rootfsPath, pol),
 	})
-	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "standard"}, warm, pol, "", ""); key == "" || reason != "" {
+	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "standard"}, warm, frozen, assetsDir); key == "" || reason != "" {
 		t.Fatalf("standard should be warm-eligible, key=%q reason=%q", key, reason)
 	}
-	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "crunch"}, warm, pol, "", ""); key != "" || reason != warmpool.FallbackProfile {
+	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "crunch"}, warm, frozen, assetsDir); key != "" || reason != warmpool.FallbackProfile {
 		t.Fatalf("crunch should fall back with profile reason, key=%q reason=%q", key, reason)
 	}
-	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "nano", WorkspaceID: "demo"}, warm, pol, "", ""); key != "" || reason != warmpool.FallbackWorkspace {
+	if key, reason := warmShapeDecision(ExecuteRequest{Profile: "nano", WorkspaceID: "demo"}, warm, frozen, assetsDir); key != "" || reason != warmpool.FallbackWorkspace {
 		t.Fatalf("workspace-backed request should fall back with workspace reason, key=%q reason=%q", key, reason)
 	}
 }
 
 func TestAcquireExecutionVMWarmClaimRebindsExecutionIdentity(t *testing.T) {
 	pol := policy.Default()
+	assetsDir, rootfsPath := makeTestAssets(t)
+	frozen := mustFrozenAuthorityForTest(t, pol, assetsDir, rootfsPath)
 	warm := warmpool.NewWithHooks(warmpool.Config{
 		Size:   1,
 		MaxAge: time.Minute,
@@ -213,7 +620,7 @@ func TestAcquireExecutionVMWarmClaimRebindsExecutionIdentity(t *testing.T) {
 	}
 
 	execID := "30454c31-dfdf-4b5f-ae7c-1bddbf09ad9f"
-	vm, dispatch, fallbackReason, err := acquireExecutionVM(context.Background(), warm, execID, ExecuteRequest{Lang: "python", Profile: "standard"}, pol, pol.Profiles["standard"], "", "", nil)
+	vm, dispatch, fallbackReason, err := acquireExecutionVM(context.Background(), warm, execID, ExecuteRequest{Lang: "python", Profile: "standard"}, frozen, pol.Profiles["standard"], assetsDir, nil)
 	if err != nil {
 		t.Fatalf("acquireExecutionVM returned error: %v", err)
 	}
@@ -828,10 +1235,11 @@ func installHandlerRuntimeStubs(t *testing.T) {
 	origRead := readChunksFunc
 	origPoller := startCgroupPollerFunc
 	origEmit := emitSignedReceiptFunc
+	origIssueLease := issueExecutionLeaseFunc
 	origWrite := writeExecutionRecordFunc
 
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
-		return &executor.VMInstance{FirecrackerPID: 77, VsockPath: "/tmp/vsock"}, "cold", warmpool.FallbackPoolDisabled, nil
+	acquireExecutionVMFunc = func(_ context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, frozen authority.Context, _ policy.ComputeProfile, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return &executor.VMInstance{FirecrackerPID: 77, VsockPath: "/tmp/vsock", Boot: frozen.Boot}, "cold", warmpool.FallbackPoolDisabled, nil
 	}
 	setupCgroupFunc = func(string, int, policy.ResourcePolicy, *telemetry.Bus) error { return nil }
 	teardownVMFunc = func(*executor.VMInstance, *telemetry.Bus) error { return nil }
@@ -845,7 +1253,7 @@ func installHandlerRuntimeStubs(t *testing.T) {
 		return &models.Result{Stdout: "ok\n", ExitCode: 0, ExitReason: "completed", DurationMs: 7, StdoutBytes: 3}, nil
 	}
 	startCgroupPollerFunc = func(context.Context, *telemetry.Bus, string, time.Duration) func() { return func() {} }
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, executionAuthorityState, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		return receipt.SignedReceipt{}, receipt.BundlePaths{
 			ProofDir:      "/tmp/aegis/proofs/exec",
 			ReceiptPath:   "/tmp/aegis/proofs/exec/receipt.dsse.json",
@@ -853,6 +1261,7 @@ func installHandlerRuntimeStubs(t *testing.T) {
 			SummaryPath:   "/tmp/aegis/proofs/exec/receipt.summary.txt",
 		}, nil
 	}
+	issueExecutionLeaseFunc = func(context.Context, lease.Store, *leaseRuntime, authority.Context, time.Time) error { return nil }
 
 	t.Cleanup(func() {
 		acquireExecutionVMFunc = origAcquire
@@ -865,8 +1274,142 @@ func installHandlerRuntimeStubs(t *testing.T) {
 		readChunksFunc = origRead
 		startCgroupPollerFunc = origPoller
 		emitSignedReceiptFunc = origEmit
+		issueExecutionLeaseFunc = origIssueLease
 		writeExecutionRecordFunc = origWrite
 	})
+}
+
+func TestEmitSignedReceiptUsesFrozenAuthorityContext(t *testing.T) {
+	setTestReceiptSignerEnv(t)
+
+	pol := policy.Default()
+	assetsDir, rootfsPath := makeTestAssets(t)
+	frozen := mustFrozenAuthorityForTest(t, pol, assetsDir, rootfsPath)
+	frozen.BrokerAllowedDomains = []string{"api.example.com"}
+	frozen.ApprovalMode = authority.ApprovalModeRequireHostConsent
+	frozen.AuthorityDigest = authority.ComputeDigest(frozen)
+
+	policyEvidence, err := policyEvidenceForExecution(ExecuteRequest{Lang: "python", Code: "print(1)", Profile: "standard"}, pol, 1000)
+	if err != nil {
+		t.Fatalf("policyEvidenceForExecution: %v", err)
+	}
+
+	signed, _, err := emitSignedReceipt(
+		"30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b",
+		time.Unix(1700000000, 0).UTC(),
+		time.Unix(1700000001, 0).UTC(),
+		ExecuteRequest{Lang: "python", Code: "print(1)", Profile: "standard"},
+		nil,
+		policyEvidence,
+		executionAuthorityState{
+			Frozen: &frozen,
+			Mutation: &authority.MutationAttempt{
+				Field:            "rootfs_image",
+				Expected:         frozen.Boot.RootfsImage,
+				Observed:         "mutated#deadbeef",
+				EnforcementPoint: "post_vm_acquisition",
+			},
+		},
+		&executor.VMInstance{
+			Boot: authority.BootContext{
+				RootfsImage: "mutated#deadbeef",
+			},
+			Network: &executor.NetworkConfig{
+				Mode: policy.NetworkModeEgressAllowlist,
+				Allowlist: policy.NetworkAllowlist{
+					FQDNs: []string{"mutated.example.com"},
+				},
+			},
+		},
+		nil,
+		store.StatusCompleted,
+		0,
+		"completed",
+		false,
+		"",
+		"",
+		t.TempDir(),
+		telemetry.NewBus("exec-authority"),
+	)
+	if err != nil {
+		t.Fatalf("emitSignedReceipt: %v", err)
+	}
+	if signed.Statement.Predicate.Authority == nil {
+		t.Fatal("expected authority envelope")
+	}
+	if got := signed.Statement.Predicate.Authority.RootfsImage; got != frozen.Boot.RootfsImage {
+		t.Fatalf("RootfsImage = %q, want %q", got, frozen.Boot.RootfsImage)
+	}
+	if got := signed.Statement.Predicate.Authority.BrokerAllowedDomains; !slices.Equal(got, frozen.BrokerAllowedDomains) {
+		t.Fatalf("BrokerAllowedDomains = %v, want %v", got, frozen.BrokerAllowedDomains)
+	}
+	if got := signed.Statement.Predicate.Authority.ApprovalMode; got != string(frozen.ApprovalMode) {
+		t.Fatalf("ApprovalMode = %q, want %q", got, frozen.ApprovalMode)
+	}
+	if signed.Statement.Predicate.Authority.MutationAttempt == nil || signed.Statement.Predicate.Authority.MutationAttempt.Field != "rootfs_image" {
+		t.Fatalf("unexpected mutation attempt: %+v", signed.Statement.Predicate.Authority.MutationAttempt)
+	}
+}
+
+func TestExecuteHandlerAuthorityMutationDenied(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+
+	var captured executionAuthorityState
+	var persisted []store.ExecutionRecord
+	emitSignedReceiptFunc = func(_ string, _ time.Time, _ time.Time, _ ExecuteRequest, _ *policycontract.IntentContract, _ *receipt.PolicyEnvelope, authState executionAuthorityState, _ *executor.VMInstance, _ *receipt.RuntimeEnvelope, _ string, _ int, _ string, _ bool, _ string, _ string, _ string, _ *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		captured = authState
+		return receipt.SignedReceipt{}, receipt.BundlePaths{
+			ProofDir:      "/tmp/aegis/proofs/exec",
+			ReceiptPath:   "/tmp/aegis/proofs/exec/receipt.dsse.json",
+			PublicKeyPath: "/tmp/aegis/proofs/exec/receipt.pub",
+			SummaryPath:   "/tmp/aegis/proofs/exec/receipt.summary.txt",
+		}, nil
+	}
+	writeExecutionRecordFunc = func(_ *store.Store, rec store.ExecutionRecord) error {
+		persisted = append(persisted, rec)
+		return nil
+	}
+	acquireExecutionVMFunc = func(_ context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, frozen authority.Context, _ policy.ComputeProfile, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return &executor.VMInstance{
+			FirecrackerPID: 77,
+			VsockPath:      "/tmp/vsock",
+			Boot: authority.BootContext{
+				RootfsImage: "mutated#deadbeef",
+				Mounts:      frozen.Boot.Mounts,
+				NetworkMode: frozen.Boot.NetworkMode,
+			},
+		}, "cold", warmpool.FallbackPoolDisabled, nil
+	}
+
+	var logs bytes.Buffer
+	restoreLogs := observability.SetWriters(&logs, &logs)
+	defer restoreLogs()
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"exit_reason":"security_denied_authority_mutation"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if captured.Mutation == nil || captured.Mutation.Field != "rootfs_image" {
+		t.Fatalf("expected captured rootfs mutation, got %+v", captured.Mutation)
+	}
+	if !strings.Contains(logs.String(), `"event":"authority_mutation_denied"`) || !strings.Contains(logs.String(), `"field":"rootfs_image"`) {
+		t.Fatalf("expected structured authority mutation log, got %s", logs.String())
+	}
+	if len(persisted) == 0 {
+		t.Fatal("expected persisted execution records")
+	}
+	last := persisted[len(persisted)-1]
+	if last.Status != store.StatusSandboxError {
+		t.Fatalf("persisted status = %q, want %q", last.Status, store.StatusSandboxError)
+	}
+	if !strings.Contains(last.ErrorMsg, terminationReasonAuthorityMutation) || !strings.Contains(last.ErrorMsg, "rootfs_image") {
+		t.Fatalf("persisted error_msg = %q", last.ErrorMsg)
+	}
 }
 
 func TestExecuteHandlerSuccessResponseIncludesProof(t *testing.T) {
@@ -883,6 +1426,91 @@ func TestExecuteHandlerSuccessResponseIncludesProof(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), `"stdout":"ok\n"`) || !strings.Contains(rr.Body.String(), `"receipt_path":"`) {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestExecuteHandlerTerminalEscalationReturnsPrivilegeEscalationAttempt(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+
+	var capturedExitReason string
+	var persisted []store.ExecutionRecord
+	emitSignedReceiptFunc = func(_ string, _ time.Time, _ time.Time, _ ExecuteRequest, _ *policycontract.IntentContract, _ *receipt.PolicyEnvelope, _ executionAuthorityState, _ *executor.VMInstance, _ *receipt.RuntimeEnvelope, _ string, _ int, exitReason string, _ bool, _ string, _ string, _ string, _ *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+		capturedExitReason = exitReason
+		return receipt.SignedReceipt{}, receipt.BundlePaths{
+			ProofDir:      "/tmp/aegis/proofs/exec",
+			ReceiptPath:   "/tmp/aegis/proofs/exec/receipt.dsse.json",
+			PublicKeyPath: "/tmp/aegis/proofs/exec/receipt.pub",
+			SummaryPath:   "/tmp/aegis/proofs/exec/receipt.summary.txt",
+		}, nil
+	}
+	writeExecutionRecordFunc = func(_ *store.Store, rec store.ExecutionRecord) error {
+		persisted = append(persisted, rec)
+		return nil
+	}
+	sendPayloadFunc = func(_ net.Conn, _ models.Payload, _ time.Time, bus *telemetry.Bus, _ *policyevaluator.Evaluator, _ *policydivergence.Evaluator, _ func(models.PolicyDivergenceResult) error) (models.Result, error) {
+		raw, err := json.Marshal(telemetry.GovernedActionData{
+			ExecutionID:    bus.ExecID(),
+			ActionType:     governance.ActionHostRepoApply,
+			Target:         "repo:demo",
+			Resource:       "demo",
+			CapabilityPath: "broker",
+			Decision:       "deny",
+			Outcome:        "denied",
+			Reason:         "host action class \"host_file_delete_v1\" is not supported",
+			RuleID:         "broker.host_action_unsupported",
+			PolicyDigest:   strings.Repeat("a", 64),
+			Brokered:       true,
+			AuditPayload:   map[string]string{"host_action_class": "host_file_delete_v1"},
+			Escalation: &escalation.Evidence{
+				Signals: []escalation.Signal{escalation.SignalUnsupportedDestructiveClassAccess},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Marshal(governed action): %v", err)
+		}
+		bus.Emit(telemetry.KindGovernedAction, telemetry.GovernedActionData{
+			ExecutionID:    bus.ExecID(),
+			ActionType:     governance.ActionHostRepoApply,
+			Target:         "repo:demo",
+			Resource:       "demo",
+			CapabilityPath: "broker",
+			Decision:       "deny",
+			Outcome:        "denied",
+			Reason:         "host action class \"host_file_delete_v1\" is not supported",
+			RuleID:         "broker.host_action_unsupported",
+			PolicyDigest:   strings.Repeat("a", 64),
+			Brokered:       true,
+			AuditPayload:   map[string]string{"host_action_class": "host_file_delete_v1"},
+			Escalation: &escalation.Evidence{
+				Signals: []escalation.Signal{escalation.SignalUnsupportedDestructiveClassAccess},
+			},
+		})
+		_ = raw
+		bus.TriggerTermination(escalation.TerminationReasonPrivilegeEscalation)
+		return models.Result{}, io.EOF
+	}
+
+	handler := NewHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"exit_reason":"privilege_escalation_attempt"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if capturedExitReason != escalation.TerminationReasonPrivilegeEscalation {
+		t.Fatalf("captured exit reason = %q", capturedExitReason)
+	}
+	if len(persisted) == 0 {
+		t.Fatal("expected persisted execution record")
+	}
+	last := persisted[len(persisted)-1]
+	if last.Status != store.StatusSandboxError || last.Outcome != "contained" {
+		t.Fatalf("persisted record = %+v", last)
+	}
+	if last.ErrorMsg != escalation.TerminationReasonPrivilegeEscalation {
+		t.Fatalf("persisted error_msg = %q", last.ErrorMsg)
 	}
 }
 
@@ -911,7 +1539,7 @@ func TestExecuteHandlerLifecycleStateTransitions(t *testing.T) {
 
 func TestExecuteHandlerBootTimeoutLifecycleState(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(ctx context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, _ *policy.Policy, _ policy.ComputeProfile, _ string, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	acquireExecutionVMFunc = func(ctx context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, _ authority.Context, _ policy.ComputeProfile, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, string, error) {
 		return nil, "cold", warmpool.FallbackPoolDisabled, context.DeadlineExceeded
 	}
 	var statuses []string
@@ -985,7 +1613,7 @@ func TestExecuteHandlerAuthFailure(t *testing.T) {
 
 func TestExecuteHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, executionAuthorityState, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
@@ -1105,7 +1733,7 @@ func TestExecuteHandlerWorkspaceValidationError(t *testing.T) {
 
 func TestExecuteHandlerWorkspaceNotFound(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
 		return nil, "cold", warmpool.FallbackWorkspace, os.ErrNotExist
 	}
 
@@ -1122,7 +1750,7 @@ func TestExecuteHandlerWorkspaceNotFound(t *testing.T) {
 
 func TestExecuteHandlerAcquireSandboxFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
 		return nil, "cold", warmpool.FallbackClaimError, errors.New("vm start failed")
 	}
 
@@ -1189,6 +1817,32 @@ func TestStreamHandlerSuccessResponseIncludesDoneAndProof(t *testing.T) {
 	}
 }
 
+func TestStreamHandlerAuthorityMutationDenied(t *testing.T) {
+	installHandlerRuntimeStubs(t)
+	acquireExecutionVMFunc = func(_ context.Context, _ *warmpool.Manager, _ string, _ ExecuteRequest, frozen authority.Context, _ policy.ComputeProfile, _ string, _ *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+		return &executor.VMInstance{
+			FirecrackerPID: 77,
+			VsockPath:      "/tmp/vsock",
+			Boot: authority.BootContext{
+				RootfsImage: "mutated#deadbeef",
+				Mounts:      frozen.Boot.Mounts,
+				NetworkMode: frozen.Boot.NetworkMode,
+			},
+		}, "cold", warmpool.FallbackPoolDisabled, nil
+	}
+
+	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute/stream", strings.NewReader(`{"lang":"python","code":"print(1)","timeout_ms":1000}`))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	if rr.Code != http.StatusOK || !strings.Contains(body, `"type":"done"`) || !strings.Contains(body, `"reason":"security_denied_authority_mutation"`) {
+		t.Fatalf("unexpected stream response: status=%d body=%s", rr.Code, body)
+	}
+}
+
 func TestStreamHandlerInvalidBody(t *testing.T) {
 	handler := NewStreamHandler(nil, executor.NewPool(1), nil, policy.Default(), "", "", NewBusRegistry(), NewStatsCounter(), "test")
 	req := httptest.NewRequest(http.MethodPost, "/v1/execute/stream", strings.NewReader(`{"lang":`))
@@ -1203,7 +1857,7 @@ func TestStreamHandlerInvalidBody(t *testing.T) {
 
 func TestStreamHandlerReceiptSigningFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, executionAuthorityState, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, errors.New("sign failed")
 	}
 
@@ -1349,11 +2003,11 @@ func TestStreamHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 	acquireCalled := false
 	receiptCalled := false
 	recordCount := 0
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, executionAuthorityState, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}
@@ -1405,7 +2059,7 @@ func TestStreamHandlerWorkspaceValidationError(t *testing.T) {
 
 func TestStreamHandlerWorkspaceNotFound(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
 		return nil, "cold", warmpool.FallbackWorkspace, os.ErrNotExist
 	}
 
@@ -1421,7 +2075,7 @@ func TestStreamHandlerWorkspaceNotFound(t *testing.T) {
 }
 func TestStreamHandlerAcquireSandboxFailure(t *testing.T) {
 	installHandlerRuntimeStubs(t)
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
 		return nil, "cold", warmpool.FallbackClaimError, errors.New("vm start failed")
 	}
 
@@ -1590,11 +2244,11 @@ func TestExecuteHandlerRejectsBusyWorkspaceBeforeAdmission(t *testing.T) {
 	acquireCalled := false
 	receiptCalled := false
 	recordCount := 0
-	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, *policy.Policy, policy.ComputeProfile, string, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
+	acquireExecutionVMFunc = func(context.Context, *warmpool.Manager, string, ExecuteRequest, authority.Context, policy.ComputeProfile, string, *telemetry.Bus) (*executor.VMInstance, string, string, error) {
 		acquireCalled = true
 		return nil, "", "", errors.New("unexpected vm acquire")
 	}
-	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
+	emitSignedReceiptFunc = func(string, time.Time, time.Time, ExecuteRequest, *policycontract.IntentContract, *receipt.PolicyEnvelope, executionAuthorityState, *executor.VMInstance, *receipt.RuntimeEnvelope, string, int, string, bool, string, string, string, *telemetry.Bus) (receipt.SignedReceipt, receipt.BundlePaths, error) {
 		receiptCalled = true
 		return receipt.SignedReceipt{}, receipt.BundlePaths{}, nil
 	}

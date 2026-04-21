@@ -1,12 +1,10 @@
 package pool
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 
+	"aegis/internal/authority"
 	"aegis/internal/policy"
 )
 
@@ -27,8 +25,7 @@ type ShapeConfig struct {
 	Label       string
 	Size        int
 	AssetsDir   string
-	RootfsPath  string
-	Policy      *policy.Policy
+	Boot        authority.BootContext
 	Profile     policy.ComputeProfile
 	ProfileName string
 }
@@ -42,19 +39,22 @@ func SupportedWarmProfile(profile string) bool {
 	}
 }
 
-func ShapeKey(profileName, assetsDir, rootfsPath string, pol *policy.Policy) string {
+func ShapeKey(profileName, assetsDir string, boot authority.BootContext) string {
 	normalizedProfile := strings.TrimSpace(profileName)
 	if normalizedProfile == "" {
 		normalizedProfile = "unknown"
 	}
 	normalizedAssets := normalizeShapePath(assetsDir)
-	normalizedRootfs := normalizeShapePath(rootfsPath)
-	return normalizedProfile + "|" + normalizedAssets + "|" + normalizedRootfs + "|" + bootPolicyDigest(pol)
+	return normalizedProfile + "|" + normalizedAssets + "|" + authority.BootDigest(boot)
 }
 
-func DefaultShapes(totalSize int, assetsDir, rootfsPath string, pol *policy.Policy) []ShapeConfig {
+func DefaultShapes(totalSize int, assetsDir, rootfsPath string, pol *policy.Policy) ([]ShapeConfig, error) {
 	if totalSize <= 0 || pol == nil {
-		return nil
+		return nil, nil
+	}
+	boot, err := authority.FreezeBoot(assetsDir, rootfsPath, false, pol.Network)
+	if err != nil {
+		return nil, err
 	}
 	orderedProfiles := []string{WarmShapeStandard, WarmShapeNano}
 	var shapes []ShapeConfig
@@ -64,12 +64,11 @@ func DefaultShapes(totalSize int, assetsDir, rootfsPath string, pol *policy.Poli
 			continue
 		}
 		shapes = append(shapes, ShapeConfig{
-			Key:         ShapeKey(profileName, assetsDir, rootfsPath, pol),
+			Key:         ShapeKey(profileName, assetsDir, boot),
 			Label:       profileName,
 			Size:        0,
 			AssetsDir:   assetsDir,
-			RootfsPath:  rootfsPath,
-			Policy:      pol,
+			Boot:        boot,
 			Profile:     profile,
 			ProfileName: profileName,
 		})
@@ -92,7 +91,7 @@ func DefaultShapes(totalSize int, assetsDir, rootfsPath string, pol *policy.Poli
 			kept = append(kept, shape)
 		}
 	}
-	return kept
+	return kept, nil
 }
 
 func normalizeShapePath(path string) string {
@@ -101,18 +100,4 @@ func normalizeShapePath(path string) string {
 		return "<default>"
 	}
 	return filepath.Clean(path)
-}
-
-func bootPolicyDigest(pol *policy.Policy) string {
-	if pol == nil {
-		return "none"
-	}
-	payload, err := json.Marshal(struct {
-		Network policy.NetworkPolicy `json:"network"`
-	}{Network: pol.Network})
-	if err != nil {
-		return "invalid"
-	}
-	digest := sha256.Sum256(payload)
-	return hex.EncodeToString(digest[:8])
 }

@@ -3,13 +3,18 @@ package receipt
 import (
 	"time"
 
+	"aegis/internal/approval"
+	"aegis/internal/dsse"
+	"aegis/internal/escalation"
+	"aegis/internal/hostaction"
+	"aegis/internal/lease"
 	"aegis/internal/models"
 	"aegis/internal/telemetry"
 )
 
 const (
-	StatementType    = "https://in-toto.io/Statement/v1"
-	PayloadType      = "application/vnd.in-toto+json"
+	StatementType    = dsse.StatementType
+	PayloadType      = dsse.PayloadType
 	PredicateType    = "https://aegis.dev/ExecutionReceipt/v1"
 	PredicateVersion = "v1"
 	DefaultProofRoot = "/tmp/aegis/proofs"
@@ -27,6 +32,7 @@ type Input struct {
 	FinishedAt      time.Time
 	IntentRaw       []byte
 	Policy          *PolicyEnvelope
+	Authority       *AuthorityEnvelope
 	Outcome         Outcome
 	Runtime         *RuntimeEnvelope
 	TelemetryEvents []telemetry.Event
@@ -99,13 +105,14 @@ type TrustPosture struct {
 }
 
 type RuntimeEnvelope struct {
-	Profile          string                  `json:"profile,omitempty"`
-	VCPUCount        int                     `json:"vcpu_count,omitempty"`
-	MemoryMB         int                     `json:"memory_mb,omitempty"`
-	Cgroup           *RuntimeCgroupEnvelope  `json:"cgroup,omitempty"`
-	Network          *RuntimeNetworkEnvelope `json:"network,omitempty"`
-	Broker           *RuntimeBrokerEnvelope  `json:"broker,omitempty"`
-	AppliedOverrides []string                `json:"applied_overrides,omitempty"`
+	Profile          string                            `json:"profile,omitempty"`
+	VCPUCount        int                               `json:"vcpu_count,omitempty"`
+	MemoryMB         int                               `json:"memory_mb,omitempty"`
+	Cgroup           *RuntimeCgroupEnvelope            `json:"cgroup,omitempty"`
+	Network          *RuntimeNetworkEnvelope           `json:"network,omitempty"`
+	Broker           *RuntimeBrokerEnvelope            `json:"broker,omitempty"`
+	Policy           *escalation.RuntimePolicyEnvelope `json:"policy,omitempty"`
+	AppliedOverrides []string                          `json:"applied_overrides,omitempty"`
 }
 
 type RuntimeCgroupEnvelope struct {
@@ -196,6 +203,7 @@ type ExecutionReceiptPredicate struct {
 	IntentDigest       string                 `json:"intent_digest,omitempty"`
 	IntentDigestAlgo   string                 `json:"intent_digest_algo,omitempty"`
 	Policy             *PolicyEnvelope        `json:"policy,omitempty"`
+	Authority          *AuthorityEnvelope     `json:"authority,omitempty"`
 	EvidenceDigest     string                 `json:"evidence_digest"`
 	EvidenceDigestAlgo string                 `json:"evidence_digest_algo"`
 	RuntimeEventCount  int                    `json:"runtime_event_count"`
@@ -211,6 +219,40 @@ type ExecutionReceiptPredicate struct {
 	BrokerSummary      *BrokerSummary         `json:"broker_summary,omitempty"`
 	GovernedActions    *GovernedActionSummary `json:"governed_actions,omitempty"`
 	Metadata           map[string]string      `json:"metadata,omitempty"`
+}
+
+type AuthorityEnvelope struct {
+	Digest               string                          `json:"digest"`
+	RootfsImage          string                          `json:"rootfs_image"`
+	Mounts               []AuthorityMountEnvelope        `json:"mounts"`
+	NetworkMode          string                          `json:"network_mode"`
+	EgressAllowlist      *NetworkAllowlistEnvelope       `json:"egress_allowlist,omitempty"`
+	ResolvedHosts        []AuthorityResolvedHostEnvelope `json:"resolved_hosts,omitempty"`
+	BrokerAllowedDomains []string                        `json:"broker_allowed_domains,omitempty"`
+	BrokerRepoLabels     []string                        `json:"broker_repo_labels,omitempty"`
+	BrokerActionTypes    []string                        `json:"broker_action_types,omitempty"`
+	ApprovalMode         string                          `json:"approval_mode"`
+	MutationAttempt      *AuthorityMutationEnvelope      `json:"mutation_attempt,omitempty"`
+}
+
+type AuthorityMountEnvelope struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Target     string `json:"target"`
+	ReadOnly   bool   `json:"read_only"`
+	Persistent bool   `json:"persistent,omitempty"`
+}
+
+type AuthorityResolvedHostEnvelope struct {
+	Host string   `json:"host"`
+	IPv4 []string `json:"ipv4"`
+}
+
+type AuthorityMutationEnvelope struct {
+	Field            string `json:"field"`
+	Expected         string `json:"expected"`
+	Observed         string `json:"observed"`
+	EnforcementPoint string `json:"enforcement_point"`
 }
 
 type BrokerSummary struct {
@@ -229,25 +271,29 @@ type GovernedActionSummary struct {
 }
 
 type GovernedActionRecord struct {
-	ActionType          string            `json:"action_type"`
-	Target              string            `json:"target"`
-	Resource            string            `json:"resource,omitempty"`
-	Method              string            `json:"method,omitempty"`
-	CapabilityPath      string            `json:"capability_path,omitempty"`
-	Decision            string            `json:"decision"`
-	Outcome             string            `json:"outcome,omitempty"`
-	Used                bool              `json:"used"`
-	Reason              string            `json:"reason,omitempty"`
-	RuleID              string            `json:"rule_id,omitempty"`
-	PolicyDigest        string            `json:"policy_digest,omitempty"`
-	Brokered            bool              `json:"brokered"`
-	BrokeredCredentials bool              `json:"brokered_credentials"`
-	BindingName         string            `json:"binding_name,omitempty"`
-	ResponseDigest      string            `json:"response_digest,omitempty"`
-	ResponseDigestAlgo  string            `json:"response_digest_algo,omitempty"`
-	DenialMarker        string            `json:"denial_marker,omitempty"`
-	AuditPayload        map[string]string `json:"audit_payload,omitempty"`
-	Error               string            `json:"error,omitempty"`
+	ActionType          string               `json:"action_type"`
+	Target              string               `json:"target"`
+	Resource            string               `json:"resource,omitempty"`
+	Method              string               `json:"method,omitempty"`
+	CapabilityPath      string               `json:"capability_path,omitempty"`
+	Decision            string               `json:"decision"`
+	Outcome             string               `json:"outcome,omitempty"`
+	Used                bool                 `json:"used"`
+	Reason              string               `json:"reason,omitempty"`
+	RuleID              string               `json:"rule_id,omitempty"`
+	PolicyDigest        string               `json:"policy_digest,omitempty"`
+	Brokered            bool                 `json:"brokered"`
+	BrokeredCredentials bool                 `json:"brokered_credentials"`
+	BindingName         string               `json:"binding_name,omitempty"`
+	ResponseDigest      string               `json:"response_digest,omitempty"`
+	ResponseDigestAlgo  string               `json:"response_digest_algo,omitempty"`
+	DenialMarker        string               `json:"denial_marker,omitempty"`
+	AuditPayload        map[string]string    `json:"audit_payload,omitempty"`
+	Error               string               `json:"error,omitempty"`
+	Approval            *approval.Check      `json:"approval,omitempty"`
+	Lease               *lease.Check         `json:"lease,omitempty"`
+	Escalation          *escalation.Evidence `json:"escalation,omitempty"`
+	HostAction          *hostaction.Evidence `json:"host_action,omitempty"`
 }
 
 type NormalizedGovernedActionEntry struct {
@@ -273,11 +319,6 @@ type NormalizedGovernedActionEntry struct {
 	Error               string            `json:"error,omitempty"`
 }
 
-type StatementSubject struct {
-	Name   string            `json:"name"`
-	Digest map[string]string `json:"digest"`
-}
-
 type Statement struct {
 	Type          string                    `json:"_type"`
 	Subject       []StatementSubject        `json:"subject"`
@@ -285,21 +326,16 @@ type Statement struct {
 	Predicate     ExecutionReceiptPredicate `json:"predicate"`
 }
 
-type Signature struct {
-	KeyID string `json:"keyid"`
-	Sig   string `json:"sig"`
-}
-
-type Envelope struct {
-	PayloadType string      `json:"payloadType"`
-	Payload     string      `json:"payload"`
-	Signatures  []Signature `json:"signatures"`
-}
-
 type SignedReceipt struct {
 	Envelope  Envelope  `json:"envelope"`
 	Statement Statement `json:"statement"`
 }
+
+type StatementSubject = dsse.StatementSubject
+
+type Signature = dsse.Signature
+
+type Envelope = dsse.Envelope
 
 type BundlePaths struct {
 	ProofDir          string            `json:"proof_dir"`

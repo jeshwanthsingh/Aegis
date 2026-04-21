@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"aegis/internal/escalation"
 )
 
 const (
@@ -24,6 +26,8 @@ type Bus struct {
 	mu          sync.RWMutex
 	closed      bool
 	subscribers []chan Event
+	escalation  *escalation.Tracker
+	terminate   func(string)
 }
 
 // NewBus creates a new per-execution telemetry bus.
@@ -105,6 +109,32 @@ func (b *Bus) Subscribe() (<-chan Event, func()) {
 	}
 
 	return ch, unsubscribe
+}
+
+func (b *Bus) ConfigureEscalation(tracker *escalation.Tracker, terminate func(string)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.escalation = tracker
+	b.terminate = terminate
+}
+
+func (b *Bus) ClassifyEscalation(observation escalation.Observation) *escalation.Evidence {
+	b.mu.RLock()
+	tracker := b.escalation
+	b.mu.RUnlock()
+	if tracker == nil {
+		return nil
+	}
+	return tracker.Classify(observation)
+}
+
+func (b *Bus) TriggerTermination(reason string) {
+	b.mu.RLock()
+	terminate := b.terminate
+	b.mu.RUnlock()
+	if terminate != nil {
+		terminate(reason)
+	}
 }
 
 // Close shuts down the bus and closes all subscriber channels.

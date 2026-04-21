@@ -58,6 +58,7 @@ type ProcessScope struct {
 type BrokerScope struct {
 	AllowedDelegations []string
 	AllowedDomains     []string
+	AllowedRepoLabels  []string
 	AllowedActionTypes []string
 	RequireHostConsent bool
 }
@@ -111,6 +112,7 @@ type processScopeJSON struct {
 type brokerScopeJSON struct {
 	AllowedDelegations []string `json:"allowed_delegations"`
 	AllowedDomains     []string `json:"allowed_domains,omitempty"`
+	AllowedRepoLabels  []string `json:"allowed_repo_labels,omitempty"`
 	AllowedActionTypes []string `json:"allowed_action_types,omitempty"`
 	RequireHostConsent bool     `json:"require_host_consent"`
 }
@@ -170,6 +172,7 @@ func LoadIntentContractJSON(raw []byte) (IntentContract, error) {
 		BrokerScope: BrokerScope{
 			AllowedDelegations: cleanStrings(payload.BrokerScope.AllowedDelegations),
 			AllowedDomains:     cleanStrings(payload.BrokerScope.AllowedDomains),
+			AllowedRepoLabels:  cleanStrings(payload.BrokerScope.AllowedRepoLabels),
 			AllowedActionTypes: cleanStrings(payload.BrokerScope.AllowedActionTypes),
 			RequireHostConsent: payload.BrokerScope.RequireHostConsent,
 		},
@@ -335,9 +338,14 @@ func validateBrokerScope(scope BrokerScope) error {
 			return fmt.Errorf("broker_scope.allowed_delegations must not contain empty values")
 		}
 	}
+	for _, repoLabel := range scope.AllowedRepoLabels {
+		if repoLabel == "" {
+			return fmt.Errorf("broker_scope.allowed_repo_labels must not contain empty values")
+		}
+	}
 	for _, actionType := range scope.AllowedActionTypes {
 		switch strings.ToLower(strings.TrimSpace(actionType)) {
-		case "http_request", "dependency_fetch":
+		case "http_request", "dependency_fetch", "host_repo_apply_patch":
 		default:
 			return fmt.Errorf("broker_scope.allowed_action_types contains invalid value %q", actionType)
 		}

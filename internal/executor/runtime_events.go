@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"aegis/internal/escalation"
 	"aegis/internal/governance"
 	"aegis/internal/models"
 	"aegis/internal/observability"
@@ -211,7 +212,20 @@ func (n *runtimeEventNormalizer) emitGovernedAction(event models.RuntimeEvent, d
 	if !ok {
 		return
 	}
+	if record.Decision.Deny {
+		record.Use.Escalation = bus.ClassifyEscalation(escalation.Observation{
+			ActionType:     record.Request.ActionType,
+			CapabilityPath: string(record.Use.Path),
+			Decision:       "deny",
+			RuleID:         record.Decision.RuleID,
+			Target:         record.Request.Target,
+			Resource:       record.Request.Resource,
+		})
+	}
 	emitIfBus(bus, telemetry.KindGovernedAction, record.ToGovernedActionData())
+	if escalation.IsTerminalEvidence(record.Use.Escalation) {
+		bus.TriggerTermination(escalation.TerminationReasonPrivilegeEscalation)
+	}
 }
 
 func (n *runtimeEventNormalizer) emitStatus(status guestRuntimeSensorStatus, bus *telemetry.Bus) {

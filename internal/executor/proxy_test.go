@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"aegis/internal/authority"
 	"aegis/internal/broker"
 	"aegis/internal/policy/contract"
 )
@@ -17,7 +18,7 @@ func TestHandleBrokerConnRespondsWithoutClientClosing(t *testing.T) {
 	b := broker.New(contract.BrokerScope{
 		AllowedDelegations: []string{"github"},
 		AllowedDomains:     []string{"example.invalid"},
-	}, "exec-test", nil)
+	}, []string{"example.invalid"}, nil, nil, authority.ApprovalModeNone, "policy-digest", "authority-digest", "exec-test", nil, nil, nil, nil, nil)
 
 	done := make(chan struct{})
 	go func() {

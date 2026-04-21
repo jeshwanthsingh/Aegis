@@ -2,12 +2,12 @@ package receipt
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
+
+	"aegis/internal/dsse"
 )
 
 const (
@@ -102,6 +102,5 @@ func missingSigningSeedError(mode SigningMode) error {
 }
 
 func KeyIDFromPublicKey(publicKey ed25519.PublicKey) string {
-	digest := sha256.Sum256(publicKey)
-	return "ed25519:" + hex.EncodeToString(digest[:8])
+	return dsse.KeyIDFromPublicKey(publicKey)
 }

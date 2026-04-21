@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"aegis/internal/authority"
 	"aegis/internal/policy"
 	"aegis/internal/telemetry"
 
@@ -39,9 +40,6 @@ func TestResolveCgroupLimitsUsesMemoryOverride(t *testing.T) {
 func TestBuildDNSResponseAllowedEmitsAllowAndRuleAddEvents(t *testing.T) {
 	t.Parallel()
 
-	restore := stubAllowlistHooks(t, []net.IP{net.ParseIP("203.0.113.10")}, nil)
-	defer restore()
-
 	bus := telemetry.NewBus("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b")
 	cfg := testNetworkConfig("tap-test0", "allowed.example")
 	cfg.resolvedHostIPs["allowed.example"] = []string{"203.0.113.10"}
@@ -55,43 +53,17 @@ func TestBuildDNSResponseAllowedEmitsAllowAndRuleAddEvents(t *testing.T) {
 	}
 
 	events := bus.Drain()
-	if len(events) != 3 {
-		t.Fatalf("unexpected event count: got %d want 3", len(events))
+	if len(events) != 1 {
+		t.Fatalf("unexpected event count: got %d want 1", len(events))
 	}
 
 	var dnsData telemetry.DNSQueryData
-	if events[0].Kind != telemetry.KindNetRuleAdd && events[0].Kind != telemetry.KindDNSQuery {
-		t.Fatalf("unexpected first event kind: %s", events[0].Kind)
+	if events[0].Kind != telemetry.KindDNSQuery {
+		t.Fatalf("unexpected event kind: %s", events[0].Kind)
 	}
 
-	var dnsEventFound bool
-	var rulePorts []string
-	for _, event := range events {
-		switch event.Kind {
-		case telemetry.KindDNSQuery:
-			dnsEventFound = true
-			if err := json.Unmarshal(event.Data, &dnsData); err != nil {
-				t.Fatalf("unmarshal dns.query: %v", err)
-			}
-		case telemetry.KindNetRuleAdd:
-			var rule telemetry.NetRuleData
-			if err := json.Unmarshal(event.Data, &rule); err != nil {
-				t.Fatalf("unmarshal net.rule.add: %v", err)
-			}
-			rulePorts = append(rulePorts, rule.Ports)
-			if rule.Rule != "ACCEPT" {
-				t.Fatalf("unexpected rule: %q", rule.Rule)
-			}
-			if rule.Dst != "203.0.113.10" {
-				t.Fatalf("unexpected dst: %q", rule.Dst)
-			}
-		default:
-			t.Fatalf("unexpected event kind: %s", event.Kind)
-		}
-	}
-
-	if !dnsEventFound {
-		t.Fatal("expected dns.query event")
+	if err := json.Unmarshal(events[0].Data, &dnsData); err != nil {
+		t.Fatalf("unmarshal dns.query: %v", err)
 	}
 	if dnsData.Domain != "allowed.example" {
 		t.Fatalf("unexpected domain: %q", dnsData.Domain)
@@ -102,16 +74,10 @@ func TestBuildDNSResponseAllowedEmitsAllowAndRuleAddEvents(t *testing.T) {
 	if len(dnsData.Resolved) != 1 || dnsData.Resolved[0] != "203.0.113.10" {
 		t.Fatalf("unexpected resolved IPs: %#v", dnsData.Resolved)
 	}
-	if !containsAll(rulePorts, "80", "443") {
-		t.Fatalf("expected per-port rule events, got %v", rulePorts)
-	}
 }
 
 func TestBuildDNSResponseDeniedEmitsDenyWithoutRuleAdd(t *testing.T) {
 	t.Parallel()
-
-	restore := stubAllowlistHooks(t, []net.IP{net.ParseIP("203.0.113.10")}, nil)
-	defer restore()
 
 	bus := telemetry.NewBus("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6c")
 	cfg := testNetworkConfig("tap-test1")
@@ -144,11 +110,30 @@ func TestBuildDNSResponseDeniedEmitsDenyWithoutRuleAdd(t *testing.T) {
 	}
 }
 
-func TestBuildDNSResponseAllowedEmitsErrorOnUpstreamFailure(t *testing.T) {
+func TestBuildDNSResponseDoesNotAppendAllowedIPsAfterFreeze(t *testing.T) {
 	t.Parallel()
 
-	restore := stubAllowlistHooks(t, nil, context.DeadlineExceeded)
-	defer restore()
+	bus := telemetry.NewBus("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6e")
+	cfg := testNetworkConfig("tap-test-stable", "allowed.example")
+	cfg.resolvedHostIPs["allowed.example"] = []string{"203.0.113.10"}
+	cfg.ResolvedIPs = []string{"203.0.113.10"}
+	cfg.allowedIPs["203.0.113.10"] = struct{}{}
+
+	if _, err := buildDNSResponse(cfg, mustDNSQuestion(t, "allowed.example.", dnsmessage.TypeA), bus); err != nil {
+		t.Fatalf("buildDNSResponse: %v", err)
+	}
+	if got := cfg.ResolvedIPs; len(got) != 1 || got[0] != "203.0.113.10" {
+		t.Fatalf("ResolvedIPs mutated: %#v", got)
+	}
+	for _, event := range bus.Drain() {
+		if event.Kind == telemetry.KindNetRuleAdd {
+			t.Fatalf("unexpected in-band net.rule.add event after freeze")
+		}
+	}
+}
+
+func TestBuildDNSResponseAllowedWithoutPinnedIPsEmitsError(t *testing.T) {
+	t.Parallel()
 
 	bus := telemetry.NewBus("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6d")
 	cfg := testNetworkConfig("tap-test2", "allowed.example")
@@ -202,7 +187,7 @@ func TestChooseUpstreamNameserversFallsBackToSystemdStub(t *testing.T) {
 func TestNewNetworkConfigNormalizesLegacyIsolatedMode(t *testing.T) {
 	t.Parallel()
 
-	cfg := newNetworkConfig("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", policy.NetworkPolicy{Mode: policy.NetworkModeLegacyIsolated})
+	cfg := newNetworkConfig("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", authority.BootContext{NetworkMode: policy.NetworkModeLegacyIsolated})
 	if cfg.Mode != policy.NetworkModeEgressAllowlist {
 		t.Fatalf("cfg.Mode = %q, want %q", cfg.Mode, policy.NetworkModeEgressAllowlist)
 	}
@@ -212,20 +197,14 @@ func TestSetupNetworkProgramsExpectedRules(t *testing.T) {
 	allowlistHookMu.Lock()
 	defer allowlistHookMu.Unlock()
 
-	oldLookup := lookupAllowlistIPv4
 	oldRunAllow := runAllowlistRuleCmd
 	oldRunNetwork := runNetworkCmd
 	oldStartDNS := startDNSInterceptorFunc
 	defer func() {
-		lookupAllowlistIPv4 = oldLookup
 		runAllowlistRuleCmd = oldRunAllow
 		runNetworkCmd = oldRunNetwork
 		startDNSInterceptorFunc = oldStartDNS
 	}()
-
-	lookupAllowlistIPv4 = func(ctx context.Context, resolver *net.Resolver, host string) ([]net.IP, error) {
-		return []net.IP{net.ParseIP("203.0.113.10")}, nil
-	}
 
 	var commands []string
 	record := func(name string, args ...string) error {
@@ -240,12 +219,13 @@ func TestSetupNetworkProgramsExpectedRules(t *testing.T) {
 		return nil
 	}
 
-	cfg, err := SetupNetwork("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", policy.NetworkPolicy{
-		Mode: policy.NetworkModeEgressAllowlist,
-		Allowlist: policy.NetworkAllowlist{
+	cfg, err := SetupNetwork("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", authority.BootContext{
+		NetworkMode: policy.NetworkModeEgressAllowlist,
+		EgressAllowlist: policy.NetworkAllowlist{
 			FQDNs: []string{"api.example.com"},
 			CIDRs: []string{"198.51.100.0/24"},
 		},
+		ResolvedHosts: []authority.ResolvedHost{{Host: "api.example.com", IPv4: []string{"203.0.113.10"}}},
 	}, telemetry.NewBus("exec-rules"))
 	if err != nil {
 		t.Fatalf("SetupNetwork: %v", err)
@@ -294,20 +274,14 @@ func TestSetupNetworkStartsDNSOnlyWhenFQDNsPresent(t *testing.T) {
 	allowlistHookMu.Lock()
 	defer allowlistHookMu.Unlock()
 
-	oldLookup := lookupAllowlistIPv4
 	oldRunAllow := runAllowlistRuleCmd
 	oldRunNetwork := runNetworkCmd
 	oldStartDNS := startDNSInterceptorFunc
 	defer func() {
-		lookupAllowlistIPv4 = oldLookup
 		runAllowlistRuleCmd = oldRunAllow
 		runNetworkCmd = oldRunNetwork
 		startDNSInterceptorFunc = oldStartDNS
 	}()
-
-	lookupAllowlistIPv4 = func(ctx context.Context, resolver *net.Resolver, host string) ([]net.IP, error) {
-		return []net.IP{net.ParseIP("203.0.113.10")}, nil
-	}
 	runAllowlistRuleCmd = func(name string, args ...string) error { return nil }
 	runNetworkCmd = func(name string, args ...string) error { return nil }
 
@@ -327,10 +301,14 @@ func TestSetupNetworkStartsDNSOnlyWhenFQDNsPresent(t *testing.T) {
 				dnsStarted = true
 				return nil
 			}
-			_, err := SetupNetwork("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", policy.NetworkPolicy{
-				Mode:      policy.NetworkModeEgressAllowlist,
-				Allowlist: tc.allowlist,
-			}, telemetry.NewBus("exec-dns"))
+			boot := authority.BootContext{
+				NetworkMode:     policy.NetworkModeEgressAllowlist,
+				EgressAllowlist: tc.allowlist,
+			}
+			if len(tc.allowlist.FQDNs) > 0 {
+				boot.ResolvedHosts = []authority.ResolvedHost{{Host: tc.allowlist.FQDNs[0], IPv4: []string{"203.0.113.10"}}}
+			}
+			_, err := SetupNetwork("30454c31-dfdf-4b5f-ae7c-1bddbf09ad6b", boot, telemetry.NewBus("exec-dns"))
 			if err != nil {
 				t.Fatalf("SetupNetwork: %v", err)
 			}

@@ -9,14 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"aegis/internal/authority"
 	"aegis/internal/observability"
 	"aegis/internal/policy"
 	"aegis/internal/telemetry"
@@ -154,22 +155,21 @@ func ResolveCgroupLimits(resources policy.ResourcePolicy) EffectiveCgroupLimits 
 }
 
 type NetworkConfig struct {
-	TapName      string
-	SubnetCIDR   string
-	HostIP       string
-	GuestIP      string
-	GatewayIP    string
-	GuestMAC     string
-	Mode         string
-	Presets      []string
-	Allowlist    policy.NetworkAllowlist
-	ResolvedIPs  []string
-	allowedHosts map[string]struct{}
+	TapName         string
+	SubnetCIDR      string
+	HostIP          string
+	GuestIP         string
+	GatewayIP       string
+	GuestMAC        string
+	Mode            string
+	Presets         []string
+	Allowlist       policy.NetworkAllowlist
+	ResolvedIPs     []string
+	allowedHosts    map[string]struct{}
 	resolvedHostIPs map[string][]string
-	allowedIPs   map[string]struct{}
-	dnsConn      net.PacketConn
-	upstreamDNS  *net.Resolver
-	dnsMu        sync.Mutex
+	allowedIPs      map[string]struct{}
+	dnsConn         net.PacketConn
+	dnsMu           sync.Mutex
 }
 
 func SetupCgroup(uuid string, pid int, resources policy.ResourcePolicy, bus *telemetry.Bus) error {
@@ -226,14 +226,14 @@ func CreateScratchDisk(uuid string) (string, error) {
 	return path, nil
 }
 
-func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*NetworkConfig, error) {
-	np = policy.NormalizeNetworkPolicy(np)
-	mode := policy.NormalizeNetworkMode(np.Mode)
+func SetupNetwork(execID string, boot authority.BootContext, bus *telemetry.Bus) (*NetworkConfig, error) {
+	boot = authorityCanonicalBoot(boot)
+	mode := policy.NormalizeNetworkMode(boot.NetworkMode)
 	if mode == policy.NetworkModeNone {
 		return nil, nil
 	}
 
-	cfg := newNetworkConfig(execID, np)
+	cfg := newNetworkConfig(execID, boot)
 	cleanup := true
 	defer func() {
 		if cleanup {
@@ -271,17 +271,12 @@ func SetupNetwork(execID string, np policy.NetworkPolicy, bus *telemetry.Bus) (*
 				return nil, err
 			}
 		}
-		if len(cfg.Allowlist.FQDNs) > 0 {
-			cfg.upstreamDNS = newUpstreamResolver()
-		}
-		for _, host := range cfg.Allowlist.FQDNs {
-			cfg.allowedHosts[normalizeHostname(host)] = struct{}{}
-			resolved, err := resolveAllowlistHostIPv4s(cfg.upstreamDNS, host)
-			if err != nil {
-				return nil, fmt.Errorf("resolve allowlist host %q: %w", host, err)
-			}
+		for _, host := range boot.ResolvedHosts {
+			normalizedHost := normalizeHostname(host.Host)
+			cfg.allowedHosts[normalizedHost] = struct{}{}
+			resolved := append([]string(nil), host.IPv4...)
 			cfg.dnsMu.Lock()
-			cfg.resolvedHostIPs[normalizeHostname(host)] = append([]string(nil), resolved...)
+			cfg.resolvedHostIPs[normalizedHost] = append([]string(nil), resolved...)
 			cfg.dnsMu.Unlock()
 			for _, ip := range resolved {
 				if err := allowResolvedIP(cfg, ip, bus); err != nil {
@@ -420,7 +415,7 @@ func CleanupLeakedNetworks() error {
 			continue
 		}
 		id := strings.TrimPrefix(name, "tap-")
-		cfg := newNetworkConfig(id, policy.NetworkPolicy{})
+		cfg := newNetworkConfig(id, authority.BootContext{})
 		cfg.TapName = name
 		if err := teardownNetwork(cfg); err != nil {
 			observability.Warn("reconcile_network_cleanup_failed", observability.Fields{"tap_name": name, "error": err.Error()})
@@ -479,10 +474,9 @@ func teardownNetwork(cfg *NetworkConfig) error {
 	return nil
 }
 
-func newNetworkConfig(execID string, np policy.NetworkPolicy) *NetworkConfig {
+func newNetworkConfig(execID string, boot authority.BootContext) *NetworkConfig {
 	short := shortID(execID)
 	subnet, hostIP, guestIP := subnetForID(short)
-	np = policy.NormalizeNetworkPolicy(np)
 	return &NetworkConfig{
 		TapName:         "tap-" + short,
 		SubnetCIDR:      subnet,
@@ -490,14 +484,21 @@ func newNetworkConfig(execID string, np policy.NetworkPolicy) *NetworkConfig {
 		GuestIP:         guestIP,
 		GatewayIP:       hostIP,
 		GuestMAC:        "AA:FC:00:00:00:01",
-		Mode:            np.Mode,
+		Mode:            policy.NormalizeNetworkMode(boot.NetworkMode),
 		Presets:         []string{},
-		Allowlist:       policy.CloneAllowlist(np.Allowlist),
+		Allowlist:       policy.CloneAllowlist(boot.EgressAllowlist),
 		ResolvedIPs:     []string{},
 		allowedHosts:    map[string]struct{}{},
 		resolvedHostIPs: map[string][]string{},
 		allowedIPs:      map[string]struct{}{},
 	}
+}
+
+func authorityCanonicalBoot(boot authority.BootContext) authority.BootContext {
+	boot.NetworkMode = policy.NormalizeNetworkMode(boot.NetworkMode)
+	boot.EgressAllowlist = policy.CloneAllowlist(boot.EgressAllowlist)
+	boot.ResolvedHosts = append([]authority.ResolvedHost(nil), boot.ResolvedHosts...)
+	return boot
 }
 
 func subnetForID(id string) (string, string, string) {
@@ -827,9 +828,6 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte, bus *telemetry.Bus) ([]byt
 		}
 		answerCount := 0
 		for _, value := range resolved {
-			if err := allowResolvedIP(cfg, value, bus); err != nil {
-				return dnsErrorResponse(head, question, dnsmessage.RCodeServerFailure)
-			}
 			var arr [4]byte
 			copy(arr[:], net.ParseIP(value).To4())
 			if err := builder.AResource(dnsmessage.ResourceHeader{
@@ -853,6 +851,23 @@ func buildDNSResponse(cfg *NetworkConfig, req []byte, bus *telemetry.Bus) ([]byt
 	}
 
 	return builder.Finish()
+}
+
+func (cfg *NetworkConfig) ResolvedHosts() []authority.ResolvedHost {
+	if cfg == nil {
+		return nil
+	}
+	cfg.dnsMu.Lock()
+	defer cfg.dnsMu.Unlock()
+	hosts := make([]authority.ResolvedHost, 0, len(cfg.resolvedHostIPs))
+	for host, ips := range cfg.resolvedHostIPs {
+		hosts = append(hosts, authority.ResolvedHost{
+			Host: host,
+			IPv4: append([]string(nil), ips...),
+		})
+	}
+	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Host < hosts[j].Host })
+	return hosts
 }
 
 func dnsErrorResponse(head dnsmessage.Header, question dnsmessage.Question, code dnsmessage.RCode) ([]byte, error) {

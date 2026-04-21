@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"aegis/internal/authority"
 	"aegis/internal/executor"
 	"aegis/internal/observability"
 	"aegis/internal/policy"
@@ -29,8 +30,7 @@ type Config struct {
 	MaxAge       time.Duration
 	ReadyTimeout time.Duration
 	AssetsDir    string
-	RootfsPath   string
-	Policy       *policy.Policy
+	Boot         authority.BootContext
 	Profile      policy.ComputeProfile
 	ProfileName  string
 	Shapes       []ShapeConfig
@@ -107,8 +107,7 @@ func New(cfg Config) *Manager {
 				MaxAge:       cfg.MaxAge,
 				ReadyTimeout: cfg.ReadyTimeout,
 				AssetsDir:    shape.AssetsDir,
-				RootfsPath:   shape.RootfsPath,
-				Policy:       shape.Policy,
+				Boot:         shape.Boot,
 				Profile:      shape.Profile,
 				ProfileName:  shape.ProfileName,
 			})
@@ -135,7 +134,7 @@ func newSingle(cfg Config) *Manager {
 	}
 	mgr.hooks = Hooks{
 		Build: func(ctx context.Context, id string) (*executor.VMInstance, error) {
-			return executor.NewVM(id, "", cfg.Policy, cfg.Profile, cfg.AssetsDir, cfg.RootfsPath, nil)
+			return executor.NewVM(id, "", cfg.Boot, cfg.Profile, cfg.AssetsDir, nil)
 		},
 		WaitReady: func(ctx context.Context, vm *executor.VMInstance) error {
 			return executor.WaitForGuestReady(vm.VsockPath, buildTimeout(ctx))

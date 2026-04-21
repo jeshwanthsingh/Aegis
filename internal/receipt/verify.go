@@ -2,12 +2,21 @@ package receipt
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
+	"path"
+	"slices"
 	"strings"
 
+	"aegis/internal/approval"
+	"aegis/internal/dsse"
+	"aegis/internal/escalation"
+	"aegis/internal/governance"
+	"aegis/internal/hostaction"
+	"aegis/internal/lease"
 	policycfg "aegis/internal/policy"
 )
 
@@ -76,19 +85,9 @@ func VerifySignedReceipt(receipt SignedReceipt, publicKey ed25519.PublicKey) (St
 	if receipt.Envelope.PayloadType != PayloadType {
 		return Statement{}, verificationError(FailureClassSignatureInvalid, "unexpected payload type: %s", receipt.Envelope.PayloadType)
 	}
-	if len(receipt.Envelope.Signatures) == 0 {
-		return Statement{}, verificationError(FailureClassSignatureInvalid, "dsse envelope has no signatures")
-	}
-	payload, err := base64.StdEncoding.DecodeString(receipt.Envelope.Payload)
+	payload, signature, err := dsse.VerifyEnvelope(receipt.Envelope, publicKey)
 	if err != nil {
-		return Statement{}, verificationErrorWrap(FailureClassSignatureInvalid, err, "decode dsse payload: %v", err)
-	}
-	sig, err := base64.StdEncoding.DecodeString(receipt.Envelope.Signatures[0].Sig)
-	if err != nil {
-		return Statement{}, verificationErrorWrap(FailureClassSignatureInvalid, err, "decode dsse signature: %v", err)
-	}
-	if !ed25519.Verify(publicKey, pae(receipt.Envelope.PayloadType, payload), sig) {
-		return Statement{}, verificationError(FailureClassSignatureInvalid, "dsse signature verification failed")
+		return Statement{}, verificationErrorWrap(FailureClassSignatureInvalid, err, "verify dsse envelope: %v", err)
 	}
 	var statement Statement
 	if err := json.Unmarshal(payload, &statement); err != nil {
@@ -103,7 +102,7 @@ func VerifySignedReceipt(receipt SignedReceipt, publicKey ed25519.PublicKey) (St
 	if statement.Predicate.SignerKeyID == "" {
 		return Statement{}, verificationError(FailureClassSignatureInvalid, "statement signer key id is required")
 	}
-	if statement.Predicate.SignerKeyID != receipt.Envelope.Signatures[0].KeyID {
+	if statement.Predicate.SignerKeyID != signature.KeyID {
 		return Statement{}, verificationError(FailureClassSignatureInvalid, "statement signer key id does not match DSSE key id")
 	}
 	if statement.Predicate.Trust.SigningMode != SigningModeDev && statement.Predicate.Trust.SigningMode != SigningModeStrict {
@@ -181,6 +180,9 @@ func validateSemanticReceipt(statement Statement) error {
 		if err := validateRuntimeEnvelope(predicate.Runtime); err != nil {
 			return verificationError(FailureClassSemanticReceipt, "runtime envelope invalid: %v", err)
 		}
+		if predicate.Runtime.Policy != nil && strings.TrimSpace(predicate.Runtime.Policy.TerminationReason) != "" && strings.TrimSpace(predicate.Runtime.Policy.TerminationReason) != strings.TrimSpace(predicate.Outcome.Reason) {
+			return verificationError(FailureClassSemanticReceipt, "runtime policy termination_reason must match outcome reason")
+		}
 	}
 	if predicate.Policy != nil {
 		if err := validatePolicyEnvelope(predicate.Policy); err != nil {
@@ -188,6 +190,19 @@ func validateSemanticReceipt(statement Statement) error {
 		}
 		if strings.TrimSpace(predicate.PolicyDigest) == "" {
 			return verificationError(FailureClassSemanticReceipt, "policy_digest is required when policy evidence is present")
+		}
+	}
+	if predicate.Authority != nil {
+		if err := validateAuthorityEnvelope(predicate.ExecutionID, predicate.PolicyDigest, predicate.Authority); err != nil {
+			return verificationError(FailureClassSemanticReceipt, "authority envelope invalid: %v", err)
+		}
+	}
+	if strings.TrimSpace(predicate.Outcome.Reason) == "security_denied_authority_mutation" {
+		if predicate.Authority == nil {
+			return verificationError(FailureClassSemanticReceipt, "authority mutation denial receipts must include authority evidence")
+		}
+		if predicate.Authority.MutationAttempt == nil {
+			return verificationError(FailureClassSemanticReceipt, "authority mutation denial receipts must include mutation_attempt")
 		}
 	}
 	if predicate.GovernedActions != nil {
@@ -219,6 +234,33 @@ func validateSemanticReceipt(statement Statement) error {
 			if total != predicate.GovernedActions.Count {
 				return verificationError(FailureClassSemanticReceipt, "normalized governed action count mismatch: normalized=%d raw=%d", total, predicate.GovernedActions.Count)
 			}
+		}
+		if predicate.Authority != nil && strings.TrimSpace(predicate.Authority.ApprovalMode) == "require_host_consent" {
+			for idx, action := range predicate.GovernedActions.Actions {
+				if !action.Brokered || strings.ToLower(strings.TrimSpace(action.Decision)) != "allow" || !action.Used {
+					continue
+				}
+				if action.Approval == nil {
+					return verificationError(FailureClassSemanticReceipt, "governed action %d requires approval evidence", idx+1)
+				}
+				if action.Approval.Result != approval.VerificationVerified {
+					return verificationError(FailureClassSemanticReceipt, "governed action %d requires approval.result=verified", idx+1)
+				}
+				if strings.TrimSpace(action.Approval.TicketID) == "" {
+					return verificationError(FailureClassSemanticReceipt, "governed action %d requires approval.ticket_id", idx+1)
+				}
+			}
+		}
+	}
+	if err := validateRuntimePolicyTermination(predicate); err != nil {
+		return verificationError(FailureClassSemanticReceipt, "runtime policy termination invalid: %v", err)
+	}
+	if strings.TrimSpace(predicate.Outcome.Reason) == escalation.TerminationReasonPrivilegeEscalation {
+		if predicate.Runtime == nil || predicate.Runtime.Policy == nil {
+			return verificationError(FailureClassSemanticReceipt, "privilege_escalation_attempt receipts must include runtime.policy evidence")
+		}
+		if strings.TrimSpace(predicate.Runtime.Policy.TerminationReason) != escalation.TerminationReasonPrivilegeEscalation {
+			return verificationError(FailureClassSemanticReceipt, "privilege_escalation_attempt receipts must set runtime.policy.termination_reason")
 		}
 	}
 	return nil
@@ -275,6 +317,74 @@ func validatePolicyEnvelope(policy *PolicyEnvelope) error {
 	return nil
 }
 
+func validateAuthorityEnvelope(executionID string, policyDigest string, envelope *AuthorityEnvelope) error {
+	if envelope == nil {
+		return nil
+	}
+	if strings.TrimSpace(envelope.Digest) == "" {
+		return fmt.Errorf("digest is required")
+	}
+	if strings.TrimSpace(envelope.RootfsImage) == "" {
+		return fmt.Errorf("rootfs_image is required")
+	}
+	switch strings.TrimSpace(envelope.ApprovalMode) {
+	case "none", "require_host_consent":
+	default:
+		return fmt.Errorf("unexpected approval_mode: %s", envelope.ApprovalMode)
+	}
+	switch policycfg.NormalizeNetworkMode(envelope.NetworkMode) {
+	case policycfg.NetworkModeNone, policycfg.NetworkModeEgressAllowlist:
+	default:
+		return fmt.Errorf("unexpected network_mode: %s", envelope.NetworkMode)
+	}
+	if err := validateNetworkAllowlistEnvelope(envelope.EgressAllowlist); err != nil {
+		return fmt.Errorf("egress_allowlist invalid: %w", err)
+	}
+	if policycfg.NormalizeNetworkMode(envelope.NetworkMode) == policycfg.NetworkModeNone && envelope.EgressAllowlist != nil && (len(envelope.EgressAllowlist.FQDNs) > 0 || len(envelope.EgressAllowlist.CIDRs) > 0) {
+		return fmt.Errorf("egress_allowlist requires egress_allowlist network_mode")
+	}
+	for _, mount := range envelope.Mounts {
+		if strings.TrimSpace(mount.Name) == "" || strings.TrimSpace(mount.Kind) == "" || strings.TrimSpace(mount.Target) == "" {
+			return fmt.Errorf("mounts require non-empty name, kind, and target")
+		}
+	}
+	for _, host := range envelope.ResolvedHosts {
+		if strings.TrimSpace(host.Host) == "" {
+			return fmt.Errorf("resolved host name is required")
+		}
+		if len(host.IPv4) == 0 {
+			return fmt.Errorf("resolved host %s must include ipv4 addresses", host.Host)
+		}
+		for _, value := range host.IPv4 {
+			addr, err := netip.ParseAddr(strings.TrimSpace(value))
+			if err != nil || !addr.Is4() {
+				return fmt.Errorf("resolved host %s contains invalid ipv4 %q", host.Host, value)
+			}
+		}
+	}
+	for _, actionType := range envelope.BrokerActionTypes {
+		if !governance.IsValidActionType(actionType) {
+			return fmt.Errorf("unexpected broker action type: %s", actionType)
+		}
+	}
+	ctx := authorityContextFromEnvelope(executionID, policyDigest, envelope)
+	if !slices.Equal(envelope.BrokerRepoLabels, ctx.BrokerRepoLabels) {
+		return fmt.Errorf("broker_repo_labels must be unique, canonical, and non-empty when present")
+	}
+	if envelope.MutationAttempt != nil {
+		if strings.TrimSpace(envelope.MutationAttempt.Field) == "" ||
+			strings.TrimSpace(envelope.MutationAttempt.Expected) == "" ||
+			strings.TrimSpace(envelope.MutationAttempt.Observed) == "" ||
+			strings.TrimSpace(envelope.MutationAttempt.EnforcementPoint) == "" {
+			return fmt.Errorf("mutation_attempt fields are required when present")
+		}
+	}
+	if want := ctx.AuthorityDigest; strings.TrimSpace(envelope.Digest) != want {
+		return fmt.Errorf("digest mismatch: got %s want %s", envelope.Digest, want)
+	}
+	return nil
+}
+
 func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
 	if runtime == nil {
 		return nil
@@ -326,7 +436,75 @@ func validateRuntimeEnvelope(runtime *RuntimeEnvelope) error {
 			return fmt.Errorf("blocked egress invalid: %w", err)
 		}
 	}
+	if runtime.Policy != nil {
+		if err := validateRuntimePolicyEnvelope(runtime.Policy); err != nil {
+			return fmt.Errorf("policy invalid: %w", err)
+		}
+	}
 	return nil
+}
+
+func validateRuntimePolicyEnvelope(policy *escalation.RuntimePolicyEnvelope) error {
+	if policy == nil {
+		return nil
+	}
+	if policy.EscalationAttempts != nil {
+		summary := policy.EscalationAttempts
+		if summary.Count < 0 {
+			return fmt.Errorf("runtime.policy.escalation_attempts.count must be >= 0")
+		}
+		if summary.Count == 0 {
+			if len(summary.Sample) != 0 {
+				return fmt.Errorf("runtime.policy.escalation_attempts.sample must be empty when count=0")
+			}
+			if summary.SampleTruncated {
+				return fmt.Errorf("runtime.policy.escalation_attempts.sample_truncated must be false when count=0")
+			}
+		}
+		if summary.Count > 0 && len(summary.Sample) == 0 {
+			return fmt.Errorf("runtime.policy.escalation_attempts.sample is required when count>0")
+		}
+		if len(summary.Sample) > escalation.SampleLimit {
+			return fmt.Errorf("runtime.policy.escalation_attempts.sample exceeds limit %d", escalation.SampleLimit)
+		}
+		lastKey := ""
+		seen := map[string]struct{}{}
+		for idx, sample := range summary.Sample {
+			if err := validateEscalationSample(sample); err != nil {
+				return fmt.Errorf("runtime.policy.escalation_attempts.sample[%d] invalid: %w", idx, err)
+			}
+			key := escalationSampleSortKey(sample)
+			if _, ok := seen[key]; ok {
+				return fmt.Errorf("runtime.policy.escalation_attempts.sample must not contain duplicates")
+			}
+			seen[key] = struct{}{}
+			if idx > 0 && key < lastKey {
+				return fmt.Errorf("runtime.policy.escalation_attempts.sample must be in canonical order")
+			}
+			lastKey = key
+		}
+	}
+	lastClass := ""
+	seenClasses := map[escalation.DestructiveActionClass]struct{}{}
+	for _, class := range policy.DeniedDestructiveActions {
+		if !escalation.IsValidDestructiveActionClass(class) {
+			return fmt.Errorf("unexpected denied_destructive_actions value: %s", class)
+		}
+		if _, ok := seenClasses[class]; ok {
+			return fmt.Errorf("runtime.policy.denied_destructive_actions must not contain duplicates")
+		}
+		seenClasses[class] = struct{}{}
+		if lastClass != "" && string(class) < lastClass {
+			return fmt.Errorf("runtime.policy.denied_destructive_actions must be sorted")
+		}
+		lastClass = string(class)
+	}
+	switch strings.TrimSpace(policy.TerminationReason) {
+	case "", "security_denied_authority_mutation", escalation.TerminationReasonPrivilegeEscalation:
+		return nil
+	default:
+		return fmt.Errorf("unexpected runtime.policy.termination_reason: %s", policy.TerminationReason)
+	}
 }
 
 func applyLegacySemantics(statement *Statement) {
@@ -416,7 +594,22 @@ func normalizedGovernedActionSortKey(action NormalizedGovernedActionEntry) strin
 }
 
 func validateGovernedActionRecord(action GovernedActionRecord) error {
-	return validateGovernedAction(action.ActionType, action.CapabilityPath, action.Decision, action.Used, action.Brokered, action.BrokeredCredentials, action.BindingName)
+	if err := validateGovernedAction(action.ActionType, action.CapabilityPath, action.Decision, action.Used, action.Brokered, action.BrokeredCredentials, action.BindingName); err != nil {
+		return err
+	}
+	if err := validateEscalationEvidence(action); err != nil {
+		return err
+	}
+	if err := validateHostActionRecord(action); err != nil {
+		return err
+	}
+	if err := validateApprovalCheck(action.Approval); err != nil {
+		return err
+	}
+	if err := validateLeaseCheck(action.Lease); err != nil {
+		return err
+	}
+	return validateCoveredActionLeaseRecord(action)
 }
 
 func validateNormalizedGovernedAction(action NormalizedGovernedActionEntry) error {
@@ -447,6 +640,409 @@ func validateGovernedAction(actionType string, capabilityPath string, decision s
 		return fmt.Errorf("non-brokered action cannot include binding_name")
 	}
 	return nil
+}
+
+func validateEscalationEvidence(action GovernedActionRecord) error {
+	if action.Escalation == nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(action.Decision), "deny") {
+		return fmt.Errorf("escalation evidence is only valid on denied governed actions")
+	}
+	if err := validateEscalationSignals(action.Escalation.Signals); err != nil {
+		return fmt.Errorf("escalation signals invalid: %w", err)
+	}
+	return nil
+}
+
+func validateApprovalCheck(check *approval.Check) error {
+	if check == nil {
+		return nil
+	}
+	switch check.Result {
+	case approval.VerificationVerified,
+		approval.VerificationMissing,
+		approval.VerificationExpired,
+		approval.VerificationReused,
+		approval.VerificationExecutionMismatch,
+		approval.VerificationPolicyMismatch,
+		approval.VerificationActionTypeMismatch,
+		approval.VerificationResourceMismatch,
+		approval.VerificationMalformed,
+		approval.VerificationSignatureInvalid,
+		approval.VerificationUnavailable:
+	default:
+		return fmt.Errorf("unexpected approval result: %s", check.Result)
+	}
+	if strings.TrimSpace(check.ResourceDigest) != "" && strings.TrimSpace(check.ResourceDigestAlgo) == "" {
+		return fmt.Errorf("approval resource_digest_algo is required with resource_digest")
+	}
+	if strings.TrimSpace(check.ResourceDigestAlgo) != "" && strings.TrimSpace(check.ResourceDigest) == "" {
+		return fmt.Errorf("approval resource_digest is required with resource_digest_algo")
+	}
+	if check.Consumed && check.Result != approval.VerificationVerified {
+		return fmt.Errorf("approval consumed requires result=verified")
+	}
+	if check.Result == approval.VerificationVerified {
+		if strings.TrimSpace(check.TicketID) == "" {
+			return fmt.Errorf("approval ticket_id is required when result=verified")
+		}
+		if strings.TrimSpace(check.IssuerKeyID) == "" {
+			return fmt.Errorf("approval issuer_key_id is required when result=verified")
+		}
+	}
+	return nil
+}
+
+func validateLeaseCheck(check *lease.Check) error {
+	if check == nil {
+		return nil
+	}
+	switch check.Result {
+	case lease.CheckVerified,
+		lease.CheckMissing,
+		lease.CheckExpired,
+		lease.CheckMalformed,
+		lease.CheckSignatureInvalid,
+		lease.CheckExecutionMismatch,
+		lease.CheckPolicyMismatch,
+		lease.CheckAuthorityMismatch,
+		lease.CheckActionMismatch,
+		lease.CheckResourceMismatch,
+		lease.CheckUnavailable:
+	default:
+		return fmt.Errorf("unexpected lease result: %s", check.Result)
+	}
+	switch check.BudgetResult {
+	case lease.BudgetNotAttempted, lease.BudgetConsumed, lease.BudgetExhausted, lease.BudgetUnavailable:
+	default:
+		return fmt.Errorf("unexpected lease budget_result: %s", check.BudgetResult)
+	}
+	if check.Result == lease.CheckVerified {
+		if strings.TrimSpace(check.LeaseID) == "" {
+			return fmt.Errorf("lease lease_id is required when result=verified")
+		}
+		if strings.TrimSpace(check.Issuer) == "" {
+			return fmt.Errorf("lease issuer is required when result=verified")
+		}
+		if strings.TrimSpace(check.IssuerKeyID) == "" {
+			return fmt.Errorf("lease issuer_key_id is required when result=verified")
+		}
+		if strings.TrimSpace(check.GrantID) == "" {
+			return fmt.Errorf("lease grant_id is required when result=verified")
+		}
+		if strings.TrimSpace(check.SelectorDigest) == "" {
+			return fmt.Errorf("lease selector_digest is required when result=verified")
+		}
+		if strings.TrimSpace(check.SelectorDigestAlgo) == "" {
+			return fmt.Errorf("lease selector_digest_algo is required when result=verified")
+		}
+	}
+	if check.BudgetResult == lease.BudgetConsumed && check.RemainingCount == nil {
+		return fmt.Errorf("lease remaining_count is required when budget_result=consumed")
+	}
+	if check.BudgetResult != lease.BudgetConsumed && check.RemainingCount != nil {
+		return fmt.Errorf("lease remaining_count is only valid when budget_result=consumed")
+	}
+	return nil
+}
+
+func validateCoveredActionLeaseRecord(action GovernedActionRecord) error {
+	if action.Lease == nil {
+		return nil
+	}
+	switch strings.TrimSpace(action.ActionType) {
+	case governance.ActionHTTPRequest, governance.ActionHostRepoApply:
+	default:
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(action.Decision), "allow") {
+		if action.Lease.BudgetResult == lease.BudgetConsumed {
+			return fmt.Errorf("denied covered actions must not consume lease budget")
+		}
+		return nil
+	}
+	if action.Lease.Result != lease.CheckVerified {
+		return fmt.Errorf("covered allow actions require lease.result=verified")
+	}
+	if action.Used || strings.TrimSpace(action.Outcome) == "error" {
+		if action.Lease.BudgetResult != lease.BudgetConsumed {
+			return fmt.Errorf("covered attempted actions require lease.budget_result=consumed")
+		}
+	}
+	return nil
+}
+
+func validateHostActionRecord(action GovernedActionRecord) error {
+	if action.HostAction == nil {
+		if strings.TrimSpace(action.ActionType) == governance.ActionHostRepoApply {
+			return fmt.Errorf("host_repo_apply_patch actions require host_action evidence")
+		}
+		return nil
+	}
+	if strings.TrimSpace(action.ActionType) != governance.ActionHostRepoApply {
+		return fmt.Errorf("host_action evidence is only valid for host_repo_apply_patch actions")
+	}
+	if action.HostAction.Class != hostaction.ClassRepoApplyPatchV1 {
+		return fmt.Errorf("unexpected host_action.class: %s", action.HostAction.Class)
+	}
+	if action.HostAction.RepoApplyPatch == nil {
+		return fmt.Errorf("repo_apply_patch evidence is required")
+	}
+	evidence := action.HostAction.RepoApplyPatch
+	repoLabel := strings.ToLower(strings.TrimSpace(evidence.RepoLabel))
+	if repoLabel == "" {
+		return fmt.Errorf("host_action repo_label is required")
+	}
+	if strings.TrimSpace(action.Target) != "repo:"+repoLabel {
+		return fmt.Errorf("host_action target must match repo label")
+	}
+	if strings.TrimSpace(action.Resource) != repoLabel {
+		return fmt.Errorf("host_action resource must match repo label")
+	}
+	if strings.TrimSpace(action.Method) != "" {
+		return fmt.Errorf("host_repo_apply_patch actions must not include method")
+	}
+	if !action.Brokered {
+		return fmt.Errorf("host_repo_apply_patch actions must be brokered")
+	}
+	if action.BrokeredCredentials {
+		return fmt.Errorf("host_repo_apply_patch actions must not inject brokered credentials")
+	}
+	if strings.TrimSpace(action.BindingName) != "" {
+		return fmt.Errorf("host_repo_apply_patch actions must not include binding_name")
+	}
+	if strings.TrimSpace(evidence.PatchDigestAlgo) != approval.ResourceDigestAlgo {
+		return fmt.Errorf("host_action patch_digest_algo must be %s", approval.ResourceDigestAlgo)
+	}
+	if !isHexDigest(evidence.PatchDigest) {
+		return fmt.Errorf("host_action patch_digest must be a sha256 hex digest")
+	}
+	if strings.TrimSpace(evidence.BaseRevision) == "" {
+		return fmt.Errorf("host_action base_revision is required")
+	}
+	if len(evidence.AffectedPaths) == 0 {
+		return fmt.Errorf("host_action affected_paths are required")
+	}
+	if err := validateCanonicalRelativePaths(evidence.TargetScope, "host_action target_scope"); err != nil {
+		return err
+	}
+	if err := validateCanonicalRelativePaths(evidence.AffectedPaths, "host_action affected_paths"); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(action.Decision), "allow") {
+		if action.Approval == nil {
+			return fmt.Errorf("host_repo_apply_patch allow actions require approval evidence")
+		}
+		if action.Approval.Result != approval.VerificationVerified {
+			return fmt.Errorf("host_repo_apply_patch allow actions require approval.result=verified")
+		}
+		if strings.TrimSpace(action.Approval.TicketID) == "" {
+			return fmt.Errorf("host_repo_apply_patch allow actions require approval.ticket_id")
+		}
+		if !action.Approval.Consumed {
+			return fmt.Errorf("host_repo_apply_patch allow actions require approval.consumed=true")
+		}
+		if strings.TrimSpace(action.Outcome) == "error" && strings.TrimSpace(action.Error) == "" {
+			return fmt.Errorf("host_repo_apply_patch error actions require error detail")
+		}
+	}
+	return nil
+}
+
+func validateEscalationSignals(signals []escalation.Signal) error {
+	if len(signals) == 0 {
+		return fmt.Errorf("signals are required")
+	}
+	last := ""
+	seen := map[escalation.Signal]struct{}{}
+	for _, signal := range signals {
+		if !escalation.IsValidSignal(signal) {
+			return fmt.Errorf("unexpected signal: %s", signal)
+		}
+		if _, ok := seen[signal]; ok {
+			return fmt.Errorf("signals must not contain duplicates")
+		}
+		seen[signal] = struct{}{}
+		if last != "" && string(signal) < last {
+			return fmt.Errorf("signals must be sorted")
+		}
+		last = string(signal)
+	}
+	return nil
+}
+
+func validateEscalationSample(sample escalation.Sample) error {
+	if sample.Count <= 0 {
+		return fmt.Errorf("count must be > 0")
+	}
+	if !escalation.IsValidSourceKind(sample.Source) {
+		return fmt.Errorf("unexpected source: %s", sample.Source)
+	}
+	if err := validateEscalationSignals(sample.Signals); err != nil {
+		return err
+	}
+	if err := validateEscalationSummaryString("rule_id", sample.RuleID); err != nil {
+		return err
+	}
+	if err := validateEscalationSummaryString("action_type", sample.ActionType); err != nil {
+		return err
+	}
+	if err := validateEscalationSummaryString("capability_path", sample.CapabilityPath); err != nil {
+		return err
+	}
+	if err := validateEscalationSummaryString("target", sample.Target); err != nil {
+		return err
+	}
+	if err := validateEscalationSummaryString("resource", sample.Resource); err != nil {
+		return err
+	}
+	if err := validateEscalationSummaryString("mutation_field", sample.MutationField); err != nil {
+		return err
+	}
+	if err := validateEscalationSummaryString("enforcement_point", sample.EnforcementPoint); err != nil {
+		return err
+	}
+	switch sample.Source {
+	case escalation.SourceAuthorityMutation:
+		if strings.TrimSpace(sample.MutationField) == "" {
+			return fmt.Errorf("authority_mutation samples require mutation_field")
+		}
+		if strings.TrimSpace(sample.EnforcementPoint) == "" {
+			return fmt.Errorf("authority_mutation samples require enforcement_point")
+		}
+		if strings.TrimSpace(sample.RuleID) != "" || strings.TrimSpace(sample.ActionType) != "" || strings.TrimSpace(sample.CapabilityPath) != "" || strings.TrimSpace(sample.Target) != "" || strings.TrimSpace(sample.Resource) != "" || strings.TrimSpace(sample.HostActionClass) != "" {
+			return fmt.Errorf("authority_mutation samples must not include governed-action fields")
+		}
+	case escalation.SourceGovernedAction:
+		if strings.TrimSpace(sample.MutationField) != "" || strings.TrimSpace(sample.EnforcementPoint) != "" {
+			return fmt.Errorf("governed_action samples must not include mutation fields")
+		}
+	default:
+		return fmt.Errorf("unexpected source: %s", sample.Source)
+	}
+	if strings.TrimSpace(sample.HostActionClass) != "" {
+		class, ok := escalation.MapHostActionClass(sample.HostActionClass)
+		if !ok || string(class) != strings.TrimSpace(sample.HostActionClass) {
+			return fmt.Errorf("unexpected host_action_class: %s", sample.HostActionClass)
+		}
+	}
+	return nil
+}
+
+func validateEscalationSummaryString(field string, value string) error {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s must not contain control characters", field)
+		}
+	}
+	return nil
+}
+
+func escalationSampleSortKey(sample escalation.Sample) string {
+	signals := make([]string, 0, len(sample.Signals))
+	for _, signal := range sample.Signals {
+		signals = append(signals, string(signal))
+	}
+	return strings.Join([]string{
+		string(sample.Source),
+		strings.Join(signals, ","),
+		sample.ActionType,
+		sample.CapabilityPath,
+		sample.RuleID,
+		sample.Target,
+		sample.Resource,
+		sample.HostActionClass,
+		sample.MutationField,
+		sample.EnforcementPoint,
+	}, "|")
+}
+
+func validateRuntimePolicyTermination(predicate ExecutionReceiptPredicate) error {
+	if predicate.Runtime == nil || predicate.Runtime.Policy == nil {
+		return nil
+	}
+	reason := strings.TrimSpace(predicate.Runtime.Policy.TerminationReason)
+	if reason == "" {
+		return nil
+	}
+	switch reason {
+	case "security_denied_authority_mutation":
+		if predicate.Authority == nil || predicate.Authority.MutationAttempt == nil {
+			return fmt.Errorf("security_denied_authority_mutation requires authority mutation evidence")
+		}
+	case escalation.TerminationReasonPrivilegeEscalation:
+		if !hasTerminalGovernedEscalation(predicate.GovernedActions) {
+			return fmt.Errorf("privilege_escalation_attempt requires underlying governed-action escalation evidence")
+		}
+	default:
+		return fmt.Errorf("unexpected runtime.policy.termination_reason: %s", reason)
+	}
+	return nil
+}
+
+func hasTerminalGovernedEscalation(summary *GovernedActionSummary) bool {
+	if summary == nil {
+		return false
+	}
+	for _, action := range summary.Actions {
+		if action.Escalation == nil {
+			continue
+		}
+		for _, signal := range action.Escalation.Signals {
+			switch signal {
+			case escalation.SignalAuthorityBroadeningAttempt,
+				escalation.SignalUnsupportedDestructiveClassAccess,
+				escalation.SignalRepeatedProbingPattern:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validateCanonicalRelativePaths(values []string, field string) error {
+	last := ""
+	seen := map[string]struct{}{}
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return fmt.Errorf("%s must not contain blank values", field)
+		}
+		if strings.Contains(value, "\\") || strings.HasPrefix(value, "/") {
+			return fmt.Errorf("%s must contain relative slash-separated paths", field)
+		}
+		cleaned := path.Clean(value)
+		if cleaned == "." || cleaned == "" || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+			return fmt.Errorf("%s must not contain path escapes", field)
+		}
+		for _, segment := range strings.Split(cleaned, "/") {
+			if segment == ".git" {
+				return fmt.Errorf("%s must not contain .git paths", field)
+			}
+		}
+		if cleaned != value {
+			return fmt.Errorf("%s must be canonical", field)
+		}
+		if _, ok := seen[value]; ok {
+			return fmt.Errorf("%s must not contain duplicates", field)
+		}
+		seen[value] = struct{}{}
+		if last != "" && value < last {
+			return fmt.Errorf("%s must be sorted", field)
+		}
+		last = value
+	}
+	return nil
+}
+
+func isHexDigest(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(trimmed)
+	return err == nil
 }
 
 func validateNetworkAllowlistEnvelope(allowlist *NetworkAllowlistEnvelope) error {

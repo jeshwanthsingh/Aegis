@@ -2,24 +2,44 @@ package pool
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"aegis/internal/authority"
 	"aegis/internal/executor"
 	"aegis/internal/policy"
 )
+
+func testShapeAssets(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	rootfs := filepath.Join(dir, "alpine-base.ext4")
+	if err := os.WriteFile(rootfs, []byte("rootfs"), 0o600); err != nil {
+		t.Fatalf("WriteFile(rootfs): %v", err)
+	}
+	return dir, rootfs
+}
 
 func TestDefaultShapesPrioritizesStandardThenNano(t *testing.T) {
 	t.Parallel()
 
 	pol := policy.Default()
+	assetsDir, rootfsPath := testShapeAssets(t)
 
-	gotOne := DefaultShapes(1, "/assets", "/rootfs.ext4", pol)
+	gotOne, err := DefaultShapes(1, assetsDir, rootfsPath, pol)
+	if err != nil {
+		t.Fatalf("DefaultShapes(1): %v", err)
+	}
 	if len(gotOne) != 1 || gotOne[0].Label != WarmShapeStandard || gotOne[0].Size != 1 {
 		t.Fatalf("DefaultShapes(1) = %+v, want standard-only size 1", gotOne)
 	}
 
-	gotTwo := DefaultShapes(2, "/assets", "/rootfs.ext4", pol)
+	gotTwo, err := DefaultShapes(2, assetsDir, rootfsPath, pol)
+	if err != nil {
+		t.Fatalf("DefaultShapes(2): %v", err)
+	}
 	if len(gotTwo) != 2 {
 		t.Fatalf("DefaultShapes(2) len=%d, want 2", len(gotTwo))
 	}
@@ -79,5 +99,21 @@ func TestClaimForUsesPerShapeManagerAndTracksFallbackReason(t *testing.T) {
 	status := top.Status()
 	if status.ColdFallbackReasons[FallbackShapeMissing] != 1 {
 		t.Fatalf("fallback reasons = %+v, want %s count 1", status.ColdFallbackReasons, FallbackShapeMissing)
+	}
+}
+
+func TestShapeKeyChangesWhenBootAuthorityChanges(t *testing.T) {
+	t.Parallel()
+
+	left := ShapeKey("standard", "/assets", authority.BootContext{
+		RootfsImage: "rootfs#a",
+		NetworkMode: policy.NetworkModeNone,
+	})
+	right := ShapeKey("standard", "/assets", authority.BootContext{
+		RootfsImage: "rootfs#b",
+		NetworkMode: policy.NetworkModeNone,
+	})
+	if left == right {
+		t.Fatalf("expected shape key to change when boot authority changes")
 	}
 }

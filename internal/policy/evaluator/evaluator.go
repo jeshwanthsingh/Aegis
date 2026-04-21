@@ -13,14 +13,20 @@ import (
 )
 
 type Evaluator struct {
-	intent   contract.IntentContract
-	compiled cedar.CompiledContract
+	compiled     cedar.CompiledContract
+	policyDigest string
+	intentDigest string
 }
 
 func New(intent contract.IntentContract) *Evaluator {
+	return NewWithPolicyDigest(intent, "")
+}
+
+func NewWithPolicyDigest(intent contract.IntentContract, policyDigest string) *Evaluator {
 	return &Evaluator{
-		intent:   intent,
-		compiled: cedar.Compile(intent),
+		compiled:     cedar.Compile(intent),
+		policyDigest: strings.TrimSpace(policyDigest),
+		intentDigest: governance.DigestIntent(intent),
 	}
 }
 
@@ -46,8 +52,11 @@ func (e *Evaluator) Evaluate(event models.RuntimeEvent) models.PolicyPointDecisi
 		Reason:      "allowed by intent contract",
 		Metadata: map[string]string{
 			"task_class":    e.compiled.Context.TaskClass,
-			"policy_digest": governance.DigestIntent(e.intent),
+			"intent_digest": e.intentDigest,
 		},
+	}
+	if e.policyDigest != "" {
+		result.Metadata["policy_digest"] = e.policyDigest
 	}
 
 	switch action {

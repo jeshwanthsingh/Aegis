@@ -120,10 +120,17 @@ func main() {
 	registry := api.NewBusRegistry()
 	workspaceRegistry := api.NewWorkspaceRegistry()
 	stats := api.NewStatsCounter()
+	warmPoolSize := envInt("AEGIS_WARM_POOL_SIZE", 0)
+	shapes, err := warmpool.DefaultShapes(warmPoolSize, *assetsDir, *rootfsPath, pol)
+	if err != nil {
+		observability.Warn("warm_pool_disabled", observability.Fields{"error": err.Error()})
+		warmPoolSize = 0
+		shapes = nil
+	}
 	warmPool := warmpool.New(warmpool.Config{
-		Size:   envInt("AEGIS_WARM_POOL_SIZE", 0),
+		Size:   warmPoolSize,
 		MaxAge: time.Duration(envInt("AEGIS_WARM_POOL_MAX_AGE", 300)) * time.Second,
-		Shapes: warmpool.DefaultShapes(envInt("AEGIS_WARM_POOL_SIZE", 0), *assetsDir, *rootfsPath, pol),
+		Shapes: shapes,
 	})
 	warmPool.Start()
 	defer warmPool.Close()

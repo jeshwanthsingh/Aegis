@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"aegis/internal/authority"
 	"aegis/internal/observability"
 	"aegis/internal/policy"
 	"aegis/internal/telemetry"
@@ -38,6 +39,7 @@ type VMInstance struct {
 	VCPUCount        int
 	MemoryMB         int
 	AppliedOverrides []string
+	Boot             authority.BootContext
 }
 
 const scratchDir = "/tmp/aegis"
@@ -63,26 +65,6 @@ func resolveFirecrackerBinary() string {
 		return bin
 	}
 	return "firecracker"
-}
-
-func resolveRootfsImage(baseDir string, explicit string) (string, error) {
-	if explicit != "" {
-		if _, err := os.Stat(explicit); err != nil {
-			return "", fmt.Errorf("stat rootfs image %s: %w", explicit, err)
-		}
-		return explicit, nil
-	}
-	if envPath := os.Getenv("AEGIS_ROOTFS_PATH"); envPath != "" {
-		if _, err := os.Stat(envPath); err != nil {
-			return "", fmt.Errorf("stat rootfs image %s: %w", envPath, err)
-		}
-		return envPath, nil
-	}
-	defaultPath := filepath.Join(baseDir, "alpine-base.ext4")
-	if _, err := os.Stat(defaultPath); err != nil {
-		return "", fmt.Errorf("stat rootfs image %s: %w", defaultPath, err)
-	}
-	return defaultPath, nil
 }
 
 func resolveHomeDir() (string, error) {
@@ -138,7 +120,7 @@ func ResolveVMSpec(profile policy.ComputeProfile) EffectiveVMSpec {
 	return spec
 }
 
-func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.ComputeProfile, assetsDir string, rootfsPath string, bus *telemetry.Bus) (*VMInstance, error) {
+func NewVM(uuid string, workspaceID string, boot authority.BootContext, profile policy.ComputeProfile, assetsDir string, bus *telemetry.Bus) (*VMInstance, error) {
 	baseDir, err := resolveAssetsDir(assetsDir)
 	if err != nil {
 		return nil, err
@@ -152,9 +134,11 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 		return nil, fmt.Errorf("chmod scratch dir: %w", err)
 	}
 
-	rootfsPath, err = resolveRootfsImage(baseDir, rootfsPath)
-	if err != nil {
-		return nil, err
+	if strings.TrimSpace(boot.RootfsPath) == "" {
+		return nil, fmt.Errorf("rootfs path is required")
+	}
+	if _, err := os.Stat(boot.RootfsPath); err != nil {
+		return nil, fmt.Errorf("stat rootfs image %s: %w", boot.RootfsPath, err)
 	}
 	isPersistent := false
 	var scratchPath string
@@ -172,8 +156,8 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	}
 
 	var networkCfg *NetworkConfig
-	if pol != nil {
-		networkCfg, err = SetupNetwork(uuid, pol.Network, bus)
+	if policy.NormalizeNetworkMode(boot.NetworkMode) != policy.NetworkModeNone {
+		networkCfg, err = SetupNetwork(uuid, boot, bus)
 		if err != nil {
 			return nil, fmt.Errorf("setup network: %w", err)
 		}
@@ -197,6 +181,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 	}
 	pid := cmd.Process.Pid
 
+	rootfsPath := boot.RootfsPath
 	observability.Info("rootfs_selected", observability.Fields{"execution_id": uuid, "rootfs_path": rootfsPath})
 
 	vmSpec := ResolveVMSpec(profile)
@@ -215,6 +200,7 @@ func NewVM(uuid string, workspaceID string, pol *policy.Policy, profile policy.C
 		VCPUCount:        vmSpec.VCPUCount,
 		MemoryMB:         vmSpec.MemoryMB,
 		AppliedOverrides: append([]string(nil), vmSpec.AppliedOverrides...),
+		Boot:             boot,
 	}
 
 	if vmSpec.MemoryMB != profile.MemoryMB {

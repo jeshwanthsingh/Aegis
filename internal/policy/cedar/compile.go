@@ -15,6 +15,7 @@ type Principal struct {
 	AllowedDomains     []string
 	AllowedIPs         []string
 	AllowedDelegations []string
+	AllowedRepoLabels  []string
 	Attributes         map[string]string
 }
 
@@ -51,6 +52,7 @@ func Compile(intent contract.IntentContract) CompiledContract {
 			AllowedDomains:     append([]string(nil), intent.NetworkScope.AllowedDomains...),
 			AllowedIPs:         append([]string(nil), intent.NetworkScope.AllowedIPs...),
 			AllowedDelegations: append([]string(nil), intent.BrokerScope.AllowedDelegations...),
+			AllowedRepoLabels:  append([]string(nil), intent.BrokerScope.AllowedRepoLabels...),
 			Attributes:         cloneStringMap(intent.Attributes),
 		},
 		Context: Context{

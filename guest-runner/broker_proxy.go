@@ -20,15 +20,18 @@ const (
 	brokerVsockPort      = 1025
 	brokerTimeout        = 30 * time.Second
 	governedActionHeader = "X-Aegis-Governed-Action"
+	approvalTicketHeader = "X-Aegis-Approval-Ticket"
 )
 
 // proxyRequest matches the BrokerRequest wire type on the host side.
 type proxyRequest struct {
-	Method     string              `json:"method"`
-	URL        string              `json:"url"`
-	ActionType string              `json:"action_type,omitempty"`
-	Headers    map[string][]string `json:"headers,omitempty"`
-	BodyBase64 string              `json:"body_base64,omitempty"`
+	Method         string              `json:"method"`
+	URL            string              `json:"url"`
+	ActionType     string              `json:"action_type,omitempty"`
+	Headers        map[string][]string `json:"headers,omitempty"`
+	BodyBase64     string              `json:"body_base64,omitempty"`
+	HostAction     json.RawMessage     `json:"host_action,omitempty"`
+	ApprovalTicket json.RawMessage     `json:"approval_ticket,omitempty"`
 }
 
 // proxyResponse matches the BrokerResponse wire type on the host side.
@@ -40,6 +43,7 @@ type proxyResponse struct {
 	Denied     bool                `json:"denied,omitempty"`
 	DenyReason string              `json:"deny_reason,omitempty"`
 	Error      string              `json:"error,omitempty"`
+	HostAction json.RawMessage     `json:"host_action,omitempty"`
 }
 
 func brokerProxyLog(format string, args ...interface{}) {
@@ -109,6 +113,17 @@ func handleBrokerProxyRequest(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		if strings.EqualFold(key, approvalTicketHeader) {
+			if len(msg.ApprovalTicket) == 0 && len(vals) > 0 {
+				ticket, err := decodeApprovalTicketHeader(vals[0])
+				if err != nil {
+					http.Error(w, fmt.Sprintf("decode approval ticket: %v", err), http.StatusBadRequest)
+					return
+				}
+				msg.ApprovalTicket = ticket
+			}
+			continue
+		}
 		msg.Headers[key] = vals
 	}
 	if len(body) > 0 {
@@ -175,3 +190,19 @@ func handleBrokerProxyRequest(w http.ResponseWriter, r *http.Request) {
 // brokerProxyAddr is only bound to loopback inside the guest VM.
 // This check ensures we never accidentally listen on a non-loopback address.
 var _ net.Addr = (*net.TCPAddr)(nil)
+
+func decodeApprovalTicketHeader(raw string) (json.RawMessage, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode approval ticket header: %w", err)
+	}
+	var payload any
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		return nil, fmt.Errorf("decode approval ticket header payload: %w", err)
+	}
+	return json.RawMessage(decoded), nil
+}

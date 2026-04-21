@@ -179,6 +179,105 @@ func TestWriteProofBundleAndVerifyFile(t *testing.T) {
 	}
 }
 
+func TestDeniedDirectEgressProofBundleVerifies(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.OutputArtifacts = ArtifactsFromBundleOutputs(input.ExecutionID, "", "blocked\n", false)
+	input.ExecutionStatus = "sandbox_error"
+	input.Outcome = Outcome{ExitCode: 137, Reason: "security_denied_direct_egress", ContainmentVerdict: "contained"}
+	signedReceipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	paths, err := WriteProofBundle(t.TempDir(), input.ExecutionID, signedReceipt, signer.PublicKey, "", "blocked\n", false)
+	if err != nil {
+		t.Fatalf("WriteProofBundle: %v", err)
+	}
+	report, err := VerifyBundleReport(paths)
+	if err != nil {
+		t.Fatalf("VerifyBundleReport: %v", err)
+	}
+	if !report.Verified {
+		t.Fatalf("expected verified denied proof bundle, got %+v", report)
+	}
+	if report.Statement.Predicate.ResultClass != ResultClassDenied {
+		t.Fatalf("result_class = %q, want denied", report.Statement.Predicate.ResultClass)
+	}
+	if report.Statement.Predicate.Outcome.Reason != "security_denied_direct_egress" {
+		t.Fatalf("outcome reason = %q", report.Statement.Predicate.Outcome.Reason)
+	}
+}
+
+func TestBrokeredSuccessProofBundleVerifies(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := testReceiptInput()
+	input.TelemetryEvents = input.TelemetryEvents[:1]
+	input.ExecutionStatus = "completed"
+	input.Outcome = Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed"}
+	input.Runtime.Network.BlockedEgress = nil
+	policyDigest := PolicyDigest(input.Policy)
+	credentialAllowed, _ := json.Marshal(telemetry.CredentialBrokerData{
+		ExecutionID:  input.ExecutionID,
+		BindingName:  "github",
+		TargetDomain: "api.github.com",
+		Method:       "GET",
+		ActionType:   "http_request",
+		Outcome:      "allowed",
+	})
+	brokerAction, _ := json.Marshal(telemetry.GovernedActionData{
+		ExecutionID:         input.ExecutionID,
+		ActionType:          "http_request",
+		Target:              "https://api.github.com/repos/openai/aegis",
+		Resource:            "api.github.com",
+		Method:              "GET",
+		CapabilityPath:      "broker",
+		Decision:            "allow",
+		Outcome:             "completed",
+		Reason:              "governed action allowed by broker scope",
+		RuleID:              "governance.allow",
+		PolicyDigest:        policyDigest,
+		Brokered:            true,
+		BrokeredCredentials: true,
+		BindingName:         "github",
+		ResponseDigest:      strings.Repeat("a", 64),
+		ResponseDigestAlgo:  "sha256",
+		Used:                true,
+	})
+	input.TelemetryEvents = append(input.TelemetryEvents, telemetry.Event{
+		ExecID:    input.ExecutionID,
+		Timestamp: input.FinishedAt.UnixMilli(),
+		Kind:      telemetry.KindCredentialAllowed,
+		Data:      credentialAllowed,
+	}, telemetry.Event{
+		ExecID:    input.ExecutionID,
+		Timestamp: input.FinishedAt.UnixMilli(),
+		Kind:      telemetry.KindGovernedAction,
+		Data:      brokerAction,
+	})
+	input.OutputArtifacts = ArtifactsFromBundleOutputs(input.ExecutionID, "ok\n", "", false)
+	signedReceipt, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	paths, err := WriteProofBundle(t.TempDir(), input.ExecutionID, signedReceipt, signer.PublicKey, "ok\n", "", false)
+	if err != nil {
+		t.Fatalf("WriteProofBundle: %v", err)
+	}
+	report, err := VerifyBundleReport(paths)
+	if err != nil {
+		t.Fatalf("VerifyBundleReport: %v", err)
+	}
+	if !report.Verified {
+		t.Fatalf("expected verified brokered proof bundle, got %+v", report)
+	}
+	if report.Statement.Predicate.ResultClass != ResultClassCompleted {
+		t.Fatalf("result_class = %q, want completed", report.Statement.Predicate.ResultClass)
+	}
+	if report.Statement.Predicate.BrokerSummary == nil || report.Statement.Predicate.BrokerSummary.AllowedCount != 1 {
+		t.Fatalf("unexpected broker summary: %+v", report.Statement.Predicate.BrokerSummary)
+	}
+}
+
 func TestVerifyBundlePathsRejectsTamperedArtifact(t *testing.T) {
 	signer := mustDevSigner(t)
 	input := testReceiptInput()
@@ -269,7 +368,7 @@ func TestFormatSummaryIncludesCoreFields(t *testing.T) {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
 	summary := FormatSummary(receipt.Statement, true)
-	expectedPolicyDigest := policyDigestForReceipt(input.Policy)
+	expectedPolicyDigest := PolicyDigest(input.Policy)
 	for _, needle := range []string{
 		"verification=verified",
 		"schema_version=v1",
@@ -505,7 +604,7 @@ func TestBuildPredicateIncludesTopLevelPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildSignedReceipt: %v", err)
 	}
-	if receipt.Statement.Predicate.PolicyDigest != policyDigestForReceipt(input.Policy) {
+	if receipt.Statement.Predicate.PolicyDigest != PolicyDigest(input.Policy) {
 		t.Fatalf("policy digest = %q", receipt.Statement.Predicate.PolicyDigest)
 	}
 }
@@ -548,6 +647,20 @@ func TestBuildPredicatePolicyDigestChangesWhenBaselinePolicyChanges(t *testing.T
 	}
 	if first.Statement.Predicate.PolicyDigest == second.Statement.Predicate.PolicyDigest {
 		t.Fatalf("expected policy digest to change when baseline policy changes: %q", first.Statement.Predicate.PolicyDigest)
+	}
+}
+
+func TestBuildPredicateGovernedActionPolicyDigestMatchesPredicatePolicyDigest(t *testing.T) {
+	signer := mustDevSigner(t)
+	receiptValue, err := BuildSignedReceipt(testReceiptInput(), signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if receiptValue.Statement.Predicate.GovernedActions == nil || len(receiptValue.Statement.Predicate.GovernedActions.Actions) != 1 {
+		t.Fatalf("expected governed action evidence: %+v", receiptValue.Statement.Predicate.GovernedActions)
+	}
+	if got, want := receiptValue.Statement.Predicate.GovernedActions.Actions[0].PolicyDigest, receiptValue.Statement.Predicate.PolicyDigest; got != want {
+		t.Fatalf("governed action policy digest = %q, want %q", got, want)
 	}
 }
 
@@ -666,8 +779,31 @@ func TestBuildPredicateAddsNormalizedGovernedActionSummary(t *testing.T) {
 func testReceiptInput() Input {
 	started := time.Unix(1700000000, 0).UTC()
 	finished := started.Add(2 * time.Second)
-	pointAllow, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 1, EventType: models.EventProcessExec, CedarAction: models.ActionExec, Decision: models.DecisionAllow, Reason: "allowed", Metadata: map[string]string{"policy_digest": "policy-digest"}})
-	pointDeny, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 2, EventType: models.EventNetConnect, CedarAction: models.ActionConnect, Decision: models.DecisionDeny, Reason: "network disabled", Metadata: map[string]string{"policy_digest": "policy-digest"}})
+	policyEnvelope := &PolicyEnvelope{
+		Baseline: BaselinePolicy{
+			Language:      "python",
+			CodeSizeBytes: 11,
+			MaxCodeBytes:  65536,
+			TimeoutMs:     5000,
+			MaxTimeoutMs:  10000,
+			Profile:       "standard",
+			Network: &BaselineNetworkPolicy{
+				Mode:    policycfg.NetworkModeEgressAllowlist,
+				Presets: []string{},
+				Allowlist: &NetworkAllowlistEnvelope{
+					FQDNs: []string{"registry.npmjs.org", "api.github.com"},
+					CIDRs: []string{},
+				},
+			},
+		},
+		Intent: &IntentPolicyDigest{
+			Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Source: PolicyIntentSourceContract,
+		},
+	}
+	policyDigest := PolicyDigest(policyEnvelope)
+	pointAllow, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 1, EventType: models.EventProcessExec, CedarAction: models.ActionExec, Decision: models.DecisionAllow, Reason: "allowed", Metadata: map[string]string{"policy_digest": policyDigest, "intent_digest": policyEnvelope.Intent.Digest}})
+	pointDeny, _ := json.Marshal(models.PolicyPointDecision{ExecutionID: "exec_123", EventSeq: 2, EventType: models.EventNetConnect, CedarAction: models.ActionConnect, Decision: models.DecisionDeny, Reason: "network disabled", Metadata: map[string]string{"policy_digest": policyDigest, "intent_digest": policyEnvelope.Intent.Digest}})
 	divergence, _ := json.Marshal(models.PolicyDivergenceResult{ExecutionID: "exec_123", Backend: models.BackendFirecracker, StartedAt: started, UpdatedAt: finished, LastSeq: 2, CurrentVerdict: models.DivergenceKillCandidate, TriggeredRules: []models.DivergenceRuleHit{{RuleID: "network.connect_disabled", Category: "network", Severity: models.DivergenceSeverityKillCandidate, Message: "connect destination=127.0.0.1 attempted while allow_network=false", EventSeq: 2}}})
 	runtimeEvent, _ := json.Marshal(models.RuntimeEvent{ExecutionID: "exec_123", Backend: models.BackendFirecracker, Seq: 1, TsUnixNano: started.UnixNano(), Type: models.EventProcessExec, PID: 10, Exe: "/usr/bin/python3", Comm: "python3"})
 	governedAction, _ := json.Marshal(telemetry.GovernedActionData{
@@ -682,7 +818,7 @@ func testReceiptInput() Input {
 		Used:                false,
 		Reason:              "network access is disabled by intent contract",
 		RuleID:              "governance.direct_egress_disabled",
-		PolicyDigest:        "policy-digest",
+		PolicyDigest:        policyDigest,
 		Brokered:            false,
 		BrokeredCredentials: false,
 		DenialMarker:        "direct_egress_denied",
@@ -696,29 +832,8 @@ func testReceiptInput() Input {
 		StartedAt:       started,
 		FinishedAt:      finished,
 		IntentRaw:       []byte(`{"version":"v1","execution_id":"exec_123"}`),
-		Policy: &PolicyEnvelope{
-			Baseline: BaselinePolicy{
-				Language:      "python",
-				CodeSizeBytes: 11,
-				MaxCodeBytes:  65536,
-				TimeoutMs:     5000,
-				MaxTimeoutMs:  10000,
-				Profile:       "standard",
-				Network: &BaselineNetworkPolicy{
-					Mode:    policycfg.NetworkModeEgressAllowlist,
-					Presets: []string{},
-					Allowlist: &NetworkAllowlistEnvelope{
-						FQDNs: []string{"registry.npmjs.org", "api.github.com"},
-						CIDRs: []string{},
-					},
-				},
-			},
-			Intent: &IntentPolicyDigest{
-				Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				Source: PolicyIntentSourceContract,
-			},
-		},
-		Outcome: Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
+		Policy:          policyEnvelope,
+		Outcome:         Outcome{ExitCode: 0, Reason: "completed", ContainmentVerdict: "completed", OutputTruncated: false},
 		Runtime: &RuntimeEnvelope{
 			Profile:   "standard",
 			VCPUCount: 2,
@@ -764,6 +879,7 @@ func mustDevSigner(t *testing.T) *Signer {
 }
 
 func deniedConnectTelemetry(seq uint64, ts time.Time, dstIP string, dstPort uint16) []telemetry.Event {
+	policyDigest := PolicyDigest(testReceiptInput().Policy)
 	runtimeEvent, _ := json.Marshal(models.RuntimeEvent{
 		ExecutionID: "exec_123",
 		Backend:     models.BackendFirecracker,
@@ -781,7 +897,7 @@ func deniedConnectTelemetry(seq uint64, ts time.Time, dstIP string, dstPort uint
 		Decision:    models.DecisionDeny,
 		Reason:      "destination denied",
 		Metadata: map[string]string{
-			"policy_digest": "policy-digest",
+			"policy_digest": policyDigest,
 			"dst_ip":        dstIP,
 			"dst_port":      strconv.Itoa(int(dstPort)),
 		},

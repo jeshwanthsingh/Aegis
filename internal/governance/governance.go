@@ -9,6 +9,10 @@ import (
 	"sort"
 	"strings"
 
+	"aegis/internal/approval"
+	"aegis/internal/escalation"
+	"aegis/internal/hostaction"
+	"aegis/internal/lease"
 	"aegis/internal/models"
 	"aegis/internal/policy/contract"
 	"aegis/internal/telemetry"
@@ -18,6 +22,7 @@ const (
 	ActionHTTPRequest     = "http_request"
 	ActionDependencyFetch = "dependency_fetch"
 	ActionNetworkConnect  = "network_connect"
+	ActionHostRepoApply   = "host_repo_apply_patch"
 )
 
 type CapabilityPath string
@@ -47,14 +52,18 @@ type Decision struct {
 }
 
 type CapabilityUse struct {
-	Path                CapabilityPath `json:"path"`
-	Used                bool           `json:"used"`
-	CredentialsInjected bool           `json:"credentials_injected,omitempty"`
-	BindingName         string         `json:"binding_name,omitempty"`
-	ResponseDigest      string         `json:"response_digest,omitempty"`
-	ResponseDigestAlgo  string         `json:"response_digest_algo,omitempty"`
-	DenialMarker        string         `json:"denial_marker,omitempty"`
-	Error               string         `json:"error,omitempty"`
+	Path                CapabilityPath       `json:"path"`
+	Used                bool                 `json:"used"`
+	CredentialsInjected bool                 `json:"credentials_injected,omitempty"`
+	BindingName         string               `json:"binding_name,omitempty"`
+	ResponseDigest      string               `json:"response_digest,omitempty"`
+	ResponseDigestAlgo  string               `json:"response_digest_algo,omitempty"`
+	DenialMarker        string               `json:"denial_marker,omitempty"`
+	Error               string               `json:"error,omitempty"`
+	Approval            *approval.Check      `json:"approval,omitempty"`
+	Lease               *lease.Check         `json:"lease,omitempty"`
+	Escalation          *escalation.Evidence `json:"escalation,omitempty"`
+	HostAction          *hostaction.Evidence `json:"host_action,omitempty"`
 }
 
 type CapabilityRecord struct {
@@ -71,6 +80,8 @@ func NormalizeActionType(value string) string {
 		return ActionDependencyFetch
 	case ActionNetworkConnect:
 		return ActionNetworkConnect
+	case ActionHostRepoApply:
+		return ActionHostRepoApply
 	default:
 		return ""
 	}
@@ -78,7 +89,7 @@ func NormalizeActionType(value string) string {
 
 func IsValidActionType(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case ActionHTTPRequest, ActionDependencyFetch, ActionNetworkConnect:
+	case ActionHTTPRequest, ActionDependencyFetch, ActionNetworkConnect, ActionHostRepoApply:
 		return true
 	default:
 		return false
@@ -100,11 +111,13 @@ func DigestBrokerScope(scope contract.BrokerScope) string {
 	payload := struct {
 		AllowedDelegations []string `json:"allowed_delegations,omitempty"`
 		AllowedDomains     []string `json:"allowed_domains,omitempty"`
+		AllowedRepoLabels  []string `json:"allowed_repo_labels,omitempty"`
 		AllowedActionTypes []string `json:"allowed_action_types,omitempty"`
 		RequireHostConsent bool     `json:"require_host_consent,omitempty"`
 	}{
 		AllowedDelegations: append([]string(nil), scope.AllowedDelegations...),
 		AllowedDomains:     append([]string(nil), scope.AllowedDomains...),
+		AllowedRepoLabels:  append([]string(nil), scope.AllowedRepoLabels...),
 		AllowedActionTypes: append([]string(nil), scope.AllowedActionTypes...),
 		RequireHostConsent: scope.RequireHostConsent,
 	}
@@ -115,6 +128,9 @@ func EffectiveBrokerActionTypes(scope contract.BrokerScope) []string {
 	allowedTypes := append([]string(nil), scope.AllowedActionTypes...)
 	if len(allowedTypes) == 0 && len(scope.AllowedDomains) > 0 {
 		allowedTypes = []string{ActionHTTPRequest}
+	}
+	if len(allowedTypes) == 0 && len(scope.AllowedRepoLabels) > 0 {
+		allowedTypes = []string{ActionHostRepoApply}
 	}
 	normalized := make([]string, 0, len(allowedTypes))
 	seen := map[string]struct{}{}
@@ -187,14 +203,14 @@ func EvaluateBroker(scope contract.BrokerScope, req Request) Decision {
 		}
 	}
 	policyDigest := DigestBrokerScope(scope)
-	domain := strings.ToLower(strings.TrimSpace(req.Resource))
+	resource := strings.ToLower(strings.TrimSpace(req.Resource))
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	decision := Decision{
 		Allow:        true,
 		Reason:       "governed action allowed by broker scope",
 		RuleID:       "governance.allow",
 		PolicyDigest: policyDigest,
-		AuditPayload: map[string]string{"target_domain": domain},
+		AuditPayload: map[string]string{"resource": resource},
 	}
 
 	allowedTypes := EffectiveBrokerActionTypes(scope)
@@ -219,12 +235,25 @@ func EvaluateBroker(scope contract.BrokerScope, req Request) Decision {
 		decision.Reason = "dependency_fetch requires GET or HEAD"
 		return decision
 	}
-	if !DomainAllowed(scope.AllowedDomains, domain) {
-		decision.Allow = false
-		decision.Deny = true
-		decision.RuleID = "broker.domain_denied"
-		decision.Reason = fmt.Sprintf("domain %q is not in broker_scope.allowed_domains", domain)
-		return decision
+	switch actionType {
+	case ActionHostRepoApply:
+		decision.AuditPayload = map[string]string{"repo_label": resource}
+		if !ResourceLabelAllowed(scope.AllowedRepoLabels, resource) {
+			decision.Allow = false
+			decision.Deny = true
+			decision.RuleID = "broker.repo_label_denied"
+			decision.Reason = fmt.Sprintf("repo label %q is not in broker_scope.allowed_repo_labels", resource)
+			return decision
+		}
+	default:
+		decision.AuditPayload = map[string]string{"target_domain": resource}
+		if !DomainAllowed(scope.AllowedDomains, resource) {
+			decision.Allow = false
+			decision.Deny = true
+			decision.RuleID = "broker.domain_denied"
+			decision.Reason = fmt.Sprintf("domain %q is not in broker_scope.allowed_domains", resource)
+			return decision
+		}
 	}
 	return decision
 }
@@ -335,8 +364,54 @@ func (record CapabilityRecord) ToGovernedActionData() telemetry.GovernedActionDa
 		AuditPayload:        cloneStringMap(record.Decision.AuditPayload),
 		Error:               record.Use.Error,
 		CapabilityPath:      string(record.Use.Path),
+		Approval:            cloneApprovalCheck(record.Use.Approval),
+		Lease:               cloneLeaseCheck(record.Use.Lease),
+		Escalation:          cloneEscalationEvidence(record.Use.Escalation),
+		HostAction:          cloneHostActionEvidence(record.Use.HostAction),
 		Used:                record.Use.Used,
 	}
+}
+
+func cloneApprovalCheck(src *approval.Check) *approval.Check {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	return &cloned
+}
+
+func cloneLeaseCheck(src *lease.Check) *lease.Check {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	if src.RemainingCount != nil {
+		value := *src.RemainingCount
+		cloned.RemainingCount = &value
+	}
+	return &cloned
+}
+
+func cloneEscalationEvidence(src *escalation.Evidence) *escalation.Evidence {
+	if src == nil {
+		return nil
+	}
+	cloned := &escalation.Evidence{Signals: append([]escalation.Signal(nil), src.Signals...)}
+	return cloned
+}
+
+func cloneHostActionEvidence(src *hostaction.Evidence) *hostaction.Evidence {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	if src.RepoApplyPatch != nil {
+		repoApplyPatch := *src.RepoApplyPatch
+		repoApplyPatch.TargetScope = append([]string(nil), src.RepoApplyPatch.TargetScope...)
+		repoApplyPatch.AffectedPaths = append([]string(nil), src.RepoApplyPatch.AffectedPaths...)
+		cloned.RepoApplyPatch = &repoApplyPatch
+	}
+	return &cloned
 }
 
 func DomainAllowed(allowedDomains []string, domain string) bool {
@@ -364,6 +439,19 @@ func DomainAllowed(allowedDomains []string, domain string) bool {
 			allowedHost = allowed[:idx]
 		}
 		if normalizedDomain == allowedHost || normalizedDomain == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func ResourceLabelAllowed(allowed []string, label string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(label))
+	if normalized == "" {
+		return false
+	}
+	for _, candidate := range allowed {
+		if strings.TrimSpace(strings.ToLower(candidate)) == normalized {
 			return true
 		}
 	}

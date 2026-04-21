@@ -1,6 +1,13 @@
 package telemetry
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"aegis/internal/approval"
+	"aegis/internal/escalation"
+	"aegis/internal/hostaction"
+	"aegis/internal/lease"
+)
 
 type Event struct {
 	ExecID    string          `json:"exec_id"`
@@ -116,24 +123,28 @@ type CredentialBrokerData struct {
 }
 
 type GovernedActionData struct {
-	ExecutionID         string            `json:"execution_id"`
-	ActionType          string            `json:"action_type"`
-	Target              string            `json:"target"`
-	Resource            string            `json:"resource,omitempty"`
-	Method              string            `json:"method,omitempty"`
-	Decision            string            `json:"decision"`
-	Outcome             string            `json:"outcome,omitempty"`
-	Reason              string            `json:"reason,omitempty"`
-	RuleID              string            `json:"rule_id,omitempty"`
-	PolicyDigest        string            `json:"policy_digest,omitempty"`
-	Brokered            bool              `json:"brokered"`
-	BrokeredCredentials bool              `json:"brokered_credentials"`
-	BindingName         string            `json:"binding_name,omitempty"`
-	ResponseDigest      string            `json:"response_digest,omitempty"`
-	ResponseDigestAlgo  string            `json:"response_digest_algo,omitempty"`
-	DenialMarker        string            `json:"denial_marker,omitempty"`
-	AuditPayload        map[string]string `json:"audit_payload,omitempty"`
-	Error               string            `json:"error,omitempty"`
-	CapabilityPath      string            `json:"capability_path,omitempty"`
-	Used                bool              `json:"used"`
+	ExecutionID         string               `json:"execution_id"`
+	ActionType          string               `json:"action_type"`
+	Target              string               `json:"target"`
+	Resource            string               `json:"resource,omitempty"`
+	Method              string               `json:"method,omitempty"`
+	Decision            string               `json:"decision"`
+	Outcome             string               `json:"outcome,omitempty"`
+	Reason              string               `json:"reason,omitempty"`
+	RuleID              string               `json:"rule_id,omitempty"`
+	PolicyDigest        string               `json:"policy_digest,omitempty"`
+	Brokered            bool                 `json:"brokered"`
+	BrokeredCredentials bool                 `json:"brokered_credentials"`
+	BindingName         string               `json:"binding_name,omitempty"`
+	ResponseDigest      string               `json:"response_digest,omitempty"`
+	ResponseDigestAlgo  string               `json:"response_digest_algo,omitempty"`
+	DenialMarker        string               `json:"denial_marker,omitempty"`
+	AuditPayload        map[string]string    `json:"audit_payload,omitempty"`
+	Error               string               `json:"error,omitempty"`
+	CapabilityPath      string               `json:"capability_path,omitempty"`
+	Approval            *approval.Check      `json:"approval,omitempty"`
+	Lease               *lease.Check         `json:"lease,omitempty"`
+	Escalation          *escalation.Evidence `json:"escalation,omitempty"`
+	HostAction          *hostaction.Evidence `json:"host_action,omitempty"`
+	Used                bool                 `json:"used"`
 }

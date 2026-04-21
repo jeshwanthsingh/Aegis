@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"aegis/internal/escalation"
 )
 
 type outputArtifactFile struct {
@@ -298,6 +300,7 @@ func FormatSummary(statement Statement, verified bool) string {
 		"finished_at=" + statement.Predicate.FinishedAt.Format(time.RFC3339Nano),
 		"backend=" + string(statement.Predicate.Backend),
 		"policy_digest=" + defaultSummaryValue(statement.Predicate.PolicyDigest),
+		"authority_digest=" + defaultSummaryValue(authorityDigestSummary(statement.Predicate.Authority)),
 		"signer_key_id=" + defaultSummaryValue(statement.Predicate.SignerKeyID),
 		"signing_mode=" + string(statement.Predicate.Trust.SigningMode),
 		"intent_digest=" + defaultSummaryValue(statement.Predicate.IntentDigest),
@@ -313,6 +316,15 @@ func FormatSummary(statement Statement, verified bool) string {
 		"rule_hits=" + strings.Join(ruleIDs, ","),
 		fmt.Sprintf("artifact_count=%d", len(statement.Subject)),
 		"artifacts=" + strings.Join(subjects, "; "),
+	}
+	if statement.Predicate.Authority != nil {
+		lines = append(lines, "approval_mode="+defaultSummaryValue(statement.Predicate.Authority.ApprovalMode))
+		if len(statement.Predicate.Authority.BrokerRepoLabels) > 0 {
+			lines = append(lines, "broker_repo_labels="+strings.Join(statement.Predicate.Authority.BrokerRepoLabels, ","))
+		}
+		if len(statement.Predicate.Authority.BrokerActionTypes) > 0 {
+			lines = append(lines, "broker_action_types="+strings.Join(statement.Predicate.Authority.BrokerActionTypes, ","))
+		}
 	}
 	if statement.Predicate.Policy != nil {
 		lines = append(lines,
@@ -378,6 +390,29 @@ func FormatSummary(statement Statement, verified bool) string {
 		if len(statement.Predicate.Runtime.AppliedOverrides) > 0 {
 			lines = append(lines, "runtime_applied_overrides="+strings.Join(statement.Predicate.Runtime.AppliedOverrides, ","))
 		}
+		if statement.Predicate.Runtime.Policy != nil {
+			policy := statement.Predicate.Runtime.Policy
+			if policy.EscalationAttempts != nil {
+				lines = append(lines,
+					fmt.Sprintf("runtime_policy_escalation_count=%d", policy.EscalationAttempts.Count),
+					fmt.Sprintf("runtime_policy_escalation_sample_count=%d", len(policy.EscalationAttempts.Sample)),
+					"runtime_policy_escalation_sample_truncated="+strconv.FormatBool(policy.EscalationAttempts.SampleTruncated),
+				)
+				for idx, sample := range policy.EscalationAttempts.Sample {
+					lines = append(lines, fmt.Sprintf("runtime_policy_escalation_sample_%d=%s", idx+1, formatEscalationSample(sample)))
+				}
+			}
+			if len(policy.DeniedDestructiveActions) > 0 {
+				values := make([]string, 0, len(policy.DeniedDestructiveActions))
+				for _, class := range policy.DeniedDestructiveActions {
+					values = append(values, string(class))
+				}
+				lines = append(lines, "runtime_policy_denied_destructive_actions="+strings.Join(values, ","))
+			}
+			if policy.TerminationReason != "" {
+				lines = append(lines, "runtime_policy_termination_reason="+policy.TerminationReason)
+			}
+		}
 	}
 	if statement.Predicate.BrokerSummary != nil {
 		brokerEvents := []string{"credential.request"}
@@ -423,6 +458,13 @@ func defaultSummaryValue(v string) string {
 		return "none"
 	}
 	return v
+}
+
+func authorityDigestSummary(authority *AuthorityEnvelope) string {
+	if authority == nil {
+		return ""
+	}
+	return authority.Digest
 }
 
 func hydrateArtifactPaths(paths *BundlePaths) error {
@@ -695,8 +737,96 @@ func formatGovernedActionFields(action GovernedActionRecord) string {
 	if action.Error != "" {
 		fields = append(fields, "error="+action.Error)
 	}
+	if action.Approval != nil {
+		fields = append(fields, "approval_result="+string(action.Approval.Result))
+		if action.Approval.TicketID != "" {
+			fields = append(fields, "approval_ticket_id="+action.Approval.TicketID)
+		}
+		if action.Approval.IssuerKeyID != "" {
+			fields = append(fields, "approval_issuer_key_id="+action.Approval.IssuerKeyID)
+		}
+		if action.Approval.Reason != "" {
+			fields = append(fields, "approval_reason="+action.Approval.Reason)
+		}
+		if action.Approval.ResourceDigest != "" {
+			fields = append(fields, fmt.Sprintf("resource_digest=%s:%s", action.Approval.ResourceDigestAlgo, action.Approval.ResourceDigest))
+		}
+		fields = append(fields, fmt.Sprintf("approval_consumed=%t", action.Approval.Consumed))
+	}
+	if action.Lease != nil {
+		fields = append(fields, "lease_result="+string(action.Lease.Result))
+		if action.Lease.LeaseID != "" {
+			fields = append(fields, "lease_id="+action.Lease.LeaseID)
+		}
+		if action.Lease.GrantID != "" {
+			fields = append(fields, "lease_grant_id="+action.Lease.GrantID)
+		}
+		if action.Lease.Reason != "" {
+			fields = append(fields, "lease_reason="+action.Lease.Reason)
+		}
+		fields = append(fields, "lease_budget_result="+string(action.Lease.BudgetResult))
+		if action.Lease.RemainingCount != nil {
+			fields = append(fields, fmt.Sprintf("lease_remaining_count=%d", *action.Lease.RemainingCount))
+		}
+	}
+	if action.Escalation != nil && len(action.Escalation.Signals) > 0 {
+		values := make([]string, 0, len(action.Escalation.Signals))
+		for _, signal := range action.Escalation.Signals {
+			values = append(values, string(signal))
+		}
+		fields = append(fields, "escalation_signals="+strings.Join(values, ","))
+	}
+	if action.HostAction != nil {
+		fields = append(fields, "host_action_class="+string(action.HostAction.Class))
+		if action.HostAction.RepoApplyPatch != nil {
+			fields = append(fields, "repo_label="+action.HostAction.RepoApplyPatch.RepoLabel)
+			fields = append(fields, fmt.Sprintf("patch_digest=%s:%s", action.HostAction.RepoApplyPatch.PatchDigestAlgo, action.HostAction.RepoApplyPatch.PatchDigest))
+			if len(action.HostAction.RepoApplyPatch.AffectedPaths) > 0 {
+				fields = append(fields, "affected_paths="+strings.Join(action.HostAction.RepoApplyPatch.AffectedPaths, ","))
+			}
+		}
+	}
 	if len(action.AuditPayload) > 0 {
 		fields = append(fields, "audit_payload="+formatAuditPayload(action.AuditPayload))
+	}
+	return strings.Join(fields, " ")
+}
+
+func formatEscalationSample(sample escalation.Sample) string {
+	fields := []string{
+		"source=" + string(sample.Source),
+		fmt.Sprintf("count=%d", sample.Count),
+	}
+	if len(sample.Signals) > 0 {
+		values := make([]string, 0, len(sample.Signals))
+		for _, signal := range sample.Signals {
+			values = append(values, string(signal))
+		}
+		fields = append(fields, "signals="+strings.Join(values, ","))
+	}
+	if sample.RuleID != "" {
+		fields = append(fields, "rule_id="+sample.RuleID)
+	}
+	if sample.ActionType != "" {
+		fields = append(fields, "action_type="+sample.ActionType)
+	}
+	if sample.CapabilityPath != "" {
+		fields = append(fields, "capability_path="+sample.CapabilityPath)
+	}
+	if sample.Target != "" {
+		fields = append(fields, "target="+sample.Target)
+	}
+	if sample.Resource != "" {
+		fields = append(fields, "resource="+sample.Resource)
+	}
+	if sample.HostActionClass != "" {
+		fields = append(fields, "host_action_class="+sample.HostActionClass)
+	}
+	if sample.MutationField != "" {
+		fields = append(fields, "mutation_field="+sample.MutationField)
+	}
+	if sample.EnforcementPoint != "" {
+		fields = append(fields, "enforcement_point="+sample.EnforcementPoint)
 	}
 	return strings.Join(fields, " ")
 }

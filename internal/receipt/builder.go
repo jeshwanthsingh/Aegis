@@ -1,9 +1,7 @@
 package receipt
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"aegis/internal/approval"
+	"aegis/internal/dsse"
+	"aegis/internal/escalation"
+	"aegis/internal/hostaction"
+	"aegis/internal/lease"
 	"aegis/internal/models"
 	policycfg "aegis/internal/policy"
 	"aegis/internal/telemetry"
@@ -36,12 +39,9 @@ func BuildSignedReceipt(input Input, signer *Signer) (SignedReceipt, error) {
 	if err != nil {
 		return SignedReceipt{}, fmt.Errorf("marshal receipt statement: %w", err)
 	}
-	preAuth := pae(PayloadType, statementBytes)
-	signature := ed25519.Sign(signer.PrivateKey, preAuth)
-	envelope := Envelope{
-		PayloadType: PayloadType,
-		Payload:     base64.StdEncoding.EncodeToString(statementBytes),
-		Signatures:  []Signature{{KeyID: signer.KeyID, Sig: base64.StdEncoding.EncodeToString(signature)}},
+	envelope, err := dsse.SignEnvelope(PayloadType, statementBytes, signer.PrivateKey)
+	if err != nil {
+		return SignedReceipt{}, err
 	}
 	_ = runtimeEventCount
 	return SignedReceipt{Envelope: envelope, Statement: statement}, nil
@@ -70,6 +70,12 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 	if runtime != nil && runtime.Network != nil {
 		runtime.Network.BlockedEgress = blockedEgress
 	}
+	if runtimePolicy := buildRuntimePolicySummary(governedSummary, input.Authority, input.Outcome.Reason); runtimePolicy != nil {
+		if runtime == nil {
+			runtime = &RuntimeEnvelope{}
+		}
+		runtime.Policy = runtimePolicy
+	}
 	return ExecutionReceiptPredicate{
 		Version:            PredicateVersion,
 		ExecutionID:        input.ExecutionID,
@@ -82,10 +88,11 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		SemanticsMode:      SemanticsModeExplicitV1,
 		ResultClass:        resultClass,
 		Denial:             denial,
-		PolicyDigest:       policyDigestForReceipt(input.Policy),
+		PolicyDigest:       PolicyDigest(input.Policy),
 		IntentDigest:       intentDigest,
 		IntentDigestAlgo:   intentAlgo,
 		Policy:             clonePolicyEnvelope(input.Policy),
+		Authority:          cloneAuthorityEnvelope(input.Authority),
 		EvidenceDigest:     evidenceDigest,
 		EvidenceDigestAlgo: "sha256",
 		RuntimeEventCount:  runtimeEventCount,
@@ -139,6 +146,38 @@ func clonePolicyEnvelope(policy *PolicyEnvelope) *PolicyEnvelope {
 	return cloned
 }
 
+func cloneAuthorityEnvelope(authority *AuthorityEnvelope) *AuthorityEnvelope {
+	if authority == nil {
+		return nil
+	}
+	cloned := &AuthorityEnvelope{
+		Digest:               authority.Digest,
+		RootfsImage:          authority.RootfsImage,
+		Mounts:               append([]AuthorityMountEnvelope(nil), authority.Mounts...),
+		NetworkMode:          policycfg.NormalizeNetworkMode(authority.NetworkMode),
+		ResolvedHosts:        append([]AuthorityResolvedHostEnvelope(nil), authority.ResolvedHosts...),
+		BrokerAllowedDomains: append([]string(nil), authority.BrokerAllowedDomains...),
+		BrokerRepoLabels:     append([]string(nil), authority.BrokerRepoLabels...),
+		BrokerActionTypes:    append([]string(nil), authority.BrokerActionTypes...),
+		ApprovalMode:         authority.ApprovalMode,
+	}
+	if authority.EgressAllowlist != nil {
+		cloned.EgressAllowlist = cloneNetworkAllowlistEnvelope(authority.EgressAllowlist)
+	}
+	if authority.MutationAttempt != nil {
+		cloned.MutationAttempt = &AuthorityMutationEnvelope{
+			Field:            authority.MutationAttempt.Field,
+			Expected:         authority.MutationAttempt.Expected,
+			Observed:         authority.MutationAttempt.Observed,
+			EnforcementPoint: authority.MutationAttempt.EnforcementPoint,
+		}
+	}
+	for idx := range cloned.ResolvedHosts {
+		cloned.ResolvedHosts[idx].IPv4 = append([]string(nil), authority.ResolvedHosts[idx].IPv4...)
+	}
+	return cloned
+}
+
 func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
 	if runtime == nil {
 		return nil
@@ -177,10 +216,33 @@ func cloneRuntimeEnvelope(runtime *RuntimeEnvelope) *RuntimeEnvelope {
 	if runtime.Broker != nil {
 		cloned.Broker = &RuntimeBrokerEnvelope{Enabled: runtime.Broker.Enabled}
 	}
+	if runtime.Policy != nil {
+		cloned.Policy = cloneRuntimePolicyEnvelope(runtime.Policy)
+	}
 	return cloned
 }
 
-func policyDigestForReceipt(policy *PolicyEnvelope) string {
+func cloneRuntimePolicyEnvelope(policy *escalation.RuntimePolicyEnvelope) *escalation.RuntimePolicyEnvelope {
+	if policy == nil {
+		return nil
+	}
+	cloned := &escalation.RuntimePolicyEnvelope{
+		TerminationReason: strings.TrimSpace(policy.TerminationReason),
+	}
+	if policy.EscalationAttempts != nil {
+		cloned.EscalationAttempts = &escalation.Summary{
+			Count:           policy.EscalationAttempts.Count,
+			SampleTruncated: policy.EscalationAttempts.SampleTruncated,
+			Sample:          cloneEscalationSamples(policy.EscalationAttempts.Sample),
+		}
+	}
+	if len(policy.DeniedDestructiveActions) > 0 {
+		cloned.DeniedDestructiveActions = append([]escalation.DestructiveActionClass(nil), policy.DeniedDestructiveActions...)
+	}
+	return cloned
+}
+
+func PolicyDigest(policy *PolicyEnvelope) string {
 	if policy == nil {
 		return ""
 	}
@@ -269,8 +331,12 @@ func summarizeTelemetry(events []telemetry.Event) (string, int, PointDecisionSum
 				ResponseDigest:      action.ResponseDigest,
 				ResponseDigestAlgo:  action.ResponseDigestAlgo,
 				DenialMarker:        action.DenialMarker,
-				AuditPayload:        cloneStringMap(action.AuditPayload),
+				AuditPayload:        receiptAuditPayload(action.AuditPayload),
 				Error:               action.Error,
+				Approval:            cloneApprovalCheck(action.Approval),
+				Lease:               cloneLeaseCheck(action.Lease),
+				Escalation:          cloneEscalationEvidence(action.Escalation),
+				HostAction:          cloneHostActionEvidence(action.HostAction),
 			})
 		case telemetry.KindCredentialAllowed:
 			var bd telemetry.CredentialBrokerData
@@ -710,8 +776,129 @@ func cloneStringMap(src map[string]string) map[string]string {
 	return dst
 }
 
+func cloneApprovalCheck(src *approval.Check) *approval.Check {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	return &cloned
+}
+
+func cloneLeaseCheck(src *lease.Check) *lease.Check {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	if src.RemainingCount != nil {
+		value := *src.RemainingCount
+		cloned.RemainingCount = &value
+	}
+	return &cloned
+}
+
+func cloneEscalationEvidence(src *escalation.Evidence) *escalation.Evidence {
+	if src == nil {
+		return nil
+	}
+	return &escalation.Evidence{Signals: append([]escalation.Signal(nil), src.Signals...)}
+}
+
+func cloneHostActionEvidence(src *hostaction.Evidence) *hostaction.Evidence {
+	if src == nil {
+		return nil
+	}
+	cloned := &hostaction.Evidence{
+		Class: src.Class,
+	}
+	if src.RepoApplyPatch != nil {
+		cloned.RepoApplyPatch = &hostaction.RepoApplyPatchEvidence{
+			RepoLabel:       src.RepoApplyPatch.RepoLabel,
+			TargetScope:     append([]string(nil), src.RepoApplyPatch.TargetScope...),
+			AffectedPaths:   append([]string(nil), src.RepoApplyPatch.AffectedPaths...),
+			PatchDigest:     src.RepoApplyPatch.PatchDigest,
+			PatchDigestAlgo: src.RepoApplyPatch.PatchDigestAlgo,
+			BaseRevision:    src.RepoApplyPatch.BaseRevision,
+		}
+	}
+	return cloned
+}
+
+func cloneEscalationSamples(samples []escalation.Sample) []escalation.Sample {
+	if len(samples) == 0 {
+		return nil
+	}
+	cloned := make([]escalation.Sample, 0, len(samples))
+	for _, sample := range samples {
+		cloned = append(cloned, escalation.Sample{
+			Count:            sample.Count,
+			Source:           sample.Source,
+			Signals:          append([]escalation.Signal(nil), sample.Signals...),
+			RuleID:           sample.RuleID,
+			ActionType:       sample.ActionType,
+			CapabilityPath:   sample.CapabilityPath,
+			Target:           sample.Target,
+			Resource:         sample.Resource,
+			HostActionClass:  sample.HostActionClass,
+			MutationField:    sample.MutationField,
+			EnforcementPoint: sample.EnforcementPoint,
+		})
+	}
+	return cloned
+}
+
+func receiptAuditPayload(src map[string]string) map[string]string {
+	cloned := cloneStringMap(src)
+	if len(cloned) == 0 {
+		return cloned
+	}
+	for _, key := range []string{"repo_root", "path", "old_path", "new_path"} {
+		delete(cloned, key)
+	}
+	if len(cloned) == 0 {
+		return nil
+	}
+	return cloned
+}
+
+func buildRuntimePolicySummary(governedSummary *GovernedActionSummary, authority *AuthorityEnvelope, outcomeReason string) *escalation.RuntimePolicyEnvelope {
+	attempts := make([]escalation.Attempt, 0)
+	if governedSummary != nil {
+		for _, action := range governedSummary.Actions {
+			if action.Escalation == nil || len(action.Escalation.Signals) == 0 {
+				continue
+			}
+			attempts = append(attempts, escalation.Attempt{
+				Source:          escalation.SourceGovernedAction,
+				Signals:         append([]escalation.Signal(nil), action.Escalation.Signals...),
+				RuleID:          strings.TrimSpace(action.RuleID),
+				ActionType:      strings.TrimSpace(action.ActionType),
+				CapabilityPath:  strings.TrimSpace(action.CapabilityPath),
+				Target:          strings.TrimSpace(action.Target),
+				Resource:        strings.TrimSpace(action.Resource),
+				HostActionClass: runtimePolicyHostActionClass(action),
+			})
+		}
+	}
+	if authority != nil && authority.MutationAttempt != nil {
+		attempts = append(attempts, escalation.Attempt{
+			Source:           escalation.SourceAuthorityMutation,
+			Signals:          []escalation.Signal{escalation.SignalAuthorityBroadeningAttempt},
+			MutationField:    strings.TrimSpace(authority.MutationAttempt.Field),
+			EnforcementPoint: strings.TrimSpace(authority.MutationAttempt.EnforcementPoint),
+		})
+	}
+	return escalation.Summarize(attempts, outcomeReason)
+}
+
+func runtimePolicyHostActionClass(action GovernedActionRecord) string {
+	if action.HostAction != nil {
+		return escalation.PublicHostActionClass(string(action.HostAction.Class))
+	}
+	return escalation.PublicHostActionClass(action.AuditPayload["host_action_class"])
+}
+
 func pae(payloadType string, payload []byte) []byte {
-	return []byte(fmt.Sprintf("DSSEv1 %d %s %d %s", len(payloadType), payloadType, len(payload), payload))
+	return dsse.PAE(payloadType, payload)
 }
 
 func trustLimitationsText(trust TrustPosture) string {
