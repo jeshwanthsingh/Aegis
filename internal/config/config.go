@@ -77,7 +77,7 @@ func FindRepoRoot(start string) (string, error) {
 	}
 	dir := filepath.Clean(start)
 	for {
-		if fileExists(filepath.Join(dir, "go.mod")) && dirExists(filepath.Join(dir, "ai")) {
+		if fileExists(filepath.Join(dir, "go.mod")) && fileExists(filepath.Join(dir, "configs", "default-policy.yaml")) {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)
@@ -342,11 +342,6 @@ func ResolveFirecrackerBinary(bin string) (string, error) {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 func yamlQuote(v string) string {

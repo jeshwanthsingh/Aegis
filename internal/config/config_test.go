@@ -75,11 +75,14 @@ func TestFindRepoRoot(t *testing.T) {
 func tempRepoRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "ai"), 0o755); err != nil {
-		t.Fatalf("MkdirAll ai: %v", err)
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll configs: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module aegis\n\ngo 1.22.5\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "configs", "default-policy.yaml"), []byte("runtime:\n  network:\n    mode: none\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile default-policy.yaml: %v", err)
 	}
 	return root
 }

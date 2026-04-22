@@ -279,14 +279,22 @@ func mustTestSigner(t *testing.T) *receipt.Signer {
 
 func testTime() time.Time { return time.Unix(1700000000, 0).UTC() }
 
-func TestBaseURLUsesConfigWhenEnvUnset(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "ai"), 0o755); err != nil {
-		t.Fatalf("MkdirAll ai: %v", err)
+func makeRepoRootForCLI(t *testing.T, repo string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(repo, "configs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll configs: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module aegis\n\ngo 1.22.5\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile go.mod: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "configs", "default-policy.yaml"), []byte("runtime:\n  network:\n    mode: none\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile default-policy.yaml: %v", err)
+	}
+}
+
+func TestBaseURLUsesConfigWhenEnvUnset(t *testing.T) {
+	repo := t.TempDir()
+	makeRepoRootForCLI(t, repo)
 	cfg := config.Default(repo)
 	cfg.API.URL = "http://127.0.0.1:9191"
 	configPath := filepath.Join(repo, config.DefaultConfigRelPath)
@@ -469,12 +477,7 @@ func TestDoctorCommandSurfacesRuntimeFailureHonestly(t *testing.T) {
 func makeTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "ai"), 0o755); err != nil {
-		t.Fatalf("MkdirAll ai: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module aegis\n\ngo 1.22.5\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile go.mod: %v", err)
-	}
+	makeRepoRootForCLI(t, repo)
 	cfg := config.Default(repo)
 	cfg.API.URL = "http://127.0.0.1:8080"
 	configPath := filepath.Join(repo, config.DefaultConfigRelPath)

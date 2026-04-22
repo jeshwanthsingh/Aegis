@@ -1307,6 +1307,8 @@ func (w *nonFlushingResponseWriter) WriteHeader(status int) {
 
 func installHandlerRuntimeStubs(t *testing.T) {
 	t.Helper()
+	_, rootfsPath := makeTestAssets(t)
+	t.Setenv("AEGIS_ROOTFS_PATH", rootfsPath)
 
 	origAcquire := acquireExecutionVMFunc
 	origSetup := setupCgroupFunc
