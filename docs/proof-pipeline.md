@@ -68,5 +68,5 @@ What it must not be confused with:
 
 The default public-facing canonical demo is narrower than the Tier 2 proof lane. Use:
 
-- [demo-guide.md](demo-guide.md) for the default product story
+- [canonical-demos.md](canonical-demos.md) for the default product story
 - `--with-warm-path` and `--with-workspace` only for secondary proof coverage

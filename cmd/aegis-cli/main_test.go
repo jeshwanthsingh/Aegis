@@ -55,7 +55,7 @@ func TestReceiptVerifyCommand(t *testing.T) {
 		"outcome=completed",
 		"exit_code=0",
 		"execution_status=none",
-		"semantics_mode=explicit_v1",
+		"semantics_mode=explicit_v2",
 		"result_class=completed",
 		"key_source=configured_seed",
 		"artifact_count=2",

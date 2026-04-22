@@ -2,7 +2,7 @@
 
 Aegis ships an MCP stdio server so agent clients can call a local Aegis runtime without having to construct HTTP requests or parse receipt verification output themselves.
 
-The MCP path is secondary. The canonical first-run path is [setup-local.md](setup-local.md) and [demo-guide.md](demo-guide.md). Aegis today is not a broad MCP platform. The server is a thin local wrapper over the same runtime and verification path.
+The MCP path is secondary. The canonical first-run path is [setup-local.md](setup-local.md) and [canonical-demos.md](canonical-demos.md). Aegis today is not a broad MCP platform. The server is a thin local wrapper over the same runtime and verification path.
 
 The MCP layer is intentionally thin:
 

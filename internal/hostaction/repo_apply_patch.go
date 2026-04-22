@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,8 +16,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"aegis/internal/approval"
+
+	"golang.org/x/sys/unix"
 )
 
 var runGitCommand = func(ctx context.Context, dir string, stdin []byte, args ...string) ([]byte, error) {
@@ -36,6 +40,8 @@ var runGitCommand = func(ctx context.Context, dir string, stdin []byte, args ...
 }
 
 var repoLocks sync.Map
+
+var repoLockDirPath = filepath.Join(os.TempDir(), "aegis-hostaction-locks")
 
 type RepoPatchPreparer struct {
 	Resolver RepoResolver
@@ -77,13 +83,15 @@ func (p *RepoPatchPreparer) Prepare(ctx context.Context, req CanonicalRequest) (
 	if err != nil {
 		return nil, err
 	}
-	lock := repoLock(repo.Root)
-	lock.Lock()
 	prepared := &preparedRepoApplyPatch{
 		req:      req,
 		repoRoot: repo.Root,
-		unlock:   lock.Unlock,
 	}
+	unlock, err := acquireRepoLock(ctx, repo.Root)
+	if err != nil {
+		return nil, err
+	}
+	prepared.unlock = unlock
 	if err := prepared.precheck(ctx); err != nil {
 		prepared.Release()
 		return nil, err
@@ -490,6 +498,60 @@ func isWithinRoot(root string, target string) bool {
 func repoLock(root string) *sync.Mutex {
 	lock, _ := repoLocks.LoadOrStore(filepath.Clean(root), &sync.Mutex{})
 	return lock.(*sync.Mutex)
+}
+
+func acquireRepoLock(ctx context.Context, root string) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mu := repoLock(root)
+	mu.Lock()
+	lockFile, err := openRepoLockFile(root)
+	if err != nil {
+		mu.Unlock()
+		return nil, errorf("broker.host_action_lock_unavailable", nil, "open repo apply lock: %v", err)
+	}
+	if err := flockExclusive(ctx, lockFile); err != nil {
+		_ = lockFile.Close()
+		mu.Unlock()
+		return nil, errorf("broker.host_action_lock_unavailable", nil, "acquire repo apply lock: %v", err)
+	}
+	var released bool
+	return func() {
+		if released {
+			return
+		}
+		released = true
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		mu.Unlock()
+	}, nil
+}
+
+func openRepoLockFile(root string) (*os.File, error) {
+	if err := os.MkdirAll(repoLockDirPath, 0o700); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(root)))
+	lockPath := filepath.Join(repoLockDirPath, hex.EncodeToString(sum[:])+".lock")
+	return os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+}
+
+func flockExclusive(ctx context.Context, lockFile *os.File) error {
+	for {
+		err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 func digestBytes(raw []byte) string {

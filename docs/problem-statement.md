@@ -53,4 +53,4 @@ Receipts matter because they let the operator answer the question a security rev
 
 "What did the agent try to do, what was denied, and what signed record do you have for that run?"
 
-For the current setup and demo path, use [setup-local.md](setup-local.md) and [demo-guide.md](demo-guide.md). For the trust boundary and receipt limits, use [trust-model.md](trust-model.md) and [receipt-model.md](receipt-model.md).
+For the current setup and demo path, use [setup-local.md](setup-local.md) and [canonical-demos.md](canonical-demos.md). For the trust boundary and receipt limits, use [trust-model.md](trust-model.md) and [receipt-schema.md](receipt-schema.md).

@@ -85,7 +85,7 @@ func buildPredicate(input Input, signer *Signer) (ExecutionReceiptPredicate, int
 		DeclaredPurpose:    input.DeclaredPurpose,
 		WorkspaceID:        input.WorkspaceID,
 		ExecutionStatus:    input.ExecutionStatus,
-		SemanticsMode:      SemanticsModeExplicitV1,
+		SemanticsMode:      SemanticsModeExplicitV2,
 		ResultClass:        resultClass,
 		Denial:             denial,
 		PolicyDigest:       PolicyDigest(input.Policy),
@@ -853,6 +853,18 @@ func receiptAuditPayload(src map[string]string) map[string]string {
 	}
 	for _, key := range []string{"repo_root", "path", "old_path", "new_path"} {
 		delete(cloned, key)
+	}
+	if rawURL := strings.TrimSpace(cloned["resource_url"]); rawURL != "" {
+		delete(cloned, "resource_url")
+		if publicURL, err := approval.PublicHTTPURLForDisplay(rawURL); err == nil {
+			cloned["resource_url_scheme"] = publicURL.Scheme
+			cloned["resource_url_host"] = publicURL.Host
+			cloned["resource_url_path"] = publicURL.Path
+			if publicURL.QueryPresent {
+				cloned["resource_url_query_present"] = "true"
+				cloned["resource_url_query_key_count"] = strconv.Itoa(publicURL.QueryKeyCount)
+			}
+		}
 	}
 	if len(cloned) == 0 {
 		return nil

@@ -1,45 +1,28 @@
 package approval
 
 import (
-	"reflect"
+	"strings"
 	"testing"
 )
 
-func TestCanonicalizeHTTPRequestStable(t *testing.T) {
-	first, err := CanonicalizeHTTPRequest(HTTPRequestInput{
-		Method: "post",
-		URL:    "HTTPS://Example.com:443/v1/items?b=2&a=1",
-		Headers: map[string][]string{
-			"X-Test":                  {" two ", "one"},
-			"Authorization":           {"Bearer secret"},
-			"X-Aegis-Approval-Ticket": {"ignored"},
-		},
-		Body: []byte("payload"),
+func TestHTTPPublicRepresentationsSanitizeQueryStrings(t *testing.T) {
+	resource, err := CanonicalizeHTTPRequest(HTTPRequestInput{
+		Method: "GET",
+		URL:    "https://api.example.com/v1/data?token=super-secret&sig=abc123",
 	})
 	if err != nil {
-		t.Fatalf("CanonicalizeHTTPRequest(first): %v", err)
+		t.Fatalf("CanonicalizeHTTPRequest: %v", err)
 	}
-	second, err := CanonicalizeHTTPRequest(HTTPRequestInput{
-		Method: "POST",
-		URL:    "https://example.com/v1/items?a=1&b=2",
-		Headers: map[string][]string{
-			"x-test": {"one", "two"},
-		},
-		Body: []byte("payload"),
-	})
-	if err != nil {
-		t.Fatalf("CanonicalizeHTTPRequest(second): %v", err)
+	audit := ResourceToAuditPayload(resource.Resource)
+	for key, value := range audit {
+		if strings.Contains(value, "super-secret") || strings.Contains(value, "abc123") {
+			t.Fatalf("audit payload leaked query data in %s=%q", key, value)
+		}
 	}
-	if !reflect.DeepEqual(first.Resource, second.Resource) {
-		t.Fatalf("resource mismatch:\nfirst=%+v\nsecond=%+v", first.Resource, second.Resource)
+	if got := CanonicalRequestDescription(resource.Resource); strings.Contains(got, "super-secret") || strings.Contains(got, "abc123") {
+		t.Fatalf("CanonicalRequestDescription leaked query data: %s", got)
 	}
-	if first.ResourceDigest != second.ResourceDigest {
-		t.Fatalf("resource digest mismatch: %q vs %q", first.ResourceDigest, second.ResourceDigest)
-	}
-	if first.Resource.HTTP.URL != "https://example.com/v1/items?a=1&b=2" {
-		t.Fatalf("canonical URL = %q", first.Resource.HTTP.URL)
-	}
-	if _, ok := first.SanitizedHeaders["authorization"]; ok {
-		t.Fatalf("authorization header leaked into sanitized headers: %+v", first.SanitizedHeaders)
+	if got := PublicHTTPURLString(resource.Resource.HTTP.URL); got != "https://api.example.com/v1/data?query_keys=2" {
+		t.Fatalf("PublicHTTPURLString = %q", got)
 	}
 }

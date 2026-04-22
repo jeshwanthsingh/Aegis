@@ -60,6 +60,7 @@ func brokerApprovalInput(t *testing.T, check *approval.Check) Input {
 		BindingName:         "github",
 		ResponseDigest:      strings.Repeat("a", 64),
 		ResponseDigestAlgo:  "sha256",
+		Lease:               validHTTPLeaseCheck(),
 		Approval:            check,
 		Used:                true,
 	})

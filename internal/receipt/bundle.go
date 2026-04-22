@@ -616,6 +616,18 @@ func FormatReview(paths BundlePaths, report VerificationReport) string {
 		fmt.Sprintf("exit_code=%d", p.Outcome.ExitCode),
 		"divergence_verdict="+string(p.Divergence.Verdict),
 	)
+	if p.Authority != nil {
+		lines = append(lines, "[authority]", "authority_digest="+defaultSummaryValue(authorityDigestSummary(p.Authority)))
+		if p.Authority.ApprovalMode != "" {
+			lines = append(lines, "approval_mode="+p.Authority.ApprovalMode)
+		}
+		if len(p.Authority.BrokerActionTypes) > 0 {
+			lines = append(lines, "broker_action_types="+strings.Join(p.Authority.BrokerActionTypes, ","))
+		}
+		if len(p.Authority.BrokerRepoLabels) > 0 {
+			lines = append(lines, "broker_repo_labels="+strings.Join(p.Authority.BrokerRepoLabels, ","))
+		}
+	}
 	if p.ExecutionStatus != "" {
 		lines = append(lines, "execution_status="+p.ExecutionStatus)
 	}
@@ -672,6 +684,30 @@ func FormatReview(paths BundlePaths, report VerificationReport) string {
 		}
 		if len(p.BrokerSummary.DomainsDenied) > 0 {
 			lines = append(lines, "domains_denied="+strings.Join(p.BrokerSummary.DomainsDenied, ","))
+		}
+	}
+	lines = append(lines, "[runtime_policy]")
+	if p.Runtime == nil || p.Runtime.Policy == nil || p.Runtime.Policy.EscalationAttempts == nil {
+		lines = append(lines, "escalation_count=0", "escalation_sample_count=0", "escalation_sample_truncated=false")
+	} else {
+		policy := p.Runtime.Policy
+		lines = append(lines,
+			fmt.Sprintf("escalation_count=%d", policy.EscalationAttempts.Count),
+			fmt.Sprintf("escalation_sample_count=%d", len(policy.EscalationAttempts.Sample)),
+			"escalation_sample_truncated="+strconv.FormatBool(policy.EscalationAttempts.SampleTruncated),
+		)
+		for idx, sample := range policy.EscalationAttempts.Sample {
+			lines = append(lines, fmt.Sprintf("escalation_sample_%d=%s", idx+1, formatEscalationSample(sample)))
+		}
+		if len(policy.DeniedDestructiveActions) > 0 {
+			values := make([]string, 0, len(policy.DeniedDestructiveActions))
+			for _, class := range policy.DeniedDestructiveActions {
+				values = append(values, string(class))
+			}
+			lines = append(lines, "denied_destructive_actions="+strings.Join(values, ","))
+		}
+		if policy.TerminationReason != "" {
+			lines = append(lines, "termination_reason="+policy.TerminationReason)
 		}
 	}
 	lines = append(lines, "[workspace]")

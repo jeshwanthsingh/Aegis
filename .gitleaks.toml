@@ -1,0 +1,23 @@
+title = "Aegis working-tree gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known dummy secret fixtures used by dedicated sanitization tests"
+paths = [
+  '''cmd/aegis-cli/approval_test\.go''',
+  '''cmd/aegis-cli/receipt_output_test\.go''',
+  '''internal/approval/resource_test\.go''',
+  '''scripts/test_aegis_demo\.py''',
+]
+
+[[allowlists]]
+description = "Ignored generated dependency and cache directories are excluded from working-tree secret scans"
+paths = [
+  '''^\.aegis/''',
+  '''^scripts/__pycache__/''',
+  '''^sdk/typescript/node_modules/''',
+  '''^ui-app/node_modules/''',
+  '''^ui-app/\.vite/''',
+]

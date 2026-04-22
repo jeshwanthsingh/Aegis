@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"aegis/internal/approval"
 	"aegis/internal/authority"
 	"aegis/internal/broker"
 	"aegis/internal/capabilities"
@@ -208,6 +209,85 @@ func TestFreezeAuthorityForExecutionCarriesBrokerRepoLabels(t *testing.T) {
 	}
 }
 
+func TestConfiguredApprovalVerifierRequiresExplicitPublicKeys(t *testing.T) {
+	seed := bytes.Repeat([]byte{3}, 32)
+	t.Setenv(approval.EnvSigningSeed, base64.StdEncoding.EncodeToString(seed))
+	t.Setenv(approval.EnvPublicKeysJSON, "")
+
+	if verifier := configuredApprovalVerifier(); verifier != nil {
+		t.Fatal("expected nil verifier when explicit runtime public keys are missing")
+	}
+}
+
+func TestConfiguredApprovalVerifierAcceptsExplicitPublicKeys(t *testing.T) {
+	seed := bytes.Repeat([]byte{4}, 32)
+	issuer, err := approval.NewLocalIssuerFromSeed(seed)
+	if err != nil {
+		t.Fatalf("NewLocalIssuerFromSeed: %v", err)
+	}
+	keysJSON, err := json.Marshal(map[string]string{
+		issuer.KeyID: base64.StdEncoding.EncodeToString(issuer.PublicKey),
+	})
+	if err != nil {
+		t.Fatalf("Marshal(public keys): %v", err)
+	}
+	t.Setenv(approval.EnvSigningSeed, "")
+	t.Setenv(approval.EnvPublicKeysJSON, string(keysJSON))
+
+	if verifier := configuredApprovalVerifier(); verifier == nil {
+		t.Fatal("expected configured approval verifier")
+	}
+}
+
+func TestRuntimeApprovalVerifierMissingConfigReturnsUnavailable(t *testing.T) {
+	seed := bytes.Repeat([]byte{5}, 32)
+	t.Setenv(approval.EnvSigningSeed, base64.StdEncoding.EncodeToString(seed))
+	t.Setenv(approval.EnvPublicKeysJSON, "")
+	leaseIssuer, err := lease.NewLocalIssuerFromSeed(bytes.Repeat([]byte{6}, 32), "test-issuer")
+	if err != nil {
+		t.Fatalf("NewLocalIssuerFromSeed: %v", err)
+	}
+	store := &recordingLeaseIssueStore{}
+	frozen := authority.Context{
+		ExecutionID:          "exec-http",
+		PolicyDigest:         "policy-digest",
+		AuthorityDigest:      "authority-digest",
+		BrokerAllowedDomains: []string{"example.com"},
+		BrokerActionTypes:    []string{governance.ActionHTTPRequest},
+		Boot: authority.BootContext{RootfsImage: "aegis-rootfs:test"},
+	}
+	if err := issueExecutionLease(context.Background(), store, &leaseRuntime{
+		issuer:   leaseIssuer,
+		verifier: lease.VerifierFromIssuer(leaseIssuer),
+		budgets:  lease.BudgetDefaults{HTTPCount: 1},
+	}, frozen, time.Now().UTC().Add(5*time.Minute)); err != nil {
+		t.Fatalf("issueExecutionLease: %v", err)
+	}
+
+	b := broker.New(
+		policycontract.BrokerScope{
+			AllowedDomains:     []string{"example.com"},
+			AllowedActionTypes: []string{governance.ActionHTTPRequest},
+		},
+		[]string{"example.com"},
+		nil,
+		nil,
+		authority.ApprovalModeRequireHostConsent,
+		"policy-digest",
+		"authority-digest",
+		"exec-http",
+		nil,
+		configuredApprovalVerifier(),
+		lease.VerifierFromIssuer(leaseIssuer),
+		store,
+		nil,
+	)
+	resp := b.Handle(broker.BrokerRequest{Method: http.MethodGet, URL: "http://example.com/"})
+	if !resp.Denied || resp.DenyReason != "broker.approval_ticket_unavailable" {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
 type recordingLeaseIssueStore struct {
 	record lease.IssuedRecord
 	count  int
@@ -220,7 +300,10 @@ func (s *recordingLeaseIssueStore) PutIssued(_ context.Context, record lease.Iss
 }
 
 func (s *recordingLeaseIssueStore) LookupActiveByExecution(context.Context, string) (lease.IssuedRecord, error) {
-	return lease.IssuedRecord{}, errors.New("not implemented")
+	if s.record.ExecutionID == "" {
+		return lease.IssuedRecord{}, errors.New("not implemented")
+	}
+	return s.record, nil
 }
 
 func (s *recordingLeaseIssueStore) Consume(context.Context, lease.ConsumeRequest) (lease.ConsumeResult, error) {

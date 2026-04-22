@@ -71,6 +71,8 @@ func runMain(stdout io.Writer, stderr io.Writer, args []string) int {
 	switch args[0] {
 	case "setup":
 		return setupCmd(stdout, stderr, args[1:])
+	case "demo":
+		return demoCmd(stdout, stderr, args[1:])
 	case "serve":
 		return serveCmd(stdout, stderr, args[1:])
 	case "doctor", "self-test":
@@ -79,6 +81,8 @@ func runMain(stdout io.Writer, stderr io.Writer, args []string) int {
 		return run(stdout, stderr, args[1:])
 	case "health":
 		return health(stdout, stderr)
+	case "approval":
+		return approvalCmd(stdout, stderr, args[1:])
 	case "receipt":
 		return receiptCmd(stdout, stderr, args[1:])
 	default:
@@ -88,7 +92,7 @@ func runMain(stdout io.Writer, stderr io.Writer, args []string) int {
 }
 
 func usage(stderr io.Writer) {
-	fmt.Fprintln(stderr, "usage: aegis <setup|serve|doctor|self-test|run|health|receipt>")
+	fmt.Fprintln(stderr, "usage: aegis <setup|demo|serve|doctor|self-test|run|health|approval|receipt>")
 }
 
 func setupCmd(stdout io.Writer, stderr io.Writer, args []string) int {

@@ -83,7 +83,24 @@ func ParsePublicKeysJSON(raw string) (*StaticKeyResolver, error) {
 }
 
 func NewEnvKeyResolver() (*StaticKeyResolver, error) {
-	return ParsePublicKeysJSON(strings.TrimSpace(os.Getenv(EnvPublicKeysJSON)))
+	raw := strings.TrimSpace(os.Getenv(EnvPublicKeysJSON))
+	if raw == "" {
+		return nil, fmt.Errorf("%s is required for runtime approval verification", EnvPublicKeysJSON)
+	}
+	return ParsePublicKeysJSON(raw)
+}
+
+func NewEnvInspectKeyResolver() (*StaticKeyResolver, error) {
+	if raw := strings.TrimSpace(os.Getenv(EnvPublicKeysJSON)); raw != "" {
+		return ParsePublicKeysJSON(raw)
+	}
+	issuer, err := NewLocalIssuerFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("approval inspect requires %s or %s", EnvPublicKeysJSON, EnvSigningSeed)
+	}
+	return NewStaticKeyResolver(map[string]ed25519.PublicKey{
+		issuer.KeyID: append(ed25519.PublicKey(nil), issuer.PublicKey...),
+	}), nil
 }
 
 type TicketVerifier struct {
@@ -100,7 +117,7 @@ func NewVerifier(resolver KeyResolver) *TicketVerifier {
 	}
 }
 
-func (v *TicketVerifier) Verify(ctx context.Context, ticket SignedTicket, expected VerificationRequest) (VerifiedTicket, error) {
+func (v *TicketVerifier) Inspect(ctx context.Context, ticket SignedTicket) (VerifiedTicket, error) {
 	if v == nil || v.resolver == nil {
 		return VerifiedTicket{}, &VerificationError{Result: VerificationUnavailable, Reason: "broker.approval_ticket_unavailable"}
 	}
@@ -143,38 +160,46 @@ func (v *TicketVerifier) Verify(ctx context.Context, ticket SignedTicket, expect
 	if err != nil {
 		return VerifiedTicket{}, err
 	}
-	now := expected.Now.UTC()
-	if now.IsZero() {
-		now = v.now()
-	}
-	if now.Before(ticketPayload.IssuedAt.UTC()) {
-		return VerifiedTicket{}, malformedError("ticket issued_at is in the future")
-	}
-	if !now.Before(ticketPayload.ExpiresAt.UTC()) {
-		return VerifiedTicket{}, &VerificationError{Result: VerificationExpired, Reason: "broker.approval_ticket_expired"}
-	}
-	if strings.TrimSpace(expected.ExecutionID) != strings.TrimSpace(ticketPayload.ExecutionID) {
-		return VerifiedTicket{}, &VerificationError{Result: VerificationExecutionMismatch, Reason: "broker.approval_ticket_execution_mismatch"}
-	}
-	if strings.TrimSpace(expected.PolicyDigest) != strings.TrimSpace(ticketPayload.PolicyDigest) {
-		return VerifiedTicket{}, &VerificationError{Result: VerificationPolicyMismatch, Reason: "broker.approval_ticket_policy_mismatch"}
-	}
-	if strings.TrimSpace(expected.ActionType) != strings.TrimSpace(ticketPayload.ActionType) {
-		return VerifiedTicket{}, &VerificationError{Result: VerificationActionTypeMismatch, Reason: "broker.approval_ticket_action_type_mismatch"}
-	}
-	expectedDigest, _, err := DigestResource(expected.Resource)
-	if err != nil {
-		return VerifiedTicket{}, malformedError("expected approval resource is invalid: %v", err)
-	}
-	if expectedDigest != resourceDigest {
-		return VerifiedTicket{}, &VerificationError{Result: VerificationResourceMismatch, Reason: "broker.approval_ticket_resource_mismatch"}
-	}
 	return VerifiedTicket{
 		Ticket:             ticketPayload,
 		IssuerKeyID:        signature.KeyID,
 		ResourceDigest:     resourceDigest,
 		ResourceDigestAlgo: resourceDigestAlgo,
 	}, nil
+}
+
+func (v *TicketVerifier) Verify(ctx context.Context, ticket SignedTicket, expected VerificationRequest) (VerifiedTicket, error) {
+	verified, err := v.Inspect(ctx, ticket)
+	if err != nil {
+		return VerifiedTicket{}, err
+	}
+	now := expected.Now.UTC()
+	if now.IsZero() {
+		now = v.now()
+	}
+	if now.Before(verified.Ticket.IssuedAt.UTC()) {
+		return VerifiedTicket{}, malformedError("ticket issued_at is in the future")
+	}
+	if !now.Before(verified.Ticket.ExpiresAt.UTC()) {
+		return VerifiedTicket{}, &VerificationError{Result: VerificationExpired, Reason: "broker.approval_ticket_expired"}
+	}
+	if strings.TrimSpace(expected.ExecutionID) != strings.TrimSpace(verified.Ticket.ExecutionID) {
+		return VerifiedTicket{}, &VerificationError{Result: VerificationExecutionMismatch, Reason: "broker.approval_ticket_execution_mismatch"}
+	}
+	if strings.TrimSpace(expected.PolicyDigest) != strings.TrimSpace(verified.Ticket.PolicyDigest) {
+		return VerifiedTicket{}, &VerificationError{Result: VerificationPolicyMismatch, Reason: "broker.approval_ticket_policy_mismatch"}
+	}
+	if strings.TrimSpace(expected.ActionType) != strings.TrimSpace(verified.Ticket.ActionType) {
+		return VerifiedTicket{}, &VerificationError{Result: VerificationActionTypeMismatch, Reason: "broker.approval_ticket_action_type_mismatch"}
+	}
+	expectedDigest, _, err := DigestResource(expected.Resource)
+	if err != nil {
+		return VerifiedTicket{}, malformedError("expected approval resource is invalid: %v", err)
+	}
+	if expectedDigest != verified.ResourceDigest {
+		return VerifiedTicket{}, &VerificationError{Result: VerificationResourceMismatch, Reason: "broker.approval_ticket_resource_mismatch"}
+	}
+	return verified, nil
 }
 
 func validateTicket(ticket Ticket) (Ticket, string, string, error) {

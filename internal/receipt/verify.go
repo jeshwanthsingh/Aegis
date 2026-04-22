@@ -132,7 +132,7 @@ func VerifySignedReceipt(receipt SignedReceipt, publicKey ed25519.PublicKey) (St
 func validateSemanticReceipt(statement Statement) error {
 	predicate := statement.Predicate
 	switch predicate.SemanticsMode {
-	case "", SemanticsModeExplicitV1, SemanticsModeLegacyDerived:
+	case "", SemanticsModeExplicitV1, SemanticsModeExplicitV2, SemanticsModeLegacyDerived:
 	default:
 		return verificationError(FailureClassSemanticReceipt, "unexpected semantics mode: %s", predicate.SemanticsMode)
 	}
@@ -210,7 +210,7 @@ func validateSemanticReceipt(statement Statement) error {
 			return verificationError(FailureClassSemanticReceipt, "governed action raw count mismatch: count=%d actions=%d", predicate.GovernedActions.Count, len(predicate.GovernedActions.Actions))
 		}
 		for idx, action := range predicate.GovernedActions.Actions {
-			if err := validateGovernedActionRecord(action); err != nil {
+			if err := validateGovernedActionRecord(action, predicate.SemanticsMode); err != nil {
 				return verificationError(FailureClassSemanticReceipt, "governed action %d invalid: %v", idx+1, err)
 			}
 		}
@@ -593,7 +593,7 @@ func normalizedGovernedActionSortKey(action NormalizedGovernedActionEntry) strin
 	return governedActionSortKey(action)
 }
 
-func validateGovernedActionRecord(action GovernedActionRecord) error {
+func validateGovernedActionRecord(action GovernedActionRecord, semanticsMode SemanticsMode) error {
 	if err := validateGovernedAction(action.ActionType, action.CapabilityPath, action.Decision, action.Used, action.Brokered, action.BrokeredCredentials, action.BindingName); err != nil {
 		return err
 	}
@@ -609,7 +609,7 @@ func validateGovernedActionRecord(action GovernedActionRecord) error {
 	if err := validateLeaseCheck(action.Lease); err != nil {
 		return err
 	}
-	return validateCoveredActionLeaseRecord(action)
+	return validateCoveredActionLeaseRecord(action, semanticsMode)
 }
 
 func validateNormalizedGovernedAction(action NormalizedGovernedActionEntry) error {
@@ -747,13 +747,21 @@ func validateLeaseCheck(check *lease.Check) error {
 	return nil
 }
 
-func validateCoveredActionLeaseRecord(action GovernedActionRecord) error {
-	if action.Lease == nil {
-		return nil
-	}
+func validateCoveredActionLeaseRecord(action GovernedActionRecord, semanticsMode SemanticsMode) error {
+	covered := false
 	switch strings.TrimSpace(action.ActionType) {
 	case governance.ActionHTTPRequest, governance.ActionHostRepoApply:
+		covered = true
 	default:
+		return nil
+	}
+	if action.Lease == nil {
+		if semanticsMode == SemanticsModeExplicitV2 && strings.EqualFold(strings.TrimSpace(action.Decision), "allow") {
+			return fmt.Errorf("covered allow actions require lease evidence")
+		}
+		return nil
+	}
+	if !covered {
 		return nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(action.Decision), "allow") {

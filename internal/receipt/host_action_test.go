@@ -11,6 +11,7 @@ import (
 	"aegis/internal/authority"
 	"aegis/internal/governance"
 	"aegis/internal/hostaction"
+	"aegis/internal/lease"
 	"aegis/internal/telemetry"
 )
 
@@ -58,10 +59,23 @@ func hostPatchReceiptInput(t *testing.T, check *approval.Check, evidence *hostac
 		PolicyDigest:        PolicyDigest(input.Policy),
 		Brokered:            true,
 		BrokeredCredentials: false,
-		Approval:            check,
-		HostAction:          evidence,
-		Error:               errText,
-		Used:                used,
+		Lease: &lease.Check{
+			Required:           true,
+			LeaseID:            "lease-host-1",
+			Issuer:             "local_orchestrator",
+			IssuerKeyID:        "ed25519:test",
+			Result:             lease.CheckVerified,
+			ExpiresAt:          time.Unix(1700000010, 0).UTC(),
+			GrantID:            "grant-host-1",
+			SelectorDigest:     strings.Repeat("b", 64),
+			SelectorDigestAlgo: approval.ResourceDigestAlgo,
+			BudgetResult:       lease.BudgetConsumed,
+			RemainingCount:     ptrUint64(0),
+		},
+		Approval:   check,
+		HostAction: evidence,
+		Error:      errText,
+		Used:       used,
 	})
 	if err != nil {
 		t.Fatalf("Marshal(governed action): %v", err)

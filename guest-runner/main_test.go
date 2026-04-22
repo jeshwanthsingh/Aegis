@@ -3,14 +3,15 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
-	"syscall"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -256,6 +257,104 @@ func TestStreamPipeSplitsLargeOutputWithoutNewline(t *testing.T) {
 	}
 	if totalLen != len(payload) {
 		t.Fatalf("unexpected total length: got %d want %d", totalLen, len(payload))
+	}
+}
+
+func TestRunHostRepoApplyPatchCommandUsesSingleInvocation(t *testing.T) {
+	t.Parallel()
+
+	patchFile, err := os.CreateTemp("", "host-patch-*.diff")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer os.Remove(patchFile.Name())
+	if _, err := patchFile.WriteString("--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-old\n+new\n"); err != nil {
+		t.Fatalf("write patch file: %v", err)
+	}
+	if err := patchFile.Close(); err != nil {
+		t.Fatalf("close patch file: %v", err)
+	}
+
+	token := base64.RawURLEncoding.EncodeToString([]byte(`{"ticket":"demo"}`))
+	var (
+		callCount int
+		gotRepo   string
+		gotPatch  string
+		gotBase   string
+		gotScope  []string
+		gotTicket string
+	)
+	original := guestHostRepoApplyPatchFunc
+	guestHostRepoApplyPatchFunc = func(repoLabel string, patch []byte, baseRevision string, targetScope []string, approvalTicket json.RawMessage) (*hostRepoApplyPatchResponse, error) {
+		callCount++
+		gotRepo = repoLabel
+		gotPatch = string(patch)
+		gotBase = baseRevision
+		gotScope = append([]string(nil), targetScope...)
+		gotTicket = string(approvalTicket)
+		return &hostRepoApplyPatchResponse{
+			RepoLabel:       repoLabel,
+			AppliedPaths:    []string{"demo.txt"},
+			PatchDigest:     "abc123",
+			PatchDigestAlgo: "sha256",
+			BaseRevision:    baseRevision,
+		}, nil
+	}
+	defer func() { guestHostRepoApplyPatchFunc = original }()
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	code := runHostRepoApplyPatchCommand(&stdout, &stderr, []string{
+		"--repo-label", "demo",
+		"--patch-file", patchFile.Name(),
+		"--base-revision", "HEAD",
+		"--target-scope", "demo.txt",
+		"--ticket-token", token,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if callCount != 1 {
+		t.Fatalf("call count = %d, want 1", callCount)
+	}
+	if gotRepo != "demo" {
+		t.Fatalf("repo label = %q", gotRepo)
+	}
+	if !strings.Contains(gotPatch, "+new") {
+		t.Fatalf("patch body missing expected content: %q", gotPatch)
+	}
+	if gotBase != "HEAD" {
+		t.Fatalf("base revision = %q", gotBase)
+	}
+	if len(gotScope) != 1 || gotScope[0] != "demo.txt" {
+		t.Fatalf("target scope = %#v", gotScope)
+	}
+	if gotTicket != `{"ticket":"demo"}` {
+		t.Fatalf("approval ticket = %q", gotTicket)
+	}
+	if strings.Contains(stdout.String(), patchFile.Name()) {
+		t.Fatalf("stdout leaked patch file path: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status=applied") || !strings.Contains(stdout.String(), "affected_paths=demo.txt") {
+		t.Fatalf("stdout missing summary fields: %q", stdout.String())
+	}
+}
+
+func TestRunHostRepoApplyPatchCommandUnreadablePatchFails(t *testing.T) {
+	t.Parallel()
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	code := runHostRepoApplyPatchCommand(&stdout, &stderr, []string{
+		"--repo-label", "demo",
+		"--patch-file", "/tmp/does-not-exist.diff",
+		"--base-revision", "HEAD",
+	})
+	if code == 0 {
+		t.Fatal("expected unreadable patch file failure")
+	}
+	if !strings.Contains(stderr.String(), "read patch file:") {
+		t.Fatalf("unexpected stderr: %q", stderr.String())
 	}
 }
 

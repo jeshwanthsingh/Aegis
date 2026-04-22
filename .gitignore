@@ -50,6 +50,8 @@ ui-app/tailwind.config.d.ts
 # Internal working logs and agent notes are not product source
 ai/
 agent_logs/
+graphify-out/
+.artifacts/graphify/
 
 # The demo runtime serves the built UI bundle from /ui, so keep it trackable.
 !/ui/assets/

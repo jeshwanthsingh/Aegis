@@ -73,6 +73,7 @@ type SemanticsMode string
 
 const (
 	SemanticsModeExplicitV1    SemanticsMode = "explicit_v1"
+	SemanticsModeExplicitV2    SemanticsMode = "explicit_v2"
 	SemanticsModeLegacyDerived SemanticsMode = "legacy_derived"
 )
 

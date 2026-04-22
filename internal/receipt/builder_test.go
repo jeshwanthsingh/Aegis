@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"aegis/internal/approval"
+	"aegis/internal/lease"
 	"aegis/internal/models"
 	policycfg "aegis/internal/policy"
 	"aegis/internal/telemetry"
@@ -241,7 +243,20 @@ func TestBrokeredSuccessProofBundleVerifies(t *testing.T) {
 		BindingName:         "github",
 		ResponseDigest:      strings.Repeat("a", 64),
 		ResponseDigestAlgo:  "sha256",
-		Used:                true,
+		Lease: &lease.Check{
+			Required:           true,
+			LeaseID:            "lease-bundle-1",
+			Issuer:             "local_orchestrator",
+			IssuerKeyID:        "ed25519:test",
+			Result:             lease.CheckVerified,
+			ExpiresAt:          time.Unix(1700000010, 0).UTC(),
+			GrantID:            "grant-bundle-1",
+			SelectorDigest:     strings.Repeat("b", 64),
+			SelectorDigestAlgo: approval.ResourceDigestAlgo,
+			BudgetResult:       lease.BudgetConsumed,
+			RemainingCount:     ptrUint64(4),
+		},
+		Used: true,
 	})
 	input.TelemetryEvents = append(input.TelemetryEvents, telemetry.Event{
 		ExecID:    input.ExecutionID,

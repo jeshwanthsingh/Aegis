@@ -378,7 +378,7 @@ func renderDoctorReport(stdout io.Writer, configPath string, runtimeURL string, 
 	fmt.Fprintf(stdout, "- config: %s\n", configPath)
 	fmt.Fprintf(stdout, "- runtime: %s\n", runtimeURL)
 	for _, bucket := range []string{"host", "runtime", "execution", "receipt"} {
-		fmt.Fprintf(stdout, "%s:\n", strings.Title(bucket))
+		fmt.Fprintf(stdout, "%s:\n", doctorBucketTitle(bucket))
 		for _, check := range checks {
 			if check.Bucket != bucket {
 				continue
@@ -399,6 +399,13 @@ func renderDoctorReport(stdout io.Writer, configPath string, runtimeURL string, 
 		return 1
 	}
 	return 0
+}
+
+func doctorBucketTitle(bucket string) string {
+	if bucket == "" {
+		return ""
+	}
+	return strings.ToUpper(bucket[:1]) + bucket[1:]
 }
 
 func doctorBucketStatus(checks []doctorCheck, bucket string) doctorStatus {

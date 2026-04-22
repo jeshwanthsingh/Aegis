@@ -9,10 +9,8 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"aegis/internal/api"
@@ -570,24 +568,6 @@ func mcpWorkspaceID(executionID string) string {
 	return "mcp_" + strings.ReplaceAll(executionID, "-", "")
 }
 
-func delegationDomain(resource string) (string, error) {
-	trimmed := strings.TrimSpace(resource)
-	if trimmed == "" {
-		return "", fmt.Errorf("empty resource")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err == nil && parsed.Hostname() != "" {
-		return strings.ToLower(parsed.Hostname()), nil
-	}
-	if !strings.Contains(trimmed, "://") {
-		parsed, err := url.Parse("https://" + trimmed)
-		if err == nil && parsed.Hostname() != "" {
-			return strings.ToLower(parsed.Hostname()), nil
-		}
-	}
-	return "", fmt.Errorf("resource %q has no hostname", trimmed)
-}
-
 func (h *ToolHandler) readWarmPoolStatus(ctx context.Context) (*healthWarmPool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.baseURL+"/v1/health", nil)
 	if err != nil {
@@ -647,23 +627,6 @@ func warmDiagnostics(before *healthWarmPool, after *healthWarmPool, payload api.
 	return result
 }
 
-func cleanStringList(values []string, requireAbs bool) ([]string, error) {
-	cleaned := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		if requireAbs && !filepath.IsAbs(trimmed) {
-			return nil, &InvalidParamsError{Message: "allow_write_paths entries must be absolute guest paths", Details: map[string]any{"path": trimmed}}
-		}
-		if !slices.Contains(cleaned, trimmed) {
-			cleaned = append(cleaned, trimmed)
-		}
-	}
-	return cleaned, nil
-}
-
 func summaryText(path string, statement receipt.Statement) string {
 	if path != "" {
 		if bytes, err := os.ReadFile(path); err == nil {
@@ -671,45 +634,6 @@ func summaryText(path string, statement receipt.Statement) string {
 		}
 	}
 	return receipt.FormatSummary(statement, true)
-}
-
-func normalizeLanguage(language string) string {
-	switch strings.ToLower(strings.TrimSpace(language)) {
-	case "python", "python3":
-		return "python"
-	case "bash", "sh":
-		return "bash"
-	case "node", "javascript", "js":
-		return "node"
-	default:
-		return ""
-	}
-}
-
-func defaultBinaryFor(language string) string {
-	switch language {
-	case "python":
-		return "python3"
-	case "node":
-		return "node"
-	default:
-		return "bash"
-	}
-}
-
-func defaultChildProcesses(language string) int {
-	if language == "bash" {
-		return 2
-	}
-	return 1
-}
-
-func maxDistinctFiles(language string, writePaths []string) int {
-	base := 64
-	if len(writePaths)+base > base {
-		return len(writePaths) + base
-	}
-	return base
 }
 
 func workspaceRequired(writePaths []string) bool {
@@ -722,22 +646,6 @@ func workspaceRequired(writePaths []string) bool {
 	return false
 }
 
-func runtimeWritePaths(language string) []string {
-	if language == "bash" {
-		return []string{"/dev/tty"}
-	}
-	return nil
-}
-
-func runtimeReadPaths(language string) []string {
-	readPaths := []string{defaultWorkspace}
-	switch language {
-	case "python", "node":
-		readPaths = append(readPaths, "/tmp")
-	}
-	return readPaths
-}
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -745,48 +653,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func intentWire(intent policycontract.IntentContract) map[string]any {
-	return map[string]any{
-		"version":          intent.Version,
-		"execution_id":     intent.ExecutionID,
-		"workflow_id":      intent.WorkflowID,
-		"task_class":       intent.TaskClass,
-		"declared_purpose": intent.DeclaredPurpose,
-		"language":         intent.Language,
-		"resource_scope": map[string]any{
-			"workspace_root":     intent.ResourceScope.WorkspaceRoot,
-			"read_paths":         intent.ResourceScope.ReadPaths,
-			"write_paths":        intent.ResourceScope.WritePaths,
-			"deny_paths":         intent.ResourceScope.DenyPaths,
-			"max_distinct_files": intent.ResourceScope.MaxDistinctFiles,
-		},
-		"network_scope": map[string]any{
-			"allow_network":      intent.NetworkScope.AllowNetwork,
-			"allowed_domains":    intent.NetworkScope.AllowedDomains,
-			"allowed_ips":        intent.NetworkScope.AllowedIPs,
-			"max_dns_queries":    intent.NetworkScope.MaxDNSQueries,
-			"max_outbound_conns": intent.NetworkScope.MaxOutboundConns,
-		},
-		"process_scope": map[string]any{
-			"allowed_binaries":      intent.ProcessScope.AllowedBinaries,
-			"allow_shell":           intent.ProcessScope.AllowShell,
-			"allow_package_install": intent.ProcessScope.AllowPackageInstall,
-			"max_child_processes":   intent.ProcessScope.MaxChildProcesses,
-		},
-		"broker_scope": map[string]any{
-			"allowed_delegations":  intent.BrokerScope.AllowedDelegations,
-			"allowed_domains":      intent.BrokerScope.AllowedDomains,
-			"allowed_action_types": intent.BrokerScope.AllowedActionTypes,
-			"require_host_consent": intent.BrokerScope.RequireHostConsent,
-		},
-		"budgets": map[string]any{
-			"timeout_sec":  intent.Budgets.TimeoutSec,
-			"memory_mb":    intent.Budgets.MemoryMB,
-			"cpu_quota":    intent.Budgets.CPUQuota,
-			"stdout_bytes": intent.Budgets.StdoutBytes,
-		},
-		"attributes": intent.Attributes,
-	}
 }

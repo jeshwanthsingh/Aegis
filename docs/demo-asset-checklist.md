@@ -39,10 +39,10 @@ Target length: 60-90 seconds.
 Sequence:
 
 1. show `./scripts/demo_up.sh` succeeding
-2. run `./scripts/demo_clean.sh`
-3. run `./scripts/demo_exfil_denied.sh`
+2. run `./scripts/demo_escalation_termination.sh`
+3. run `./scripts/demo_host_patch_denied.sh`
 4. pause on the verifier output lines
-5. close with one sentence: same runtime, clean path completes, direct outbound path is denied, signed record afterward
+5. close with one sentence: same runtime, escalation is denied, host patch without approval is denied, signed record afterward
 
 ## 4. Concise live-demo flow
 
@@ -52,9 +52,9 @@ Flow:
 
 1. state the wedge: internal coding agents, not general AI governance
 2. run `./scripts/demo_up.sh`
-3. run `./scripts/demo_clean.sh`
-4. run `./scripts/demo_exfil_denied.sh`
-5. run `./scripts/demo_broker_success.sh`
+3. run `./scripts/demo_escalation_termination.sh`
+4. run `./scripts/demo_host_patch_denied.sh`
+5. run `./scripts/demo_broker_http.sh`
 6. rerun `./.aegis/bin/aegis receipt verify --proof-dir ...`
 7. explain what the receipt proves and what it does not prove, then stop
 

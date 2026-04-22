@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"aegis/internal/approval"
 	"aegis/internal/broker"
 	"aegis/internal/observability"
 	policydivergence "aegis/internal/policy/divergence"
@@ -75,7 +76,7 @@ func handleBrokerConn(conn net.Conn, b *broker.Broker, divEval *policydivergence
 		}
 		return
 	}
-	observability.Info("broker_request_decoded", observability.Fields{"method": req.Method, "url": req.URL})
+	observability.Info("broker_request_decoded", observability.Fields{"method": req.Method, "url": approval.PublicHTTPURLString(req.URL)})
 
 	resp := b.Handle(req)
 	observability.Info("broker_response_ready", observability.Fields{"allowed": resp.Allowed, "denied": resp.Denied, "status": resp.StatusCode, "deny_reason": resp.DenyReason, "error": resp.Error})

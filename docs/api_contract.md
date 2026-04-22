@@ -327,7 +327,8 @@ curl -sS -X POST http://localhost:8080/v1/execute   -H 'Content-Type: applicatio
 ### Authenticated synchronous execute
 
 ```bash
-curl -sS -X POST http://localhost:8080/v1/execute   -H 'Content-Type: application/json'   -H 'Authorization: Bearer YOUR_TOKEN'   -d '{"lang":"bash","code":"echo sdk-contract","timeout_ms":10000}'
+AUTH_HEADER='Authorization: Bearer <token>'
+curl -sS -X POST http://localhost:8080/v1/execute   -H 'Content-Type: application/json'   -H "$AUTH_HEADER"   -d '{"lang":"bash","code":"echo sdk-contract","timeout_ms":10000}'
 ```
 
 ### Streaming execute

@@ -1,9 +1,11 @@
 package approval
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,5 +128,41 @@ func TestEncodeTicketHeaderValueRoundTrip(t *testing.T) {
 	}
 	if decoded.Envelope.Payload != ticket.Envelope.Payload || decoded.Statement.PredicateType != ticket.Statement.PredicateType {
 		t.Fatalf("decoded ticket = %+v", decoded)
+	}
+}
+
+func TestNewEnvKeyResolverRequiresExplicitPublicKeys(t *testing.T) {
+	seed := []byte("01234567890123456789012345678901")
+	t.Setenv(EnvPublicKeysJSON, "")
+	t.Setenv(EnvSigningSeed, base64.StdEncoding.EncodeToString(seed))
+
+	_, err := NewEnvKeyResolver()
+	if err == nil {
+		t.Fatal("expected explicit runtime resolver failure")
+	}
+	if !strings.Contains(err.Error(), EnvPublicKeysJSON) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewEnvInspectKeyResolverFallsBackToSigningSeed(t *testing.T) {
+	seed := []byte("01234567890123456789012345678901")
+	issuer, err := NewLocalIssuerFromSeed(seed)
+	if err != nil {
+		t.Fatalf("NewLocalIssuerFromSeed: %v", err)
+	}
+	t.Setenv(EnvPublicKeysJSON, "")
+	t.Setenv(EnvSigningSeed, base64.StdEncoding.EncodeToString(seed))
+
+	resolver, err := NewEnvInspectKeyResolver()
+	if err != nil {
+		t.Fatalf("NewEnvInspectKeyResolver: %v", err)
+	}
+	publicKey, err := resolver.Resolve(context.Background(), issuer.KeyID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !bytes.Equal(publicKey, issuer.PublicKey) {
+		t.Fatalf("public key mismatch")
 	}
 }

@@ -7,6 +7,6 @@ The older manual contrast flow was useful during earlier iterations, but it is n
 Use these docs instead:
 
 - [setup-local.md](setup-local.md): bring up the local runtime
-- [demo-guide.md](demo-guide.md): run the packaged `demo_exfil_denied.sh` flow and inspect the receipt evidence
+- [canonical-demos.md](canonical-demos.md): run the current canonical demo set and inspect the receipt evidence
 
 If you want a non-Aegis contrast for screenshots or internal demo assets, older local helper scripts still exist. They are not the canonical setup or demo path.

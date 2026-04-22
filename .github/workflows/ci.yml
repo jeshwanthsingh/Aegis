@@ -1,9 +1,7 @@
-name: Tier 1 CI
+name: Repo-Local Quality Gates
 
 on:
   push:
-    branches:
-      - main
   pull_request:
 
 defaults:
@@ -14,10 +12,10 @@ permissions:
   contents: read
 
 jobs:
-  fast-confidence:
-    name: Fast PR Confidence
+  repo-local-quality:
+    name: Repo-local tests, analysis, vuln, secret, and hygiene gates
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,22 +23,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25.9"
+          cache: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Main module unit tests
-        run: go test ./cmd/... ./internal/...
+      - name: Explain CI scope
+        run: |
+          echo "This workflow proves repo-local tests, static analysis, vulnerability scan, working-tree secret scan, and hygiene."
+          echo "It does not prove live Firecracker/KVM/Postgres canonical demos on GitHub-hosted runners."
 
-      - name: Guest runner unit tests
-        working-directory: guest-runner
-        run: go test ./...
-
-      - name: Harness syntax checks
-        run: python3 -m py_compile scripts/run_canonical_demo.py scripts/run_red_team_fault_matrix.py
-
-      - name: Shell syntax checks
-        run: bash -n scripts/preflight.sh scripts/run-proof-demo.sh scripts/start-local-orchestrator.sh
+      - name: Run repo-local quality gates
+        run: ./scripts/ci.sh --install-tools

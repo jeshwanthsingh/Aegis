@@ -225,15 +225,6 @@ func containsBinary(allowed []string, base string, full string) bool {
 	return false
 }
 
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
 func containsStringFold(values []string, target string) bool {
 	target = strings.ToLower(strings.TrimSpace(target))
 	for _, value := range values {

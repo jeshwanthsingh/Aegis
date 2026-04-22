@@ -7,7 +7,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,7 +102,7 @@ func handleBrokerProxyRequest(w http.ResponseWriter, r *http.Request) {
 		targetURL = scheme + "://" + r.Host + r.URL.RequestURI()
 	}
 
-	brokerProxyLog("request_received method=%s url=%s host=%s", r.Method, targetURL, r.Host)
+	brokerProxyLog("request_received method=%s url=%s host=%s", r.Method, publicHTTPURLString(targetURL), r.Host)
 	msg := proxyRequest{
 		Method:  r.Method,
 		URL:     targetURL,
@@ -185,6 +187,37 @@ func handleBrokerProxyRequest(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write(decoded)
 		}
 	}
+}
+
+func publicHTTPURLString(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.Fragment = ""
+	scheme := strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	switch {
+	case port == "":
+		parsed.Host = host
+	case scheme == "http" && port == "80":
+		parsed.Host = host
+	case scheme == "https" && port == "443":
+		parsed.Host = host
+	default:
+		parsed.Host = host + ":" + port
+	}
+	pathValue := parsed.EscapedPath()
+	if pathValue == "" {
+		pathValue = "/"
+	}
+	value := scheme + "://" + parsed.Host + pathValue
+	if len(parsed.Query()) > 0 {
+		value += "?query_keys=" + strconv.Itoa(len(parsed.Query()))
+	}
+	return value
 }
 
 // brokerProxyAddr is only bound to loopback inside the guest VM.

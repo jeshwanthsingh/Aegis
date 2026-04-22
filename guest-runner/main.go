@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -63,6 +64,19 @@ const (
 
 var managedChildren atomic.Int32
 
+var guestHostRepoApplyPatchFunc = brokerHostRepoApplyPatch
+
+type repeatedFlagValues []string
+
+func (r *repeatedFlagValues) String() string {
+	return strings.Join(*r, ",")
+}
+
+func (r *repeatedFlagValues) Set(value string) error {
+	*r = append(*r, strings.TrimSpace(value))
+	return nil
+}
+
 func beginManagedChild() {
 	managedChildren.Add(1)
 }
@@ -87,10 +101,6 @@ func sendError(conn net.Conn, msg string) {
 	if err := json.NewEncoder(conn).Encode(GuestChunk{Type: "error", Error: msg}); err != nil {
 		fmt.Fprintf(os.Stderr, "sendError failed: %v\n", err)
 	}
-}
-
-func sendChunkError(chunks chan<- GuestChunk, msg string) {
-	chunks <- GuestChunk{Type: "error", Error: msg}
 }
 
 func emitDiag(chunks chan<- GuestChunk, msg string) {
@@ -477,7 +487,81 @@ func setupNetwork(p Payload, emit func(string)) (func() error, error) {
 	return cleanup, nil
 }
 
+func maybeRunSubcommand(stdout io.Writer, stderr io.Writer, args []string) (int, bool) {
+	if len(args) == 0 {
+		return 0, false
+	}
+	switch args[0] {
+	case hostRepoApplyActionType, "host-repo-apply-patch":
+		return runHostRepoApplyPatchCommand(stdout, stderr, args[1:]), true
+	default:
+		return 0, false
+	}
+}
+
+func runHostRepoApplyPatchCommand(stdout io.Writer, stderr io.Writer, args []string) int {
+	fs := flag.NewFlagSet("host-repo-apply-patch", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	repoLabel := fs.String("repo-label", "", "configured repo label")
+	patchFile := fs.String("patch-file", "", "path to a unified diff patch file")
+	baseRevision := fs.String("base-revision", "", "expected base revision")
+	ticketToken := fs.String("ticket-token", "", "encoded approval ticket token")
+	var targetScope repeatedFlagValues
+	fs.Var(&targetScope, "target-scope", "relative target-scope entry; repeat for multiple entries")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if strings.TrimSpace(*repoLabel) == "" {
+		fmt.Fprintln(stderr, "--repo-label is required")
+		return 2
+	}
+	if strings.TrimSpace(*patchFile) == "" {
+		fmt.Fprintln(stderr, "--patch-file is required")
+		return 2
+	}
+	if strings.TrimSpace(*baseRevision) == "" {
+		fmt.Fprintln(stderr, "--base-revision is required")
+		return 2
+	}
+	patchBytes, err := os.ReadFile(strings.TrimSpace(*patchFile))
+	if err != nil {
+		fmt.Fprintln(stderr, "read patch file:", err)
+		return 1
+	}
+	token := strings.TrimSpace(*ticketToken)
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("AEGIS_APPROVAL_TICKET_TOKEN"))
+	}
+	var approvalTicket json.RawMessage
+	if token != "" {
+		decoded, err := decodeApprovalTicketHeader(token)
+		if err != nil {
+			fmt.Fprintln(stderr, "decode approval ticket:", err)
+			return 1
+		}
+		approvalTicket = decoded
+	}
+	resp, err := guestHostRepoApplyPatchFunc(strings.TrimSpace(*repoLabel), patchBytes, strings.TrimSpace(*baseRevision), append([]string(nil), targetScope...), approvalTicket)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "status=applied")
+	fmt.Fprintf(stdout, "repo_label=%s\n", resp.RepoLabel)
+	fmt.Fprintf(stdout, "base_revision=%s\n", resp.BaseRevision)
+	fmt.Fprintf(stdout, "patch_digest=%s:%s\n", resp.PatchDigestAlgo, resp.PatchDigest)
+	if len(resp.AppliedPaths) > 0 {
+		fmt.Fprintf(stdout, "affected_paths=%s\n", strings.Join(resp.AppliedPaths, ","))
+	}
+	return 0
+}
+
 func main() {
+	if code, handled := maybeRunSubcommand(os.Stdout, os.Stderr, os.Args[1:]); handled {
+		os.Exit(code)
+	}
+
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGCHLD)
@@ -552,7 +636,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 
@@ -567,7 +651,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 
@@ -585,7 +669,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 
@@ -602,7 +686,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 
@@ -612,7 +696,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 
@@ -627,7 +711,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 	defer os.Remove(f.Name())
@@ -637,7 +721,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 	_ = f.Close()
@@ -657,7 +741,7 @@ func main() {
 				return
 			}
 			close(chunks)
-			_ = <-writeErr
+			<-writeErr
 			return
 		}
 		defer os.Remove(launcherPath)
@@ -681,7 +765,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 	stderrPipe, err := cmd.StderrPipe()
@@ -690,7 +774,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 
@@ -717,7 +801,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 	managedChildStarted = true
@@ -732,7 +816,7 @@ func main() {
 			return
 		}
 		close(chunks)
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 	runtime.UnlockOSThread()
@@ -812,11 +896,11 @@ func main() {
 		unix.Sync()
 	}
 	if !sendChunk(GuestChunk{Type: "done", ExitCode: exitCode, Reason: exitReason, DurationMs: time.Since(start).Milliseconds()}) {
-		_ = <-writeErr
+		<-writeErr
 		return
 	}
 	close(chunks)
-	_ = <-writeErr
+	<-writeErr
 }
 
 func streamPipe(wg *sync.WaitGroup, pipe io.Reader, chunkType string, chunks chan<- GuestChunk, writerDone <-chan struct{}) {

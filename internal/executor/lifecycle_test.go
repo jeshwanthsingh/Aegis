@@ -1,9 +1,7 @@
 package executor
 
 import (
-	"context"
 	"encoding/json"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -334,28 +332,6 @@ func testNetworkConfig(tapName string, allowedHosts ...string) *NetworkConfig {
 	return cfg
 }
 
-func stubAllowlistHooks(t *testing.T, ips []net.IP, lookupErr error) func() {
-	t.Helper()
-
-	allowlistHookMu.Lock()
-
-	oldLookup := lookupAllowlistIPv4
-	oldRun := runAllowlistRuleCmd
-
-	lookupAllowlistIPv4 = func(ctx context.Context, resolver *net.Resolver, host string) ([]net.IP, error) {
-		return ips, lookupErr
-	}
-	runAllowlistRuleCmd = func(name string, args ...string) error {
-		return nil
-	}
-
-	return func() {
-		lookupAllowlistIPv4 = oldLookup
-		runAllowlistRuleCmd = oldRun
-		allowlistHookMu.Unlock()
-	}
-}
-
 func TestTeardownIsIdempotent(t *testing.T) {
 	t.Setenv("AEGIS_CGROUP_PARENT", t.TempDir())
 
@@ -412,19 +388,6 @@ func mustDNSQuestion(t *testing.T, domain string, qtype dnsmessage.Type) []byte 
 		t.Fatalf("Finish: %v", err)
 	}
 	return msg
-}
-
-func containsAll(values []string, want ...string) bool {
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		seen[value] = struct{}{}
-	}
-	for _, item := range want {
-		if _, ok := seen[item]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 func applyInsertOneForwardRules(commands []string) []string {

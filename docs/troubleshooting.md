@@ -1,105 +1,95 @@
 # Troubleshooting
 
-This page assumes the canonical local path:
+This page assumes the current local operator path:
 
 ```bash
-cd ~/aegis
+python3 ./scripts/aegis_demo.py preflight
 ./scripts/demo_up.sh
 ./scripts/demo_status.sh
-./scripts/demo_clean.sh
 ```
 
-## `demo_up.sh` fails before the runtime starts
+## Demo Preflight Fails
 
-Common messages include:
+Run:
 
-- `/dev/kvm is missing`
-- `/dev/kvm is not accessible to the current user`
-- `Firecracker binary not found`
-- `Postgres tool 'initdb' not found`
-- `Go toolchain not found`
-- `kernel image missing`
-- `rootfs image missing`
+```bash
+python3 ./scripts/aegis_demo.py preflight
+```
 
-Recovery:
+The preflight reports visible missing prerequisites such as:
 
-- read the exact `demo error: ...` line first
-- compare it against the prerequisite list and failure modes in [setup-local.md](setup-local.md)
-- fix the missing dependency or host permission and rerun `./scripts/demo_up.sh`
+- Linux requirement
+- missing or inaccessible `/dev/kvm`
+- Firecracker missing
+- missing Postgres server binaries
+- missing repo-local config
+- missing kernel/rootfs/assets
+- missing repo-local binaries
 
-If `demo_up.sh` says Aegis is already healthy at `http://127.0.0.1:8080` but is not owned by `/tmp/aegis-demo/state.json`, another runtime is already using the canonical demo port. Stop that runtime or reuse it deliberately.
+Fix the reported prerequisite first. The canonical demos are intentionally not clone-and-run yet.
 
-## `demo_status.sh` says `status=degraded`
+## `demo_up.sh` Fails Before The Runtime Starts
 
-That means the demo state exists, but the runtime health check is failing.
+Common causes:
 
-Inspect the logs:
+- `/dev/kvm` is missing or inaccessible
+- Firecracker is not installed
+- Postgres tools like `initdb` or `pg_ctl` are missing
+- required guest assets are missing
+- `.aegis` local setup state is incomplete
+
+Inspect the exact `demo error: ...` output and the preflight output together before retrying.
+
+## `demo_status.sh` Reports Degraded Or Unhealthy
+
+Inspect:
 
 ```bash
 tail -n 50 /tmp/aegis-demo/orchestrator.log
 tail -n 50 /tmp/aegis-demo/postgres.log
 ```
 
-Then restart the packaged local environment:
+If the runtime is wedged, restart it:
 
 ```bash
-cd ~/aegis
 ./scripts/demo_down.sh
 ./scripts/demo_up.sh
 ```
 
-`demo_down.sh` leaves logs and proof bundles on disk so you can inspect them after the restart.
+## Approval-Requiring Demos Fail With Approval Verification Errors
 
-## A packaged demo script says the runtime is not healthy
+Current runtime approval verification requires explicit public-key verifier config.
 
-The demo scripts require the localhost runtime from `demo_up.sh`.
+If the runtime cannot verify issued approvals:
 
-Check:
-
-```bash
-cd ~/aegis
-./scripts/demo_status.sh
-```
-
-If it is not running, start it:
+1. confirm `AEGIS_APPROVAL_PUBLIC_KEYS_JSON` is set for the runtime
+2. if you are issuing approvals locally with `AEGIS_APPROVAL_SIGNING_SEED_B64`, derive the matching public-key map with:
 
 ```bash
-cd ~/aegis
-./scripts/demo_up.sh
+./.aegis/bin/aegis approval public-keys
 ```
 
-## Repo-local binaries are missing or stale
+3. ensure the runtime is using that exact public-key map
 
-Symptoms:
+If the runtime verifier config is missing, approval checks fail closed as unavailable.
 
-- `./.aegis/bin/aegis` is missing
-- `./.aegis/bin/orchestrator` is missing
-- `./.aegis/bin/aegis-mcp` is missing after setup should have built it
+## Lease-Related Admission Failures
 
-Recovery:
+Executions that need leases now fail before VM start if lease issuance cannot succeed.
 
-```bash
-cd ~/aegis
-./scripts/demo_up.sh
-```
+Look for:
 
-If you only need to rerun the repo-local setup step without starting the packaged demo runtime:
+- `lease_issue_failed`
 
-```bash
-cd ~/aegis
-go run ./cmd/aegis-cli setup --config .aegis/config.yaml
-```
+This is an admission/infrastructure failure, not a fake runtime receipt event.
 
-## Receipt verification fails
-
-If `./.aegis/bin/aegis receipt verify --proof-dir ...` fails, the CLI prints `receipt verification failed: ...` and, when available, `verification_failure_class=...`.
+## Receipt Verification Fails
 
 Start with:
 
 ```bash
-cd ~/aegis
-./.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<execution-id>
-./.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<execution-id>
+./.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<execution_id>
+./.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<execution_id>
 ```
 
 Check that the proof directory still contains:
@@ -107,25 +97,76 @@ Check that the proof directory still contains:
 - `receipt.dsse.json`
 - `receipt.pub`
 - `receipt.summary.txt`
-- every bound artifact named in the bundle, such as `stdout.txt`, `stderr.txt`, or `output-manifest.json`
+- bound artifacts referenced by the receipt
 
-If the bundle was copied elsewhere, keep those files together.
+If the bundle was copied, keep those files together.
 
-## Runtime unavailable during MCP use
+## `host_repo_apply_patch` Demo Issues
 
-Symptoms:
+If the approved host patch demo fails:
 
-- the MCP server starts, but `aegis_execute` fails because the runtime cannot be reached
+- confirm the repo label is configured as expected
+- confirm the base revision still matches
+- confirm the target repo is dedicated or quiesced during the demo
+- confirm another local process is not contending on the advisory lock
 
-Cause:
+The current host patch path uses a local-host advisory lock, not a distributed or mandatory lock.
 
-- the MCP binary is a thin stdio wrapper around the existing local HTTP runtime
-- it does not start the runtime for you
+## Firecracker Or KVM-Specific Problems
 
-Recovery:
+Typical failures:
+
+- missing `/dev/kvm`
+- permission denied on `/dev/kvm`
+- Firecracker binary missing
+- kernel/rootfs asset mismatch
+
+Use:
 
 ```bash
-cd ~/aegis
+python3 ./scripts/aegis_demo.py preflight
+```
+
+to get the exact visible prerequisite failure, then fix that host-level dependency.
+
+## Postgres Problems
+
+Typical failures:
+
+- `initdb` missing
+- `pg_ctl` missing
+- stale local Postgres state under `/tmp/aegis-demo`
+
+Inspect:
+
+```bash
+tail -n 50 /tmp/aegis-demo/postgres.log
+```
+
+Then restart the local demo runtime if needed:
+
+```bash
+./scripts/demo_down.sh
+./scripts/demo_up.sh
+```
+
+## Repo-Local Binaries Are Missing Or Stale
+
+If `./.aegis/bin/aegis` or `./.aegis/bin/orchestrator` is missing or stale:
+
+```bash
+go run ./cmd/aegis-cli setup --config .aegis/config.yaml
+```
+
+Then rerun preflight.
+
+## MCP Runtime Unavailable
+
+`aegis-mcp` talks to the existing local HTTP runtime. It does not bootstrap the runtime on its own.
+
+Start the runtime first:
+
+```bash
 ./scripts/demo_up.sh
 AEGIS_BASE_URL=http://127.0.0.1:8080 ./.aegis/bin/aegis-mcp
 ```

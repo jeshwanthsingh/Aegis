@@ -67,6 +67,22 @@ func brokerLeaseInput(t *testing.T, leaseCheck *lease.Check, approvalCheck *appr
 	return input
 }
 
+func validHTTPLeaseCheck() *lease.Check {
+	return &lease.Check{
+		Required:           true,
+		LeaseID:            "lease-http-1",
+		Issuer:             "local_orchestrator",
+		IssuerKeyID:        "ed25519:test",
+		Result:             lease.CheckVerified,
+		ExpiresAt:          time.Unix(1700000010, 0).UTC(),
+		GrantID:            "grant-http-1",
+		SelectorDigest:     strings.Repeat("b", 64),
+		SelectorDigestAlgo: approval.ResourceDigestAlgo,
+		BudgetResult:       lease.BudgetConsumed,
+		RemainingCount:     ptrUint64(4),
+	}
+}
+
 func TestBuildSignedReceiptCarriesLeaseEvidence(t *testing.T) {
 	input := brokerLeaseInput(t, &lease.Check{
 		Required:           true,
@@ -111,6 +127,38 @@ func TestBuildSignedReceiptCarriesLeaseEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifySignedReceiptAcceptsCurrentCoveredAllowWithLeaseEvidence(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := brokerLeaseInput(t, &lease.Check{
+		Required:           true,
+		LeaseID:            "lease-verify-1",
+		Issuer:             "local_orchestrator",
+		IssuerKeyID:        "ed25519:test",
+		Result:             lease.CheckVerified,
+		ExpiresAt:          time.Unix(1700000010, 0).UTC(),
+		GrantID:            "grant-http-verify-1",
+		SelectorDigest:     strings.Repeat("d", 64),
+		SelectorDigestAlgo: approval.ResourceDigestAlgo,
+		BudgetResult:       lease.BudgetConsumed,
+		RemainingCount:     ptrUint64(4),
+	}, &approval.Check{
+		Required:    true,
+		TicketID:    "ticket-verify-1",
+		IssuerKeyID: "ed25519:test",
+		Result:      approval.VerificationVerified,
+		ExpiresAt:   time.Unix(1700000010, 0).UTC(),
+		Consumed:    true,
+	})
+
+	signed, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err != nil {
+		t.Fatalf("VerifySignedReceipt: %v", err)
+	}
+}
+
 func TestVerifySignedReceiptAcceptsLegacyReceiptWithoutLeaseEvidence(t *testing.T) {
 	signer := mustDevSigner(t)
 	signed, err := BuildSignedReceipt(testReceiptInput(), signer)
@@ -119,6 +167,48 @@ func TestVerifySignedReceiptAcceptsLegacyReceiptWithoutLeaseEvidence(t *testing.
 	}
 	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err != nil {
 		t.Fatalf("VerifySignedReceipt(legacy-compatible): %v", err)
+	}
+}
+
+func TestVerifySignedReceiptRejectsCurrentCoveredAllowWithoutLeaseEvidence(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := brokerLeaseInput(t, nil, &approval.Check{
+		Required:    true,
+		TicketID:    "ticket-lease-missing",
+		IssuerKeyID: "ed25519:test",
+		Result:      approval.VerificationVerified,
+		ExpiresAt:   time.Unix(1700000010, 0).UTC(),
+		Consumed:    true,
+	})
+
+	signed, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err == nil || !strings.Contains(err.Error(), "covered allow actions require lease evidence") {
+		t.Fatalf("expected missing lease verification failure, got %v", err)
+	}
+}
+
+func TestVerifySignedReceiptAcceptsLegacyExplicitV1CoveredAllowWithoutLeaseEvidence(t *testing.T) {
+	signer := mustDevSigner(t)
+	input := brokerLeaseInput(t, nil, &approval.Check{
+		Required:    true,
+		TicketID:    "ticket-legacy",
+		IssuerKeyID: "ed25519:test",
+		Result:      approval.VerificationVerified,
+		ExpiresAt:   time.Unix(1700000010, 0).UTC(),
+		Consumed:    true,
+	})
+
+	signed, err := BuildSignedReceipt(input, signer)
+	if err != nil {
+		t.Fatalf("BuildSignedReceipt: %v", err)
+	}
+	signed.Statement.Predicate.SemanticsMode = SemanticsModeExplicitV1
+	reSignStatement(t, &signed, signer)
+	if _, err := VerifySignedReceipt(signed, signer.PublicKey); err != nil {
+		t.Fatalf("VerifySignedReceipt(explicit_v1 legacy): %v", err)
 	}
 }
 

@@ -1,72 +1,110 @@
 # Security FAQ
 
-## What is Aegis?
+## What does Aegis try to prevent?
 
-Aegis is a single-host Firecracker/KVM runtime for running untrusted agent-generated code on a Linux host and emitting host-signed receipts afterward.
+Aegis is trying to make untrusted AI-generated code harder to run with ambient host authority.
 
-In the current implementation, that proof is a signed host-side execution record plus proof-bundle artifacts created after the run.
+Today it does that by combining:
 
-## What is Aegis not?
+- Firecracker/KVM guest isolation
+- frozen authority at admission
+- host-side policy checks
+- Lease V1 for covered side-effect classes
+- exact approval tickets where required
+- typed host-side side-effect handling
+- signed receipts and offline verification
 
-Aegis is not a hosted multi-tenant control plane, not host attestation, and not proof that a compromised host could not lie.
+## What side effects are currently governed?
 
-## What does the receipt prove?
+Current covered host-side side-effect classes are:
 
-It proves that the verifier checked a signed receipt and proof bundle produced by the local host for one execution ID.
+- brokered outbound HTTP
+- `host_repo_apply_patch`
 
-`receipt verify` checks:
+Unsupported host-destructive classes are denied rather than silently approximated.
 
-- bundle completeness
-- artifact hashes against the signed subject list
-- the DSSE signature
-- receipt semantic invariants
+## What does Aegis not prevent yet?
 
-By default, `receipt verify --proof-dir ...` uses the `receipt.pub` file in that proof bundle.
+Aegis does **not** currently prevent:
 
-The receipt binds fields such as:
+- a dishonest or compromised host from lying
+- host-side key compromise
+- hardware-attestation failures, because attestation is not implemented
+- arbitrary non-cooperating local processes from ignoring an advisory repo lock
+- multi-tenant public-cloud threat models
 
-- execution ID
-- timestamps
-- backend
-- policy digest
-- signer key ID
-- signing mode
-- intent digest when present
-- outcome and exit code
-- denial markers and governed actions when present
-- artifact hashes for the proof bundle
+## Does Aegis expose host secrets to the guest?
 
-## What does the receipt not prove?
+The current design avoids handing raw host approval or receipt signing secrets to guest code.
 
-It does not prove that the host was honest.
+Important current boundaries:
 
-It does not prove:
+- guest code requests brokered actions
+- host policy/lease/approval checks stay on the host
+- approval tokens can be carried through the existing broker transport, but the demo harness avoids storing them in published artifact directories
+- public receipt and CLI output intentionally sanitize HTTP query strings and other secret-bearing display surfaces
 
-- host attestation
-- truth independent of the host
-- hardware-rooted provenance
-- that a compromised host could not forge, omit, or alter local evidence before signing
+## How do leases and approvals differ?
 
-## What are the host trust assumptions?
+- Lease V1: coarse standing authority for a covered side-effect class
+- Approval ticket: exact per-attempt approval for one specific request resource
 
-The host is in the trust base.
+Current rules:
 
-That includes:
+- brokered HTTP always requires a lease
+- brokered HTTP also requires approval when `require_host_consent` is enabled
+- `host_repo_apply_patch` always requires both a lease and an approval ticket
 
-- the Linux host
-- the local filesystem and database
-- the Aegis host-side control plane
-- the local signing seed and signer process
+## Is `host_repo_apply_patch` safe for any repo?
 
-## Why not just use a generic sandbox vendor?
+No. The truthful current statement is narrower.
 
-For this wedge, the buyer usually needs more than "the code ran somewhere else."
+The host patch path is:
 
-- Aegis is aimed at self-hosted internal coding-agent execution
-- the canonical demo shows denied direct egress, not just isolated execution
-- the proof artifacts stay local to the operator's environment
-- the receipt and verifier are part of the operator-visible control path
+- typed
+- canonicalized
+- policy/lease/approval mediated
+- guarded by a local-host advisory lock
 
-That does not make Aegis universally better than a generic sandbox vendor. It makes it a tighter fit when the requirement is self-hosted execution control for internal coding agents plus signed receipts for what the host observed and enforced.
+That lock is real and useful, but it is still advisory. The current operating assumption is a dedicated or quiesced repo during patch application.
 
-For the full trust assumptions, use [trust-model.md](trust-model.md). For the current receipt structure and verification model, use [receipt-model.md](receipt-model.md).
+## What does `receipt verify` prove?
+
+It proves that a verifier checked:
+
+- the DSSE envelope
+- artifact hashes
+- schema shape
+- current semantic invariants
+
+It does **not** prove:
+
+- host honesty
+- attestation
+- trustlessness
+- proof independent of the host
+
+## Why is there a verifier if the host is still in the trust base?
+
+Because “host-signed and re-checkable” is still materially better than “trust the logs.”
+
+The verifier catches:
+
+- broken or tampered bundles
+- signature mismatches
+- schema violations
+- contradictory approval / lease / escalation states
+
+It does not remove the host from the trust base.
+
+## How should operators think about secret handling?
+
+Current practical guidance:
+
+- keep signing seeds and verifier public-key config out of git
+- use explicit approval verifier public-key config for runtime enforcement
+- do not assume demo artifacts are the right place to store reusable secrets
+- treat approval tickets as scoped runtime authorization material, not as a general secret transport
+
+For the full trust assumptions, use [trust-model.md](trust-model.md).
+For the signed receipt fields, use [receipt-schema.md](receipt-schema.md).

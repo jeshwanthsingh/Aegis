@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -13,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -518,25 +516,6 @@ func shortID(id string) string {
 	return id[:8]
 }
 
-func resolvePresetHosts(presets []string) ([]string, error) {
-	seen := map[string]struct{}{}
-	var hosts []string
-	for _, preset := range presets {
-		entries, ok := policy.NetworkPresets[preset]
-		if !ok {
-			return nil, fmt.Errorf("unknown network preset: %s", preset)
-		}
-		for _, host := range entries {
-			if _, ok := seen[host]; ok {
-				continue
-			}
-			seen[host] = struct{}{}
-			hosts = append(hosts, host)
-		}
-	}
-	return hosts, nil
-}
-
 func normalizeHostname(name string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 }
@@ -598,28 +577,6 @@ func chooseUpstreamNameservers(contents string) []string {
 	return []string{"8.8.8.8", "1.1.1.1"}
 }
 
-func newUpstreamResolver() *net.Resolver {
-	servers := []string{"8.8.8.8", "1.1.1.1"}
-	if contents, err := os.ReadFile("/etc/resolv.conf"); err == nil {
-		servers = chooseUpstreamNameservers(string(contents))
-	}
-
-	var next uint32
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			idx := atomic.AddUint32(&next, 1) - 1
-			server := servers[int(idx)%len(servers)]
-			dialNetwork := "udp4"
-			if ip := net.ParseIP(strings.Trim(server, "[]")); ip != nil && ip.To4() == nil {
-				dialNetwork = "udp6"
-			}
-			d := net.Dialer{Timeout: 5 * time.Second}
-			return d.DialContext(ctx, dialNetwork, net.JoinHostPort(strings.Trim(server, "[]"), "53"))
-		},
-	}
-}
-
 func allowResolvedIP(cfg *NetworkConfig, ip string, bus *telemetry.Bus) error {
 	cfg.dnsMu.Lock()
 	if _, ok := cfg.allowedIPs[ip]; ok {
@@ -664,39 +621,6 @@ func allowCIDR(cfg *NetworkConfig, cidr string, bus *telemetry.Bus) error {
 		})
 	}
 	return nil
-}
-
-func resolveAllowlistHostIPv4s(resolver *net.Resolver, host string) ([]string, error) {
-	ips, err := lookupAllowlistIPv4(context.Background(), resolver, host)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]struct{}{}
-	resolved := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		ip4 := ip.To4()
-		if ip4 == nil {
-			continue
-		}
-		value := ip4.String()
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		resolved = append(resolved, value)
-	}
-	sort.Strings(resolved)
-	if len(resolved) == 0 {
-		return nil, fmt.Errorf("no IPv4 addresses returned")
-	}
-	return resolved, nil
-}
-
-var lookupAllowlistIPv4 = func(ctx context.Context, resolver *net.Resolver, host string) ([]net.IP, error) {
-	if resolver == nil {
-		resolver = newUpstreamResolver()
-	}
-	return resolver.LookupIP(ctx, "ip4", host)
 }
 
 func startDNSInterceptor(cfg *NetworkConfig, bus *telemetry.Bus) error {

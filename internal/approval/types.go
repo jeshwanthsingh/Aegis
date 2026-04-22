@@ -11,6 +11,7 @@ import (
 const (
 	TicketVersion       = "v1"
 	TicketPredicateType = "https://aegis.dev/ApprovalTicket/v1"
+	EnvSigningSeed      = "AEGIS_APPROVAL_SIGNING_SEED_B64"
 	EnvPublicKeysJSON   = "AEGIS_APPROVAL_PUBLIC_KEYS_JSON"
 	ResourceDigestAlgo  = "sha256"
 )

@@ -1,92 +1,120 @@
 # Trust Model
 
-Aegis today is a single-host secure execution runtime for local or internal-pilot use. It raises the bar for untrusted agent-generated code, but it is not trustless and it does not remove trust in the host.
+Aegis today is a single-host runtime that produces host-signed execution evidence. It raises the bar for running untrusted AI-generated code, but it does not remove trust in the host or operator.
 
-## Product Boundary Today
+## Short Version
 
-- Linux only
-- one host
-- Firecracker/KVM runtime
-- host-signed DSSE receipts
-- no network by default, plus explicit `egress_allowlist` policy and governed brokered paths
-- local demo and narrow internal-pilot scope
+- one Linux host
+- Firecracker/KVM execution boundary
+- host-side policy enforcement
+- host-signed receipts plus offline verification
+- no attestation
+- not trustless
 
-It is not:
+The most accurate short description is:
 
-- a production-ready multi-tenant platform
-- a hosted agent governance cloud
-- hardware attestation
-- Authority
-- a general enterprise IAM layer
+> Runtime + Verify on one host you already trust.
 
 ## Trust Base
 
-The trust base includes:
+The trust base currently includes:
 
 - the Linux host and kernel
-- the Firecracker binary, kernel image, rootfs, and host-side Aegis control plane
-- local policy and configuration files plus the local Postgres state
-- the receipt signing seed, signer, and proof-bundle storage on the host
-- the operator who controls that host and its configuration
+- Firecracker, guest kernel, rootfs, and host-side runtime binaries
+- local policy/configuration files
+- local Postgres state
+- receipt-signing key material
+- approval verifier public-key configuration
+- approval signing key material when operators issue approvals locally
+- the operator controlling the machine and configuration
 
-If that host is dishonest or compromised, Aegis can produce dishonest receipts.
+If the host or operator is dishonest or compromised, Aegis can emit dishonest receipts.
 
-## What the Runtime Boundary Does
+## What The Runtime Boundary Actually Gives You
 
-- runs untrusted code in a Firecracker microVM instead of a normal developer shell or CI runner
-- keeps no-network as the default posture and uses `egress_allowlist` for the networked path: TCP 80/443 only, hard deny rules for private ranges / metadata / guest DNS, and outbound opened only for declared FQDNs or CIDRs
-- records governed-action allow and deny evidence, runtime envelope data, and artifact hashes per execution
-- binds that evidence into a DSSE-signed receipt and proof bundle
+Aegis does provide:
 
-## What the Runtime Boundary Does Not Do
+- a Firecracker/KVM boundary instead of direct shell execution on the host
+- frozen authority at admission, bound into `authority_digest`
+- explicit policy, lease, approval, and governed side-effect checks on the host
+- receipts that expose what the runtime observed and enforced
+- offline verification of the signed bundle
 
-- prove the host was honest
-- prove the configured policy, Firecracker binary, or VM assets were untampered
-- provide hardware-rooted provenance for the host or signer
-- provide cloud-grade multi-tenant isolation guarantees
-- move trust out of the host or operator
+## What It Does Not Give You
+
+Aegis does **not** currently provide:
+
+- hardware attestation
+- trustlessness
+- proof independent of the host
+- hostile-host independence
+- production-ready multi-tenant public-cloud control-plane guarantees
+- a distributed control plane
+
+## Signer And Verifier Assumptions
+
+Receipt verification is meaningful only relative to a signer key you trust.
+
+Current signer/verifier assumptions:
+
+- receipts are signed by host-controlled key material
+- runtime approval verification requires explicit verifier public-key configuration
+- local approval inspection may derive a public key from the signing seed for convenience, but runtime broker enforcement does not
+- a receipt bundle can prove internal consistency under the bundled verification key, but that does not by itself prove that the signer is one you intended to trust
+
+## Lease And Approval Semantics
+
+Lease V1 and approval tickets are different trust primitives:
+
+- Lease V1: coarse standing authority for a covered side-effect class
+- Approval ticket: exact per-attempt consent for a specific resource
+
+Current rules:
+
+- brokered HTTP always requires a lease
+- brokered HTTP also requires approval when `require_host_consent` is enabled
+- `host_repo_apply_patch` always requires both a lease and an approval ticket
+
+## Host Patch Trust Truth
+
+`host_repo_apply_patch` is intentionally narrow and typed, but its lock is a local-host advisory lock.
+
+That means:
+
+- Aegis serializes cooperating local processes on the same host
+- it does not magically make an arbitrary busy shared repo safe
+- the truthful operating assumption is a dedicated or quiesced repo during patch application
 
 ## What Receipt Verification Means
 
-`./.aegis/bin/aegis receipt verify --proof-dir <proof_dir>` checks:
+`aegis receipt verify --proof-dir ...` checks:
 
-- the proof bundle is complete
-- bound artifacts still hash to the values named in the signed statement
-- the DSSE envelope verifies
-- the statement type, predicate type, and receipt semantics are valid
+- DSSE signature validity
+- artifact hash binding
+- receipt schema shape
+- semantic invariants for the current receipt format
 
-By default, `--proof-dir` verification uses the `receipt.pub` file inside the proof bundle. That proves the bundle is internally consistent under that public key. If a reviewer separately pins or trusts the expected signer key, the same verification also proves integrity against that trusted key.
+It does **not** mean:
 
-Verification does not mean:
-
-- hardware attestation
-- trustless execution
-- proof that the host could not forge, suppress, or omit evidence
-- proof that the run is suitable for hostile-host or multi-tenant cloud assumptions
-
-## What Trust Still Rests On The Host
-
-A compromised host could:
-
-- fabricate or suppress telemetry before signing
-- sign a false receipt with the local signing key
-- alter or omit proof artifacts before a reviewer fetches them
-- run a different runtime or policy than the operator expected and still produce an internally consistent receipt
-
-That is why receipts should be read as host-signed execution records, not as proof independent of the host.
+- the host was honest
+- the host could not suppress evidence
+- the execution is attested
+- the execution is suitable for hostile-host or multi-tenant cloud assumptions
 
 ## Appropriate Use Today
 
-Aegis today is appropriate when:
+Use Aegis when:
 
-- one organization controls the Linux host
-- the goal is local validation or a narrow internal pilot
-- reviewers want stronger execution evidence than logs alone
+- one organization controls one Linux host
+- you want stronger controls than direct shell or CI execution
+- you need explicit post-run evidence for what the host enforced
+- you can operate within the current single-host trust base
 
-Aegis today is not the right fit when:
+Do not treat Aegis as the right answer when:
 
-- host independence is a requirement
-- hardware attestation is required
-- the deployment must be multi-tenant or Internet-hosted from day one
+- you need host independence
+- you need attested execution
+- you need a hosted multi-tenant control plane
+- you need arbitrary shared-repo host patching guarantees
 
-For the concrete receipt structure and verification surface, use [receipt-model.md](receipt-model.md).
+For concrete receipt fields, use [receipt-schema.md](receipt-schema.md).

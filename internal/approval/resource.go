@@ -32,6 +32,14 @@ type canonicalHeader struct {
 	Values []string `json:"values"`
 }
 
+type PublicHTTPURL struct {
+	Scheme        string
+	Host          string
+	Path          string
+	QueryPresent  bool
+	QueryKeyCount int
+}
+
 func CanonicalizeHTTPRequest(input HTTPRequestInput) (CanonicalResource, error) {
 	canonicalURL, err := canonicalizeURL(input.URL)
 	if err != nil {
@@ -276,6 +284,45 @@ func defaultPort(scheme string, port string) bool {
 	}
 }
 
+func PublicHTTPURLString(raw string) string {
+	publicURL, err := PublicHTTPURLForDisplay(raw)
+	if err != nil {
+		return ""
+	}
+	value := publicURL.Scheme + "://" + publicURL.Host + publicURL.Path
+	if publicURL.QueryPresent {
+		value += "?query_keys=" + strconv.Itoa(publicURL.QueryKeyCount)
+	}
+	return value
+}
+
+func PublicHTTPURLForDisplay(raw string) (PublicHTTPURL, error) {
+	canonicalURL, err := canonicalizeURL(raw)
+	if err != nil {
+		return PublicHTTPURL{}, err
+	}
+	parsed, err := url.Parse(canonicalURL)
+	if err != nil {
+		return PublicHTTPURL{}, fmt.Errorf("parse canonical url: %w", err)
+	}
+	query := parsed.Query()
+	keyCount := 0
+	for range query {
+		keyCount++
+	}
+	pathValue := parsed.EscapedPath()
+	if pathValue == "" {
+		pathValue = "/"
+	}
+	return PublicHTTPURL{
+		Scheme:        parsed.Scheme,
+		Host:          parsed.Host,
+		Path:          pathValue,
+		QueryPresent:  keyCount > 0,
+		QueryKeyCount: keyCount,
+	}, nil
+}
+
 func digestJSON(value any) string {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -315,7 +362,16 @@ func ResourceToAuditPayload(resource Resource) map[string]string {
 	case ResourceKindHTTPRequestV1:
 		if resource.HTTP != nil {
 			payload["resource_method"] = resource.HTTP.Method
-			payload["resource_url"] = resource.HTTP.URL
+			publicURL, err := PublicHTTPURLForDisplay(resource.HTTP.URL)
+			if err == nil {
+				payload["resource_url_scheme"] = publicURL.Scheme
+				payload["resource_url_host"] = publicURL.Host
+				payload["resource_url_path"] = publicURL.Path
+				if publicURL.QueryPresent {
+					payload["resource_url_query_present"] = "true"
+					payload["resource_url_query_key_count"] = strconv.Itoa(publicURL.QueryKeyCount)
+				}
+			}
 		}
 	case ResourceKindHostRepoApplyPatchV1:
 		if resource.HostRepoApplyPatch != nil {
@@ -334,7 +390,7 @@ func CanonicalRequestDescription(resource Resource) string {
 		if resource.HTTP == nil {
 			return string(resource.Kind)
 		}
-		return resource.HTTP.Method + " " + resource.HTTP.URL + " headers=" + resource.HTTP.HeadersDigest + " body=" + resource.HTTP.BodyDigest
+		return resource.HTTP.Method + " " + PublicHTTPURLString(resource.HTTP.URL) + " headers=" + resource.HTTP.HeadersDigest + " body=" + resource.HTTP.BodyDigest
 	case ResourceKindHostRepoApplyPatchV1:
 		if resource.HostRepoApplyPatch == nil {
 			return string(resource.Kind)
