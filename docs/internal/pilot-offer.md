@@ -53,4 +53,4 @@ The pilot is successful if, by the end of the window, the design partner can:
 - one named owner from the coding-agent workflow team
 - agreement to keep the pilot to one workflow and one or two policy paths
 
-For the exact first-run path, use [setup-local.md](setup-local.md). For the packaged demo sequence, use [canonical-demos.md](canonical-demos.md).
+For the exact first-run path, use [../setup-local.md](../setup-local.md). For the packaged demo sequence, use [../canonical-demos.md](../canonical-demos.md).

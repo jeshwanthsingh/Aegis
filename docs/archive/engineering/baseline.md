@@ -6,6 +6,6 @@ The older `preflight.sh` plus manual `serve` and raw `curl` sequence is useful o
 
 Use these docs instead:
 
-- [setup-local.md](setup-local.md): the one canonical Linux/KVM setup path
-- [canonical-demos.md](canonical-demos.md): the current canonical demo sequence
+- [../setup-local.md](../setup-local.md): the one canonical Linux/KVM setup path
+- [../canonical-demos.md](../canonical-demos.md): the current canonical demo sequence
 - [api.md](api.md): the raw HTTP surface, if you intentionally want to drive the runtime by hand

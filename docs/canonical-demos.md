@@ -1,156 +1,135 @@
-# Canonical Aegis Demos
+# Canonical Demos
+
+This is the one public demo guide for Aegis.
 
 These demos exercise the current Aegis truth boundary:
 
 - Runtime + Verify
-- signed receipts and proof bundles
 - brokered HTTP
-- `host_repo_apply_patch`
+- typed `host_repo_apply_patch`
 - approval tickets
 - Lease V1
-- escalation evidence and terminal escalation classes
+- host-signed receipts plus offline verification
 
-They do **not** claim authority completeness, attestation, or trustlessness.
+They do not claim authority completeness, attestation, or trustlessness.
 
-## Prerequisites
+## Before You Start
 
-- Linux host
-- `/dev/kvm`
-- Firecracker installed
-- local Postgres server binaries (`initdb`, `pg_ctl`, `psql`)
-- repo-local setup completed through `aegis setup`
-- local runtime assets and config
-- explicit approval verifier configuration for approval-requiring demos
-
-Run the visible demo preflight before starting the runtime or any canonical demo:
+Run preflight and start the runtime once:
 
 ```bash
 python3 ./scripts/aegis_demo.py preflight
-```
-
-The canonical demo entry points fail early if preflight does not pass. This repo is not clone-and-run yet; the preflight makes the required local bootstrap state explicit.
-
-Start the demo runtime:
-
-```bash
 ./scripts/demo_up.sh
 ```
 
-The demo state lives under `/tmp/aegis-demo`:
+If preflight fails, stop here and use [setup-local.md](setup-local.md).
+
+The demo runtime uses:
 
 - proofs: `/tmp/aegis-demo/proofs/<execution_id>/`
 - demo artifacts: `/tmp/aegis-demo/artifacts/<demo>/<execution_id>/`
 - runtime log: `/tmp/aegis-demo/orchestrator.log`
+- demo host repo: `/tmp/aegis-demo/host-repos/demo-repo`
 
-You can preview the frozen digests and broker authority before issuing approvals:
+## Recommended First Demo
 
-```bash
-./.aegis/bin/aegis demo prepare --file path/to/intent.json
-```
-
-## Canonical Demos
-
-Demo A, escalation termination:
+Start with the governed HTTP success path:
 
 ```bash
-./scripts/demo_escalation_termination.sh
+python3 ./scripts/aegis_demo.py broker-http
 ```
 
-Proves:
+That is the cleanest first proof loop: governed allow, signed receipt, offline verification.
 
-- repeated probing is denied
-- escalation evidence is signed into the receipt
-- execution terminates with `privilege_escalation_attempt`
+## The Four Canonical Demos
 
-Demo B, host patch denied:
+| Demo | Command | Approval needed | What it proves | Side effects |
+| --- | --- | --- | --- | --- |
+| Demo A: escalation termination | `python3 ./scripts/aegis_demo.py escalation-termination` | No | Repeated broker probing becomes signed terminal escalation evidence with `privilege_escalation_attempt`. | No host mutation. |
+| Demo B: host patch denied | `python3 ./scripts/aegis_demo.py host-patch-denied` | No ticket is issued on purpose | `host_repo_apply_patch` is lease-covered and denied without a valid approval ticket. | No host mutation. |
+| Demo C: host patch approved | `python3 ./scripts/aegis_demo.py host-patch-approved` | Yes, auto-issued by the harness | The typed host patch path succeeds once with valid lease + approval and is recorded in the receipt. | Modifies `/tmp/aegis-demo/host-repos/demo-repo/demo.txt` only. |
+| Demo D: brokered HTTP | `python3 ./scripts/aegis_demo.py broker-http` | Yes, auto-issued by the harness | Brokered HTTP succeeds with valid lease + approval and is recorded as governed allow evidence. | Uses a local loopback probe only. |
 
-```bash
-./scripts/demo_host_patch_denied.sh
-```
-
-Proves:
-
-- `host_repo_apply_patch` is lease-covered
-- the action is denied without a valid approval ticket
-- the receipt shows host action + approval failure truth
-
-Demo C, host patch approved:
-
-```bash
-./scripts/demo_host_patch_approved.sh
-```
-
-Proves:
-
-- `host_repo_apply_patch` succeeds with valid lease + valid approval
-- the patch applies exactly once
-- the receipt shows host action + approval + lease truth
-- the host patch path is mediated by the typed broker path, not a demo-only shortcut
-
-Demo D, brokered HTTP:
-
-```bash
-./scripts/demo_broker_http.sh
-```
-
-Proves:
-
-- brokered HTTP succeeds with valid lease + valid approval
-- the receipt shows the authority/lease/approval story without raw JSON inspection
-
-Run the full suite:
+Run the full suite if you want all four in order:
 
 ```bash
 python3 ./scripts/aegis_demo.py canonical-suite
 ```
 
-## Receipt Verification
+## When Approval Is Needed
+
+- Demo A does not need approval.
+- Demo B intentionally proves denial without approval.
+- Demo C auto-issues a local approval ticket for the exact `host_repo_apply_patch` request.
+- Demo D auto-issues a local approval ticket for the exact HTTP request.
+
+Under the hood, the approved demos preview the exact request first:
+
+```bash
+./.aegis/bin/aegis demo prepare --config .aegis/config.yaml --lang python --file path/to/code.py --intent-file path/to/intent.json --timeout 10000
+```
+
+Then they issue the matching approval locally with `aegis approval issue ...`.
+
+You only need to issue approvals manually if you are reproducing the demo logic without the helper script.
+
+## How To Verify A Receipt
 
 Each demo prints:
 
 - `execution_id`
 - `proof_dir`
 - `verify_command`
-- `receipt_summary_key_fields`
 
-You can rerun the exact verifier command from the demo output, for example:
+Rerun the exact `verify_command` line from the demo output.
 
-```bash
-/home/cellardoor72/aegis/.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<execution_id>
-```
-
-For the sectioned review view:
+Generic form:
 
 ```bash
-/home/cellardoor72/aegis/.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<execution_id>
+./.aegis/bin/aegis receipt verify --proof-dir /tmp/aegis-demo/proofs/<execution_id>
+./.aegis/bin/aegis receipt show --proof-dir /tmp/aegis-demo/proofs/<execution_id>
 ```
 
-## Approval Ticket Flow
+`receipt verify` is the machine-readable proof check. `receipt show` is the human review view.
 
-The demo harness issues tickets locally with `aegis approval issue ...`.
+## What The Demos Prove
 
-Relevant envs:
+The canonical demo set proves that the current runtime can:
 
-- `AEGIS_APPROVAL_SIGNING_SEED_B64`: local Ed25519 private seed used to sign approval tickets
-- `AEGIS_APPROVAL_PUBLIC_KEYS_JSON`: explicit runtime verifier key map
+- run untrusted code inside Firecracker/KVM microVMs
+- freeze authority before execution
+- govern the current host-side side-effect paths
+- require exact approvals where configured
+- leave a signed proof bundle you can re-check offline
 
-Runtime approval verification requires explicit verifier public-key configuration. The demo harness derives a local single-key map from `AEGIS_APPROVAL_SIGNING_SEED_B64` with:
+The demos do not prove:
+
+- hardware attestation
+- trustlessness
+- host independence
+- arbitrary shared-repo safety for host patching
+
+## Environment Dependencies
+
+These demos depend on the exact setup checked by:
 
 ```bash
-/home/cellardoor72/aegis/.aegis/bin/aegis approval public-keys
+python3 ./scripts/aegis_demo.py preflight
 ```
 
-The corresponding `public_keys_json=...` value is then passed to the runtime as `AEGIS_APPROVAL_PUBLIC_KEYS_JSON`. Tickets signed with a different seed will be rejected by the broker unless the runtime verifier key map is updated to match.
+That includes:
 
-You can inspect a ticket without consuming it:
+- Linux
+- `/dev/kvm`
+- Firecracker
+- PostgreSQL server binaries
+- Go
+- Python 3
+- repo-local `.aegis/` state
+- the kernel and rootfs assets
+
+## Stop The Runtime
 
 ```bash
-./.aegis/bin/aegis approval inspect --token <approval_token>
+./scripts/demo_down.sh
 ```
-
-## Trust Limits
-
-- Admission preview computes the same frozen digests used at runtime, but it is not attestation.
-- Host repo labels are signed into authority; host repo roots are not.
-- Demo artifacts intentionally avoid storing raw approval ticket tokens or signing seeds, and the canonical approved demos inject approval tokens in-memory instead of durable runtime staging files.
-- `host_repo_apply_patch` uses a local-host advisory lock. The truthful operating assumption is a dedicated or quiesced repo during the demo.

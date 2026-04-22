@@ -24,4 +24,5 @@ This file is for active engineering issues, not broad product limitations.
 - compute-profile truthfulness pass
 - recent public hardening pass
 
-For broader caveats, see [KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md).
+For current public limits, use [../trust-model.md](../trust-model.md).
+For the archived longer limitations note, use [../archive/root-history/KNOWN_LIMITATIONS.md](../archive/root-history/KNOWN_LIMITATIONS.md).

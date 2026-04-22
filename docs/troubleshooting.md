@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This page assumes the current local operator path:
+This page assumes the canonical local operator path:
 
 ```bash
 python3 ./scripts/aegis_demo.py preflight
@@ -8,7 +8,7 @@ python3 ./scripts/aegis_demo.py preflight
 ./scripts/demo_status.sh
 ```
 
-## Demo Preflight Fails
+## Preflight Fails
 
 Run:
 
@@ -16,17 +16,28 @@ Run:
 python3 ./scripts/aegis_demo.py preflight
 ```
 
-The preflight reports visible missing prerequisites such as:
+Then split the failure into one of these two buckets.
 
-- Linux requirement
-- missing or inaccessible `/dev/kvm`
+### Repo-local state is missing
+
+If preflight reports missing repo-local binaries, config, or signing seed, run:
+
+```bash
+go run ./cmd/aegis-cli setup --config .aegis/config.yaml
+python3 ./scripts/aegis_demo.py preflight
+```
+
+### Host prerequisites are missing
+
+Fix the exact missing host dependency first:
+
+- `/dev/kvm` missing or inaccessible
 - Firecracker missing
-- missing Postgres server binaries
-- missing repo-local config
-- missing kernel/rootfs/assets
-- missing repo-local binaries
+- Postgres server binaries missing
+- kernel or rootfs asset missing
+- Go missing
 
-Fix the reported prerequisite first. The canonical demos are intentionally not clone-and-run yet.
+`setup` does not install those host prerequisites for you.
 
 ## `demo_up.sh` Fails Before The Runtime Starts
 
@@ -56,11 +67,11 @@ If the runtime is wedged, restart it:
 ./scripts/demo_up.sh
 ```
 
-## Approval-Requiring Demos Fail With Approval Verification Errors
+## Approval-Requiring Demos Fail
 
 Current runtime approval verification requires explicit public-key verifier config.
 
-If the runtime cannot verify issued approvals:
+If an approval-requiring demo fails:
 
 1. confirm `AEGIS_APPROVAL_PUBLIC_KEYS_JSON` is set for the runtime
 2. if you are issuing approvals locally with `AEGIS_APPROVAL_SIGNING_SEED_B64`, derive the matching public-key map with:
@@ -71,17 +82,17 @@ If the runtime cannot verify issued approvals:
 
 3. ensure the runtime is using that exact public-key map
 
-If the runtime verifier config is missing, approval checks fail closed as unavailable.
+If verifier config is missing, approval checks fail closed.
 
 ## Lease-Related Admission Failures
 
-Executions that need leases now fail before VM start if lease issuance cannot succeed.
+Executions that need leases fail before VM start if lease issuance cannot succeed.
 
 Look for:
 
 - `lease_issue_failed`
 
-This is an admission/infrastructure failure, not a fake runtime receipt event.
+This is an admission or infrastructure failure, not a fake runtime receipt event.
 
 ## Receipt Verification Fails
 
@@ -97,7 +108,7 @@ Check that the proof directory still contains:
 - `receipt.dsse.json`
 - `receipt.pub`
 - `receipt.summary.txt`
-- bound artifacts referenced by the receipt
+- the bound artifacts referenced by the receipt
 
 If the bundle was copied, keep those files together.
 
@@ -105,12 +116,10 @@ If the bundle was copied, keep those files together.
 
 If the approved host patch demo fails:
 
-- confirm the repo label is configured as expected
 - confirm the base revision still matches
-- confirm the target repo is dedicated or quiesced during the demo
+- confirm the target repo is `/tmp/aegis-demo/host-repos/demo-repo`
 - confirm another local process is not contending on the advisory lock
-
-The current host patch path uses a local-host advisory lock, not a distributed or mandatory lock.
+- confirm the target repo is dedicated or quiesced during the demo
 
 ## Firecracker Or KVM-Specific Problems
 
@@ -127,7 +136,7 @@ Use:
 python3 ./scripts/aegis_demo.py preflight
 ```
 
-to get the exact visible prerequisite failure, then fix that host-level dependency.
+to get the exact missing prerequisite, then fix that host-level dependency.
 
 ## Postgres Problems
 
@@ -150,23 +159,6 @@ Then restart the local demo runtime if needed:
 ./scripts/demo_up.sh
 ```
 
-## Repo-Local Binaries Are Missing Or Stale
+## Native Linux vs WSL2
 
-If `./.aegis/bin/aegis` or `./.aegis/bin/orchestrator` is missing or stale:
-
-```bash
-go run ./cmd/aegis-cli setup --config .aegis/config.yaml
-```
-
-Then rerun preflight.
-
-## MCP Runtime Unavailable
-
-`aegis-mcp` talks to the existing local HTTP runtime. It does not bootstrap the runtime on its own.
-
-Start the runtime first:
-
-```bash
-./scripts/demo_up.sh
-AEGIS_BASE_URL=http://127.0.0.1:8080 ./.aegis/bin/aegis-mcp
-```
+WSL2 is useful for development, but native Linux is the recommended demo and validation baseline. If you hit timing, KVM, networking, or mount oddities on WSL2, retry on native Linux before assuming a runtime bug.

@@ -21,7 +21,7 @@ The trust base currently includes:
 
 - the Linux host and kernel
 - Firecracker, guest kernel, rootfs, and host-side runtime binaries
-- local policy/configuration files
+- local policy and configuration files
 - local Postgres state
 - receipt-signing key material
 - approval verifier public-key configuration
@@ -42,13 +42,13 @@ Aegis does provide:
 
 ## What It Does Not Give You
 
-Aegis does **not** currently provide:
+Aegis does not currently provide:
 
 - hardware attestation
 - trustlessness
 - proof independent of the host
 - hostile-host independence
-- production-ready multi-tenant public-cloud control-plane guarantees
+- a hosted or production-ready multi-tenant control plane
 - a distributed control plane
 
 ## Signer And Verifier Assumptions
@@ -59,8 +59,7 @@ Current signer/verifier assumptions:
 
 - receipts are signed by host-controlled key material
 - runtime approval verification requires explicit verifier public-key configuration
-- local approval inspection may derive a public key from the signing seed for convenience, but runtime broker enforcement does not
-- a receipt bundle can prove internal consistency under the bundled verification key, but that does not by itself prove that the signer is one you intended to trust
+- a receipt bundle can prove internal consistency under the bundled key, but that does not by itself prove the signer is one you intended to trust
 
 ## Lease And Approval Semantics
 
@@ -75,15 +74,22 @@ Current rules:
 - brokered HTTP also requires approval when `require_host_consent` is enabled
 - `host_repo_apply_patch` always requires both a lease and an approval ticket
 
-## Host Patch Trust Truth
+## Host Patch Truth
 
 `host_repo_apply_patch` is intentionally narrow and typed, but its lock is a local-host advisory lock.
 
 That means:
 
 - Aegis serializes cooperating local processes on the same host
-- it does not magically make an arbitrary busy shared repo safe
+- it does not make an arbitrary busy shared repo safe
 - the truthful operating assumption is a dedicated or quiesced repo during patch application
+
+## Operational Caveats That Matter Publicly
+
+- Native Linux is the recommended demo host. WSL2 is useful for development, but not the cleanest validation baseline.
+- Compute profiles change VM shape today; they are not yet a broader resource-envelope claim.
+- Python and bash are the strongest runtime paths today. Node is supported, but less battle-tested.
+- Warm pool is a latency optimization, not a second security boundary.
 
 ## What Receipt Verification Means
 
@@ -94,7 +100,7 @@ That means:
 - receipt schema shape
 - semantic invariants for the current receipt format
 
-It does **not** mean:
+It does not mean:
 
 - the host was honest
 - the host could not suppress evidence
@@ -115,6 +121,5 @@ Do not treat Aegis as the right answer when:
 - you need host independence
 - you need attested execution
 - you need a hosted multi-tenant control plane
-- you need arbitrary shared-repo host patching guarantees
 
 For concrete receipt fields, use [receipt-schema.md](receipt-schema.md).

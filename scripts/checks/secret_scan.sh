@@ -24,6 +24,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$tmpdir"
+tracked_entries=0
+copied_entries=0
+missing_entries=0
+
+while IFS= read -r -d '' path; do
+  tracked_entries=$((tracked_entries + 1))
+  if [ ! -e "$path" ]; then
+    missing_entries=$((missing_entries + 1))
+    continue
+  fi
+  mkdir -p "$tmpdir/$(dirname "$path")"
+  cp -a "$path" "$tmpdir/$path"
+  copied_entries=$((copied_entries + 1))
+done < <(git ls-files -z)
+
+echo "tracked_entries=$tracked_entries"
+echo "copied_entries=$copied_entries"
+echo "missing_entries_skipped=$missing_entries"
 
 gitleaks dir "$tmpdir" --no-banner --redact --config .gitleaks.toml

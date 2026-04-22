@@ -163,15 +163,24 @@ Public summary output is intentionally sanitized:
 
 - no raw approval tokens
 - no raw host repo roots
-- no raw HTTP query strings in human/signed audit output
+- no raw HTTP query strings in human or signed audit output
 
 ## What Receipts Prove
 
 Receipts prove that the verifier checked a host-produced signed execution record and its bound artifacts.
 
-They do **not** prove:
+`verification=verified` means:
+
+- the bundle is complete enough to verify
+- the signature validated
+- the receipt parsed as the expected Aegis predicate
+- the artifact set on disk matched the signed artifact set
+- the receipt semantics passed validation
+
+It does not prove:
 
 - attestation
 - trustlessness
 - host independence
 - that the host could not forge or suppress evidence
+- that the bundled key is automatically one you intended to trust

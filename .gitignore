@@ -11,8 +11,23 @@ assets/*.tgz
 assets/release-v*/
 assets/firecracker
 
-# Build artifacts and local logs
+# Local runtime state, artifacts, and scratch outputs
+.artifacts/
+.codex/
+.aegis/
+graphify-out/
+ai/
+agent_logs/
+/playwright-report/
+/test-results/
 *.log
+*.out
+*.pid
+*.pid.lock
+*.tmp
+*.sqlite
+*.sqlite3
+*.db
 /tmp/
 build/
 
@@ -20,13 +35,17 @@ build/
 linux-6.1.80/
 linux-6.1.80.tar.xz
 
-# Local workstation-only guidance files
-AGENTS.md
+# Local workstation-only files
 CLAUDE.md
 .venv
-
-# Generated local setup state
-.aegis/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.local
+.env.*.local
+*.token
+*.seed
 
 # Python SDK package/build residue
 sdk/python/.coverage
@@ -37,21 +56,14 @@ sdk/python/**/__pycache__/*
 __pycache__/
 *.pyc
 
-# Local TypeScript dependency trees
-sdk/typescript/node_modules/
-ui-app/node_modules/
+# Local JavaScript dependency trees and generated config outputs
+**/node_modules/
 ui-app/.vite/
-ui-app/*.tsbuildinfo
+*.tsbuildinfo
 ui-app/vite.config.js
 ui-app/vite.config.d.ts
 ui-app/tailwind.config.js
 ui-app/tailwind.config.d.ts
-
-# Internal working logs and agent notes are not product source
-ai/
-agent_logs/
-graphify-out/
-.artifacts/graphify/
 
 # The demo runtime serves the built UI bundle from /ui, so keep it trackable.
 !/ui/assets/

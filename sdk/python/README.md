@@ -182,13 +182,11 @@ Reference examples:
 
 These are local examples against a running orchestrator. They require the host broker credential environment to be present when `aegis serve` starts.
 
-The stronger product proof path after first success is:
+The stronger product proof path after first success is the canonical demo guide:
 
-```bash
-python3 ../../scripts/run_canonical_demo.py --serve
-```
+- [../../docs/canonical-demos.md](../../docs/canonical-demos.md)
 
-That is the canonical product demo path, not the first-run onboarding path. See [../../docs/canonical-demo.md](../../docs/canonical-demo.md).
+That page is the canonical product demo path, not the first-run onboarding path.
 
 Installed-package usage is also not the first-run onboarding path. It is the package-consumption path once the runtime is already understood.
 
